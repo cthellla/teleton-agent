@@ -14,6 +14,7 @@ import { InfoTip } from '../components/InfoTip';
 const TABS = [
   { id: 'llm', label: 'LLM' },
   { id: 'telegram', label: 'Telegram' },
+  { id: 'heartbeat', label: 'Heartbeat' },
   { id: 'api-keys', label: 'API Keys' },
   { id: 'ton-proxy', label: 'TON Proxy' },
   { id: 'advanced', label: 'Advanced' },
@@ -177,6 +178,76 @@ export function Config() {
           onArraySave={handleArraySave}
           extended={true}
         />
+      )}
+
+      {/* Heartbeat Tab */}
+      {activeTab === 'heartbeat' && (
+        <>
+          <div className="card-header">
+            <div className="section-title">Heartbeat</div>
+            <p className="card-description">
+              Periodic autonomous wake-up. The agent reads HEARTBEAT.md and acts on its tasks, or stays silent.
+            </p>
+          </div>
+          <div className="card">
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <label className="toggle" style={{ margin: 0 }}>
+                    <input
+                      type="checkbox"
+                      checked={config.getLocal('heartbeat.enabled') === 'true' || config.getLocal('heartbeat.enabled') === true}
+                      onChange={async (e) => {
+                        const val = e.target.checked;
+                        await config.saveConfig('heartbeat.enabled', String(val));
+                      }}
+                    />
+                    <span className="toggle-track" />
+                    <span className="toggle-thumb" />
+                  </label>
+                  <span>Enabled</span>
+                  <InfoTip text="When enabled, the agent wakes up periodically to check HEARTBEAT.md and act on pending tasks. Replies NO_ACTION (silently suppressed) when nothing needs attention." />
+                </div>
+              </div>
+
+              <EditableField
+                label="Interval"
+                description="Time between heartbeat ticks (in minutes). Requires restart to take effect."
+                configKey="heartbeat.interval_ms"
+                type="number"
+                value={String(Math.round(Number(config.getLocal('heartbeat.interval_ms') || 1800000) / 60000))}
+                serverValue={String(Math.round(Number(config.getServer('heartbeat.interval_ms') || 1800000) / 60000))}
+                onChange={(v) => config.setLocal('heartbeat.interval_ms', String(Number(v) * 60000))}
+                onSave={(v) => config.saveConfig('heartbeat.interval_ms', String(Number(v) * 60000))}
+                onCancel={() => config.cancelLocal('heartbeat.interval_ms')}
+                min={1}
+                max={1440}
+                placeholder="30"
+                hotReload="restart"
+                suffix="min"
+              />
+
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <label className="toggle" style={{ margin: 0 }}>
+                    <input
+                      type="checkbox"
+                      checked={config.getLocal('heartbeat.self_configurable') === 'true' || config.getLocal('heartbeat.self_configurable') === true}
+                      onChange={async (e) => {
+                        const val = e.target.checked;
+                        await config.saveConfig('heartbeat.self_configurable', String(val));
+                      }}
+                    />
+                    <span className="toggle-track" />
+                    <span className="toggle-thumb" />
+                  </label>
+                  <span>Self-configurable</span>
+                  <InfoTip text="Allow the agent to modify its own heartbeat settings (interval, prompt). When off, only the admin can change these." />
+                </div>
+              </div>
+            </div>
+          </div>
+        </>
       )}
 
       {/* API Keys Tab */}

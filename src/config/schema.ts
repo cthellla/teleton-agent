@@ -281,6 +281,26 @@ const _CapabilitiesObject = z.object({
 });
 export const CapabilitiesConfigSchema = _CapabilitiesObject.default(_CapabilitiesObject.parse({}));
 
+const _HeartbeatObject = z.object({
+  enabled: z.boolean().default(true).describe("Enable periodic heartbeat timer"),
+  interval_ms: z
+    .number()
+    .min(60_000)
+    .default(1_800_000)
+    .describe("Heartbeat interval in milliseconds (min 60s, default 30min)"),
+  prompt: z
+    .string()
+    .default(
+      "Read HEARTBEAT.md if it exists. Follow it strictly. If nothing needs attention, reply NO_ACTION."
+    )
+    .describe("Prompt sent to agent on each heartbeat tick"),
+  self_configurable: z
+    .boolean()
+    .default(false)
+    .describe("Allow agent to modify heartbeat config via config_set"),
+});
+export const HeartbeatConfigSchema = _HeartbeatObject.default(_HeartbeatObject.parse({}));
+
 export const ConfigSchema = z.object({
   meta: MetaConfigSchema.default(MetaConfigSchema.parse({})),
   agent: AgentConfigSchema,
@@ -295,6 +315,7 @@ export const ConfigSchema = z.object({
   capabilities: CapabilitiesConfigSchema,
   api: ApiConfigSchema.optional(),
   ton_proxy: TonProxyConfigSchema,
+  heartbeat: HeartbeatConfigSchema,
   mcp: McpConfigSchema,
   plugins: z
     .record(z.string(), z.unknown())
@@ -342,3 +363,4 @@ export type CapabilitiesConfig = z.infer<typeof CapabilitiesConfigSchema>;
 export type TonProxyConfig = z.infer<typeof TonProxyConfigSchema>;
 export type ApiConfig = z.infer<typeof _ApiObject>;
 export type ExecConfig = z.infer<typeof _ExecObject>;
+export type HeartbeatConfig = z.infer<typeof _HeartbeatObject>;

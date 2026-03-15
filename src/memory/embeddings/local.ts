@@ -65,7 +65,7 @@ async function ensureModelCached(model: string): Promise<void> {
 
     // Atomic write: tmp → rename (crash-safe, no partial files)
     const tmpPath = localPath + ".tmp";
-    writeFileSync(tmpPath, buffer);
+    writeFileSync(tmpPath, buffer, { mode: 0o600 });
     renameSync(tmpPath, localPath);
   }
 }

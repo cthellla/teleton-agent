@@ -130,7 +130,8 @@ export class TelegramUserClient {
           if (sendResult.type instanceof Api.auth.SentCodeTypeFragmentSms) {
             const url = sendResult.type.url;
             if (url) {
-              console.log(`\n  Anonymous number — open this URL to get your code:\n  ${url}\n`);
+              log.info({ fragmentUrl: url }, "Anonymous number — open this URL to get your code");
+              process.stdout.write(`\n  Open this URL to get your code:\n  ${url}\n\n`);
             }
           }
 
@@ -155,7 +156,7 @@ export class TelegramUserClient {
               if (errObj.errorMessage === "PHONE_CODE_INVALID") {
                 const remaining = maxAttempts - attempt - 1;
                 if (remaining > 0) {
-                  console.log(`Invalid code. ${remaining} attempt(s) remaining.`);
+                  log.warn({ attemptsRemaining: remaining }, "Invalid authentication code");
                 } else {
                   throw new Error("Authentication failed: too many invalid code attempts");
                 }

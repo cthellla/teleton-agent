@@ -40,7 +40,6 @@ import type {
   Tool as PiAiTool,
   UserMessage,
   ToolResultMessage,
-  TextContent,
   ToolCall,
 } from "@mariozechner/pi-ai";
 import { CompactionManager, DEFAULT_COMPACTION_CONFIG } from "../memory/compaction.js";
@@ -65,74 +64,18 @@ import type {
   ToolErrorEvent,
   PromptAfterEvent,
 } from "../sdk/hooks/types.js";
+import {
+  isContextOverflowError,
+  isTrivialMessage,
+  extractContextSummary,
+} from "./runtime-utils.js";
+import { truncateToolResult } from "./tool-result-truncator.js";
+import { accumulateTokenUsage } from "./token-usage.js";
+
+export { isContextOverflowError, isTrivialMessage } from "./runtime-utils.js";
+export { getTokenUsage } from "./token-usage.js";
 
 const log = createLogger("Agent");
-
-// ── Global token usage accumulator (in-memory, resets on restart) ───
-const globalTokenUsage = { totalTokens: 0, totalCost: 0 };
-
-export function getTokenUsage() {
-  return { ...globalTokenUsage };
-}
-
-function isContextOverflowError(errorMessage?: string): boolean {
-  if (!errorMessage) return false;
-  const lower = errorMessage.toLowerCase();
-  return (
-    lower.includes("prompt is too long") ||
-    lower.includes("context length exceeded") ||
-    lower.includes("maximum context length") ||
-    lower.includes("too many tokens") ||
-    lower.includes("request_too_large") ||
-    (lower.includes("exceeds") && lower.includes("maximum")) ||
-    (lower.includes("context") && lower.includes("limit"))
-  );
-}
-
-function isTrivialMessage(text: string): boolean {
-  const stripped = text.trim();
-  if (!stripped) return true;
-  if (!/[a-zA-Z0-9а-яА-ЯёЁ]/.test(stripped)) return true;
-  const trivial =
-    /^(ok|okay|k|oui|non|yes|no|yep|nope|sure|thanks|merci|thx|ty|lol|haha|cool|nice|wow|bravo|top|parfait|d'accord|alright|fine|got it|np|gg)\.?!?$/i;
-  return trivial.test(stripped);
-}
-
-function extractContextSummary(context: Context, maxMessages: number = 10): string {
-  const recentMessages = context.messages.slice(-maxMessages);
-  const summaryParts: string[] = [];
-
-  summaryParts.push("### Session Summary (Auto-saved before overflow reset)\n");
-
-  for (const msg of recentMessages) {
-    if (msg.role === "user") {
-      const content = typeof msg.content === "string" ? msg.content : "[complex]";
-      const bodyMatch = content.match(/\] (.+)/s);
-      const body = bodyMatch ? bodyMatch[1] : content;
-      summaryParts.push(`- **User**: ${body.substring(0, 150)}${body.length > 150 ? "..." : ""}`);
-    } else if (msg.role === "assistant") {
-      const textBlocks = msg.content.filter((b): b is TextContent => b.type === "text");
-      const toolBlocks = msg.content.filter((b): b is ToolCall => b.type === "toolCall");
-
-      if (textBlocks.length > 0) {
-        const text = textBlocks[0].text || "";
-        summaryParts.push(
-          `- **Agent**: ${text.substring(0, 150)}${text.length > 150 ? "..." : ""}`
-        );
-      }
-
-      if (toolBlocks.length > 0) {
-        const toolNames = toolBlocks.map((b) => b.name).join(", ");
-        summaryParts.push(`  - *Tools used: ${toolNames}*`);
-      }
-    } else if (msg.role === "toolResult") {
-      const status = msg.isError ? "ERROR" : "OK";
-      summaryParts.push(`  - *Tool result: ${msg.toolName} → ${status}*`);
-    }
-  }
-
-  return summaryParts.join("\n");
-}
 
 export interface ProcessMessageOptions {
   chatId: string;
@@ -148,6 +91,7 @@ export interface ProcessMessageOptions {
   mediaType?: string;
   messageId?: number;
   replyContext?: { senderName?: string; text: string; isAgent?: boolean };
+  isHeartbeat?: boolean;
 }
 
 export interface AgentResponse {
@@ -223,6 +167,7 @@ export class AgentRuntime {
       mediaType,
       messageId,
       replyContext,
+      isHeartbeat,
     } = opts;
 
     const effectiveIsGroup = isGroup ?? false;
@@ -471,6 +416,8 @@ export class AgentRuntime {
         includeMemory: !effectiveIsGroup,
         includeStrategy: !effectiveIsGroup,
         memoryFlushWarning: needsMemoryFlush,
+        isHeartbeat,
+        agentModel: this.config.agent.model,
       });
 
       // Hook: prompt:after — observing, analytics on prompt size
@@ -849,40 +796,9 @@ export class AgentRuntime {
             input: block.arguments,
           });
 
-          let resultText = JSON.stringify(exec.result);
-          if (resultText.length > MAX_TOOL_RESULT_SIZE) {
-            log.warn(`⚠️ Tool result too large (${resultText.length} chars), truncating...`);
-            const data = exec.result.data as Record<string, unknown> | undefined;
-            if (data?.summary || data?.message) {
-              resultText = JSON.stringify({
-                success: exec.result.success,
-                data: {
-                  summary: data.summary || data.message,
-                  _truncated: true,
-                  _originalSize: resultText.length,
-                  _message: "Full data truncated. Use limit parameter for smaller results.",
-                },
-              });
-            } else {
-              // Build a valid JSON summary instead of raw-slicing (which breaks JSON)
-              const summarized: Record<string, unknown> = {
-                _truncated: true,
-                _originalSize: resultText.length,
-                _message: "Full data truncated. Use limit parameter for smaller results.",
-              };
-              if (data && typeof data === "object") {
-                for (const [key, value] of Object.entries(data)) {
-                  if (Array.isArray(value)) {
-                    summarized[key] = `[${value.length} items]`;
-                  } else if (typeof value === "string" && value.length > 500) {
-                    summarized[key] = value.slice(0, 500) + "...[truncated]";
-                  } else {
-                    summarized[key] = value;
-                  }
-                }
-              }
-              resultText = JSON.stringify({ success: exec.result.success, data: summarized });
-            }
+          const resultText = truncateToolResult(exec.result, MAX_TOOL_RESULT_SIZE);
+          if (resultText.includes('"_truncated":true')) {
+            log.warn(`⚠️ Tool result too large, truncated to ${resultText.length} chars`);
           }
 
           if (provider === "cocoon") {
@@ -984,8 +900,7 @@ export class AgentRuntime {
         const cacheInfo = cacheParts.length > 0 ? ` (${cacheParts.join(", ")})` : "";
         log.info(`💰 ${inK}K in${cacheInfo}, ${u.output} out | $${u.totalCost.toFixed(3)}`);
 
-        globalTokenUsage.totalTokens += u.input + u.output + u.cacheRead + u.cacheWrite;
-        globalTokenUsage.totalCost += u.totalCost;
+        accumulateTokenUsage(u);
       }
 
       let content = accumulatedTexts.join("\n").trim() || response.text;

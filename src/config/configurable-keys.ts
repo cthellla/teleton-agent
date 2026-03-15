@@ -616,6 +616,41 @@ export const CONFIGURABLE_KEYS: Record<string, ConfigKeyMeta> = {
     parse: identity,
   },
 
+  // ─── Heartbeat ─────────────────────────────────────────────────────
+  "heartbeat.enabled": {
+    type: "boolean",
+    category: "Agent",
+    label: "Heartbeat Enabled",
+    description: "Enable periodic heartbeat timer",
+    sensitive: false,
+    hotReload: "instant",
+    validate: enumValidator(["true", "false"]),
+    mask: identity,
+    parse: (v) => v === "true",
+  },
+  "heartbeat.interval_ms": {
+    type: "number",
+    category: "Agent",
+    label: "Heartbeat Interval (ms)",
+    description: "Heartbeat interval in milliseconds (min 60000)",
+    sensitive: false,
+    hotReload: "restart",
+    validate: numberInRange(60000, 86400000),
+    mask: identity,
+    parse: (v) => Number(v),
+  },
+  "heartbeat.self_configurable": {
+    type: "boolean",
+    category: "Agent",
+    label: "Heartbeat Self-Configurable",
+    description: "Allow agent to modify heartbeat config at runtime",
+    sensitive: false,
+    hotReload: "instant",
+    validate: enumValidator(["true", "false"]),
+    mask: identity,
+    parse: (v) => v === "true",
+  },
+
   // ─── Developer ─────────────────────────────────────────────────────
   "dev.hot_reload": {
     type: "boolean",

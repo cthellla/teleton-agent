@@ -946,15 +946,15 @@ export function createTonSDK(log: PluginLogger, db: Database.Database | null): T
           const geckoData = await geckoResponse.json();
           const attrs = geckoData.data?.attributes;
           if (attrs) {
-            if (attrs.volume_usd?.h24) {
-              volume24h = `$${parseFloat(attrs.volume_usd.h24).toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
-            }
-            if (attrs.fdv_usd) {
-              fdv = `$${parseFloat(attrs.fdv_usd).toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
-            }
-            if (attrs.market_cap_usd) {
-              marketCap = `$${parseFloat(attrs.market_cap_usd).toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
-            }
+            const fmtUsd = (raw: string): string => {
+              const val = parseFloat(raw);
+              return Number.isFinite(val)
+                ? `$${val.toLocaleString(undefined, { maximumFractionDigits: 0 })}`
+                : "N/A";
+            };
+            if (attrs.volume_usd?.h24) volume24h = fmtUsd(attrs.volume_usd.h24);
+            if (attrs.fdv_usd) fdv = fmtUsd(attrs.fdv_usd);
+            if (attrs.market_cap_usd) marketCap = fmtUsd(attrs.market_cap_usd);
           }
         }
 

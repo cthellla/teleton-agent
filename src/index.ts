@@ -34,6 +34,7 @@ import {
   type McpConnection,
 } from "./agent/tools/mcp-loader.js";
 import { getErrorMessage } from "./utils/errors.js";
+import { isHeartbeatOk, isSilentReply } from "./constants/tokens.js";
 import { UserHookEvaluator } from "./agent/hooks/user-hook-evaluator.js";
 import { createLogger, initLoggerFromConfig } from "./utils/logger.js";
 import { AgentLifecycle } from "./agent/lifecycle.js";
@@ -70,6 +71,8 @@ export class TeletonApp {
   private userHookEvaluator: UserHookEvaluator | null = null;
   private startTime: number = 0;
   private messagesProcessed: number = 0;
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  private heartbeatRunning = false;
 
   private configPath: string;
 
@@ -487,6 +490,24 @@ ${blue}  ┌──────────────────────�
     const { pruneOldSessions } = await import("./session/store.js");
     pruneOldSessions(30);
 
+    // Harden permissions on existing files (one-shot, idempotent)
+    const { hardenExistingPermissions } = await import("./workspace/harden-permissions.js");
+    hardenExistingPermissions();
+
+    // Ensure heartbeat config exists in YAML (so users can see/edit it)
+    {
+      const raw = readRawConfig(this.configPath);
+      if (raw && !raw.heartbeat) {
+        raw.heartbeat = {
+          enabled: this.config.heartbeat.enabled,
+          interval_ms: this.config.heartbeat.interval_ms,
+          self_configurable: this.config.heartbeat.self_configurable,
+        };
+        writeRawConfig(raw, this.configPath);
+        log.info("Config: heartbeat section added to config.yaml");
+      }
+    }
+
     // Warmup embedding model (pre-download at startup, not on first message)
     if (this.memory.embedder.warmup) {
       await this.memory.embedder.warmup();
@@ -718,6 +739,21 @@ ${blue}  ┌──────────────────────�
         timestamp: Date.now(),
       };
       await this.hookRunner.runObservingHook("agent:start", agentStartEvent);
+    }
+
+    // Start heartbeat timer if enabled
+    if (this.config.heartbeat.enabled) {
+      const hbInterval = this.config.heartbeat.interval_ms;
+      const adminChatId = this.config.telegram.admin_ids[0];
+      if (adminChatId) {
+        this.heartbeatTimer = setInterval(() => {
+          void this.runHeartbeat();
+        }, hbInterval);
+        this.heartbeatTimer.unref();
+        log.info(
+          `Heartbeat enabled: every ${Math.round(hbInterval / 60000)}min → admin ${adminChatId}`
+        );
+      }
     }
 
     // Initialize message debouncer with bypass logic
@@ -1201,10 +1237,75 @@ ${blue}  ┌──────────────────────�
   }
 
   /**
+   * Run a single heartbeat tick — modeled on handleScheduledTask().
+   * Calls processMessage() directly, bypasses MessageHandler.
+   */
+  private async runHeartbeat(): Promise<void> {
+    if (this.heartbeatRunning) {
+      log.debug("Heartbeat tick skipped (previous still running)");
+      return;
+    }
+    const cfg = this.config.heartbeat;
+    if (!cfg?.enabled) return;
+
+    const adminChatId = this.config.telegram.admin_ids[0];
+    if (!adminChatId) return;
+
+    this.heartbeatRunning = true;
+    try {
+      const { getDatabase } = await import("./memory/index.js");
+      const sessionChatId = `telegram:direct:${adminChatId}`;
+      const telegramChatId = String(adminChatId);
+      const toolContext = {
+        bridge: this.bridge,
+        db: getDatabase().getDb(),
+        chatId: sessionChatId,
+        isGroup: false,
+        senderId: adminChatId,
+        config: this.config,
+      };
+
+      const response = await this.agent.processMessage({
+        chatId: sessionChatId,
+        userMessage: cfg.prompt,
+        userName: "heartbeat",
+        timestamp: Date.now(),
+        isGroup: false,
+        toolContext,
+        isHeartbeat: true,
+      });
+
+      if (
+        response.content &&
+        !isHeartbeatOk(response.content) &&
+        !isSilentReply(response.content)
+      ) {
+        await this.bridge.sendMessage({
+          chatId: telegramChatId,
+          text: response.content,
+        });
+        log.info("Heartbeat: alert sent to owner");
+      } else {
+        log.debug("Heartbeat: NO_ACTION (suppressed)");
+      }
+    } catch (err) {
+      log.error({ err }, "Heartbeat error");
+    } finally {
+      this.heartbeatRunning = false;
+    }
+  }
+
+  /**
    * Stop agent subsystems (watcher, MCP, debouncer, handler, modules, bridge).
    * Called by lifecycle.stop() — do NOT call directly.
    */
   private async stopAgent(): Promise<void> {
+    // Stop heartbeat timer
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
+
     // Hook: agent:stop — fire BEFORE disconnecting anything
     if (this.hookRunner) {
       try {

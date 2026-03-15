@@ -103,6 +103,20 @@ export function createConfigRoutes(deps: WebUIServerDeps) {
       );
     }
 
+    // Guard: heartbeat.* keys require self_configurable to be true
+    if (key.startsWith("heartbeat.") && key !== "heartbeat.self_configurable") {
+      const config = deps.agent.getConfig();
+      if (config.heartbeat?.self_configurable !== true) {
+        return c.json(
+          {
+            success: false,
+            error: `Heartbeat config is locked (self_configurable: false). Set heartbeat.self_configurable to true first.`,
+          } as APIResponse,
+          403
+        );
+      }
+    }
+
     let body: { value?: unknown };
     try {
       body = await c.req.json();
@@ -250,6 +264,20 @@ export function createConfigRoutes(deps: WebUIServerDeps) {
         } as APIResponse,
         400
       );
+    }
+
+    // Guard: heartbeat.* keys require self_configurable to be true
+    if (key.startsWith("heartbeat.") && key !== "heartbeat.self_configurable") {
+      const config = deps.agent.getConfig();
+      if (config.heartbeat?.self_configurable !== true) {
+        return c.json(
+          {
+            success: false,
+            error: `Heartbeat config is locked (self_configurable: false). Set heartbeat.self_configurable to true first.`,
+          } as APIResponse,
+          403
+        );
+      }
     }
 
     try {
