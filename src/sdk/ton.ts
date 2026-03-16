@@ -1159,10 +1159,7 @@ export function createTonSDK(log: PluginLogger, db: Database.Database | null): T
       }
     },
 
-    async sendMessages(
-      messages: TonMessage[],
-      opts?: TonSendOptions
-    ): Promise<TonTransferResult> {
+    async sendMessages(messages: TonMessage[], opts?: TonSendOptions): Promise<TonTransferResult> {
       const walletData = loadWallet();
       if (!walletData) {
         throw new PluginSDKError("Wallet not initialized", "WALLET_NOT_INITIALIZED");

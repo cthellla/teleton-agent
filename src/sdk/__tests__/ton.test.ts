@@ -1701,7 +1701,7 @@ describe("createTonSDK", () => {
       });
 
       it("works without optional stack parameter", async () => {
-        let remaining = 0;
+        const remaining = 0;
         const mockTupleReader = {
           get remaining() {
             return remaining;
@@ -1722,18 +1722,14 @@ describe("createTonSDK", () => {
         expect(result.exitCode).toBe(0);
         expect(result.stack).toEqual([]);
         // Verify the third argument is an empty array when stack is omitted
-        expect(mockRunMethod).toHaveBeenCalledWith(
-          expect.anything(),
-          "get_data",
-          []
-        );
+        expect(mockRunMethod).toHaveBeenCalledWith(expect.anything(), "get_data", []);
       });
 
       it("does not require wallet", async () => {
         // loadWallet is not called for read-only runGetMethod
         (loadWallet as Mock).mockReturnValue(null);
 
-        let remaining = 0;
+        const remaining = 0;
         const mockTupleReader = {
           get remaining() {
             return remaining;
@@ -1799,17 +1795,13 @@ describe("createTonSDK", () => {
         const mockCell = { toBoc: vi.fn() };
         const result = await sdk.send(VALID_ADDRESS, 1, { body: mockCell as any });
         expect(result.seqno).toBe(7);
-        expect(mocks.internal).toHaveBeenCalledWith(
-          expect.objectContaining({ body: mockCell })
-        );
+        expect(mocks.internal).toHaveBeenCalledWith(expect.objectContaining({ body: mockCell }));
       });
 
       it("sends with string body (comment)", async () => {
         const result = await sdk.send(VALID_ADDRESS, 1, { body: "hello" });
         expect(result.seqno).toBe(7);
-        expect(mocks.internal).toHaveBeenCalledWith(
-          expect.objectContaining({ body: "hello" })
-        );
+        expect(mocks.internal).toHaveBeenCalledWith(expect.objectContaining({ body: "hello" }));
       });
 
       it("sends with stateInit", async () => {
@@ -1818,9 +1810,7 @@ describe("createTonSDK", () => {
         const stateInit = { code: mockCode as any, data: mockData as any };
         const result = await sdk.send(VALID_ADDRESS, 1, { stateInit });
         expect(result.seqno).toBe(7);
-        expect(mocks.internal).toHaveBeenCalledWith(
-          expect.objectContaining({ init: stateInit })
-        );
+        expect(mocks.internal).toHaveBeenCalledWith(expect.objectContaining({ init: stateInit }));
       });
 
       it("sends with custom sendMode (0, 1, 2, 3)", async () => {
@@ -1947,9 +1937,7 @@ describe("createTonSDK", () => {
 
       it("throws WALLET_NOT_INITIALIZED", async () => {
         (loadWallet as Mock).mockReturnValue(null);
-        await expect(
-          sdk.sendMessages([{ to: VALID_ADDRESS, value: 1 }])
-        ).rejects.toMatchObject({
+        await expect(sdk.sendMessages([{ to: VALID_ADDRESS, value: 1 }])).rejects.toMatchObject({
           code: "WALLET_NOT_INITIALIZED",
         });
       });
@@ -1974,17 +1962,13 @@ describe("createTonSDK", () => {
         mocks.addressParse.mockImplementation(() => {
           throw new Error("bad address");
         });
-        await expect(
-          sdk.sendMessages([{ to: "garbage", value: 1 }])
-        ).rejects.toMatchObject({
+        await expect(sdk.sendMessages([{ to: "garbage", value: 1 }])).rejects.toMatchObject({
           code: "INVALID_ADDRESS",
         });
       });
 
       it("throws OPERATION_FAILED for negative value in messages", async () => {
-        await expect(
-          sdk.sendMessages([{ to: VALID_ADDRESS, value: -1 }])
-        ).rejects.toMatchObject({
+        await expect(sdk.sendMessages([{ to: VALID_ADDRESS, value: -1 }])).rejects.toMatchObject({
           code: "OPERATION_FAILED",
         });
       });
@@ -1999,9 +1983,7 @@ describe("createTonSDK", () => {
 
       it("throws OPERATION_FAILED when getKeyPair returns null", async () => {
         (getKeyPair as Mock).mockResolvedValue(null);
-        await expect(
-          sdk.sendMessages([{ to: VALID_ADDRESS, value: 1 }])
-        ).rejects.toMatchObject({
+        await expect(sdk.sendMessages([{ to: VALID_ADDRESS, value: 1 }])).rejects.toMatchObject({
           code: "OPERATION_FAILED",
         });
       });

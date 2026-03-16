@@ -103,10 +103,7 @@ export interface AgentResponse {
 }
 
 /** Compact summary of tool params for the iteration log line. */
-function summarizeToolParams(
-  toolName: string,
-  params: Record<string, unknown>
-): string {
+function summarizeToolParams(toolName: string, params: Record<string, unknown>): string {
   const MAX = 60;
   let hint = "";
 
@@ -114,10 +111,7 @@ function summarizeToolParams(
     hint = params.command;
   } else if (toolName === "web_fetch" && typeof params.url === "string") {
     hint = params.url;
-  } else if (
-    toolName.startsWith("telegram_") &&
-    typeof params.message === "string"
-  ) {
+  } else if (toolName.startsWith("telegram_") && typeof params.message === "string") {
     hint = params.message;
   } else if (typeof params.query === "string") {
     hint = params.query;
