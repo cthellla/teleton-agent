@@ -24,6 +24,8 @@ import { createLogger } from "../../utils/logger.js";
 const log = createLogger("PluginWatcher");
 
 const RELOAD_DEBOUNCE_MS = 300;
+const PLUGIN_START_TIMEOUT_MS = 30_000;
+const PLUGIN_STOP_TIMEOUT_MS = 30_000;
 
 interface PluginWatcherDeps {
   config: Config;
@@ -227,7 +229,15 @@ export class PluginWatcher {
       // 5. Stop old plugin (new one is fully validated at this point)
       if (oldModule) {
         try {
-          await oldModule.stop?.();
+          await Promise.race([
+            oldModule.stop?.(),
+            new Promise<never>((_, reject) =>
+              setTimeout(
+                () => reject(new Error(`Plugin "${pluginName}" stop() timed out after 30s`)),
+                PLUGIN_STOP_TIMEOUT_MS
+              )
+            ),
+          ]);
         } catch (stopErr) {
           log.warn(
             `Old plugin "${pluginName}" stop() failed: ${stopErr instanceof Error ? stopErr.message : stopErr}`
@@ -243,7 +253,15 @@ export class PluginWatcher {
       registry.replacePluginTools(pluginName, newTools);
 
       // 8. Start new plugin
-      await adapted.start?.(pluginContext);
+      await Promise.race([
+        adapted.start?.(pluginContext),
+        new Promise<never>((_, reject) =>
+          setTimeout(
+            () => reject(new Error(`Plugin "${pluginName}" start() timed out after 30s`)),
+            PLUGIN_START_TIMEOUT_MS
+          )
+        ),
+      ]);
 
       // 9. Update modules array
       if (oldIndex >= 0) {
@@ -267,7 +285,15 @@ export class PluginWatcher {
           }
           // Reopen plugin DB (stop() closed it)
           oldModule.migrate?.(pluginContext.db);
-          await oldModule.start?.(pluginContext);
+          await Promise.race([
+            oldModule.start?.(pluginContext),
+            new Promise<never>((_, reject) =>
+              setTimeout(
+                () => reject(new Error(`Plugin "${pluginName}" start() timed out after 30s`)),
+                PLUGIN_START_TIMEOUT_MS
+              )
+            ),
+          ]);
           log.warn(`Rolled back to previous version of "${pluginName}"`);
         } catch {
           log.error(`Rollback also failed for "${pluginName}" — plugin disabled`);

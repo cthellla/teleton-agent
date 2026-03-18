@@ -230,9 +230,8 @@ const _ToolRagObject = z.object({
     .array(z.string())
     .default([
       "telegram_send_message",
-      "telegram_reply_message",
+      "telegram_quote_reply",
       "telegram_send_photo",
-      "telegram_send_document",
       "journal_*",
       "workspace_*",
     ])

@@ -113,6 +113,9 @@ export const memoryReadExecutor: ToolExecutor<MemoryReadParams> = async (
 
     if (target === "daily") {
       // Read specific daily log
+      if (date !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+        return { success: false, error: "Invalid date format. Use YYYY-MM-DD." };
+      }
       const targetDate = date || formatDate(new Date());
       const logPath = join(MEMORY_DIR, `${targetDate}.md`);
 

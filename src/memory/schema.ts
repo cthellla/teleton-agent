@@ -224,16 +224,16 @@ export function ensureSchema(db: Database.Database): void {
     );
 
     -- FTS triggers for messages
-    CREATE TRIGGER IF NOT EXISTS tg_messages_fts_insert AFTER INSERT ON tg_messages BEGIN
+    CREATE TRIGGER IF NOT EXISTS tg_messages_fts_insert AFTER INSERT ON tg_messages WHEN new.text IS NOT NULL BEGIN
       INSERT INTO tg_messages_fts(rowid, text, id, chat_id, sender_id, timestamp)
       VALUES (new.rowid, new.text, new.id, new.chat_id, new.sender_id, new.timestamp);
     END;
 
-    CREATE TRIGGER IF NOT EXISTS tg_messages_fts_delete AFTER DELETE ON tg_messages BEGIN
+    CREATE TRIGGER IF NOT EXISTS tg_messages_fts_delete AFTER DELETE ON tg_messages WHEN old.text IS NOT NULL BEGIN
       DELETE FROM tg_messages_fts WHERE rowid = old.rowid;
     END;
 
-    CREATE TRIGGER IF NOT EXISTS tg_messages_fts_update AFTER UPDATE ON tg_messages BEGIN
+    CREATE TRIGGER IF NOT EXISTS tg_messages_fts_update AFTER UPDATE ON tg_messages WHEN old.text IS NOT NULL OR new.text IS NOT NULL BEGIN
       DELETE FROM tg_messages_fts WHERE rowid = old.rowid;
       INSERT INTO tg_messages_fts(rowid, text, id, chat_id, sender_id, timestamp)
       VALUES (new.rowid, new.text, new.id, new.chat_id, new.sender_id, new.timestamp);
@@ -356,7 +356,7 @@ export function setSchemaVersion(db: Database.Database, version: string): void {
   ).run(version);
 }
 
-export const CURRENT_SCHEMA_VERSION = "1.15.0";
+export const CURRENT_SCHEMA_VERSION = "1.16.0";
 
 export function runMigrations(db: Database.Database): void {
   const currentVersion = getSchemaVersion(db);
@@ -647,6 +647,35 @@ export function runMigrations(db: Database.Database): void {
       log.info("Migration 1.15.0 complete: user_hook_config table created");
     } catch (error) {
       log.error({ err: error }, "Migration 1.15.0 failed");
+      throw error;
+    }
+  }
+
+  if (!currentVersion || versionLessThan(currentVersion, "1.16.0")) {
+    log.info("Running migration 1.16.0: Fix tg_messages FTS triggers to skip NULL text rows");
+    try {
+      db.exec(`
+        DROP TRIGGER IF EXISTS tg_messages_fts_insert;
+        CREATE TRIGGER tg_messages_fts_insert AFTER INSERT ON tg_messages WHEN new.text IS NOT NULL BEGIN
+          INSERT INTO tg_messages_fts(rowid, text, id, chat_id, sender_id, timestamp)
+          VALUES (new.rowid, new.text, new.id, new.chat_id, new.sender_id, new.timestamp);
+        END;
+
+        DROP TRIGGER IF EXISTS tg_messages_fts_delete;
+        CREATE TRIGGER tg_messages_fts_delete AFTER DELETE ON tg_messages WHEN old.text IS NOT NULL BEGIN
+          DELETE FROM tg_messages_fts WHERE rowid = old.rowid;
+        END;
+
+        DROP TRIGGER IF EXISTS tg_messages_fts_update;
+        CREATE TRIGGER tg_messages_fts_update AFTER UPDATE ON tg_messages WHEN old.text IS NOT NULL OR new.text IS NOT NULL BEGIN
+          DELETE FROM tg_messages_fts WHERE rowid = old.rowid;
+          INSERT INTO tg_messages_fts(rowid, text, id, chat_id, sender_id, timestamp)
+          VALUES (new.rowid, new.text, new.id, new.chat_id, new.sender_id, new.timestamp);
+        END;
+      `);
+      log.info("Migration 1.16.0 complete: tg_messages FTS triggers updated");
+    } catch (error) {
+      log.error({ err: error }, "Migration 1.16.0 failed");
       throw error;
     }
   }

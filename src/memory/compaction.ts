@@ -313,15 +313,17 @@ export class CompactionManager {
   ): Promise<string | null> {
     const tokenCount = estimateContextTokens(context);
 
+    let flushed = false;
     if (shouldFlushMemory(context, this.config, tokenCount)) {
       flushMemoryToDailyLog(context);
+      flushed = true;
     }
 
     if (!shouldCompact(context, this.config, tokenCount)) {
       return null;
     }
 
-    if (this.config.memoryFlushEnabled) {
+    if (!flushed && this.config.memoryFlushEnabled) {
       flushMemoryToDailyLog(context);
     }
 

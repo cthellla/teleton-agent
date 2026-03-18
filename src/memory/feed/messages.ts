@@ -14,6 +14,12 @@ export interface TelegramMessage {
   timestamp: number;
 }
 
+export function pruneOldMessages(db: Database.Database, maxAgeDays = 90): number {
+  const cutoffMs = Date.now() - maxAgeDays * 86_400_000;
+  const result = db.prepare("DELETE FROM tg_messages WHERE timestamp < ?").run(cutoffMs);
+  return result.changes;
+}
+
 export class MessageStore {
   constructor(
     private db: Database.Database,
@@ -82,6 +88,12 @@ export class MessageStore {
         .prepare(`UPDATE tg_chats SET last_message_at = ?, last_message_id = ? WHERE id = ?`)
         .run(message.timestamp, message.id, message.chatId);
     })();
+  }
+
+  pruneOldMessages(maxAgeDays = 90): number {
+    const cutoffMs = Date.now() - maxAgeDays * 86_400_000;
+    const result = this.db.prepare("DELETE FROM tg_messages WHERE timestamp < ?").run(cutoffMs);
+    return result.changes;
   }
 
   getRecentMessages(chatId: string, limit: number = 20): TelegramMessage[] {

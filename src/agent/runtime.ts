@@ -647,7 +647,6 @@ export class AgentRuntime {
                 `🚫 Rate limited, retrying in ${delay}ms (attempt ${rateLimitRetries}/${RATE_LIMIT_MAX_RETRIES})...`
               );
               await new Promise((r) => setTimeout(r, delay));
-              iteration--;
               continue;
             }
             log.error(`🚫 Rate limited after ${RATE_LIMIT_MAX_RETRIES} retries: ${errorMsg}`);
@@ -670,7 +669,6 @@ export class AgentRuntime {
                 `🔄 Server error, retrying in ${delay}ms (attempt ${serverErrorRetries}/${SERVER_ERROR_MAX_RETRIES})...`
               );
               await new Promise((r) => setTimeout(r, delay));
-              iteration--;
               continue;
             }
             log.error(`🚨 Server error after ${SERVER_ERROR_MAX_RETRIES} retries: ${errorMsg}`);
@@ -838,7 +836,7 @@ export class AgentRuntime {
 
           totalToolCalls.push({
             name: block.name,
-            input: block.arguments,
+            input: plan.params,
           });
 
           const resultText = truncateToolResult(exec.result, MAX_TOOL_RESULT_SIZE);

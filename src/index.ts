@@ -25,6 +25,9 @@ import { readRawConfig, setNestedValue, writeRawConfig } from "./config/configur
 import { loadModules } from "./agent/tools/module-loader.js";
 import { ModulePermissions } from "./agent/tools/module-permissions.js";
 import { SHUTDOWN_TIMEOUT_MS } from "./constants/timeouts.js";
+
+const PLUGIN_START_TIMEOUT_MS = 30_000;
+const PLUGIN_STOP_TIMEOUT_MS = 30_000;
 import type { PluginModule, PluginContext } from "./agent/tools/types.js";
 import { PluginWatcher } from "./agent/tools/plugin-watcher.js";
 import {
@@ -490,6 +493,17 @@ ${blue}  ┌──────────────────────�
     const { pruneOldSessions } = await import("./session/store.js");
     pruneOldSessions(30);
 
+    // Prune old tg_messages (>90 days)
+    const { pruneOldMessages } = await import("./memory/feed/messages.js");
+    const prunedMessages = pruneOldMessages(getDatabase().getDb(), 90);
+    if (prunedMessages > 0) {
+      log.info(`Pruned ${prunedMessages} old tg_messages`);
+    }
+
+    // Cleanup old daily log files (>60 days)
+    const { cleanupOldDailyLogs } = await import("./memory/daily-logs.js");
+    cleanupOldDailyLogs(60);
+
     // Harden permissions on existing files (one-shot, idempotent)
     const { hardenExistingPermissions } = await import("./workspace/harden-permissions.js");
     hardenExistingPermissions();
@@ -633,14 +647,30 @@ ${blue}  ┌──────────────────────�
     const startedModules: typeof this.modules = [];
     try {
       for (const mod of this.modules) {
-        await mod.start?.(pluginContext);
+        await Promise.race([
+          mod.start?.(pluginContext),
+          new Promise<never>((_, reject) =>
+            setTimeout(
+              () => reject(new Error(`Plugin "${mod.name}" start() timed out after 30s`)),
+              PLUGIN_START_TIMEOUT_MS
+            )
+          ),
+        ]);
         startedModules.push(mod);
       }
     } catch (error) {
       log.error({ err: error }, "❌ Module start failed, cleaning up started modules");
       for (const mod of startedModules.reverse()) {
         try {
-          await mod.stop?.();
+          await Promise.race([
+            mod.stop?.(),
+            new Promise<never>((_, reject) =>
+              setTimeout(
+                () => reject(new Error(`Plugin "${mod.name}" stop() timed out after 30s`)),
+                PLUGIN_STOP_TIMEOUT_MS
+              )
+            ),
+          ]);
         } catch (e) {
           log.error({ err: e }, `⚠️ Module "${mod.name}" cleanup failed`);
         }
@@ -1357,7 +1387,15 @@ ${blue}  ┌──────────────────────�
 
     for (const mod of this.modules) {
       try {
-        await mod.stop?.();
+        await Promise.race([
+          mod.stop?.(),
+          new Promise<never>((_, reject) =>
+            setTimeout(
+              () => reject(new Error(`Plugin "${mod.name}" stop() timed out after 30s`)),
+              PLUGIN_STOP_TIMEOUT_MS
+            )
+          ),
+        ]);
       } catch (e) {
         log.error({ err: e }, `⚠️ Module "${mod.name}" stop failed`);
       }
