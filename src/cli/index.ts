@@ -120,9 +120,6 @@ program
         process.env.TELETON_JSON_CREDENTIALS = "true";
       }
 
-      const { checkForUpdate } = await import("./update-check.js");
-      await checkForUpdate(packageJson.version as string);
-
       await startApp(options.config);
     } catch (error) {
       console.error("Error:", getErrorMessage(error));
