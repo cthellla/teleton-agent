@@ -1,4 +1,3 @@
-import crypto from "node:crypto";
 import type { TelegramConfig, Config } from "../config/schema.js";
 import type { AgentRuntime } from "../agent/runtime.js";
 import type { TelegramBridge } from "./bridge.js";
@@ -379,7 +378,6 @@ export class MessageHandler {
 
     // Enqueue for serial processing — messages wait their turn per chat
     await this.chatQueue.enqueue(message.chatId, async () => {
-      const requestId = crypto.randomUUID().slice(0, 8);
       try {
         // Re-check offset after queue wait to prevent duplicate processing
         // (GramJS may fire duplicate NewMessage events during reconnection)
@@ -433,12 +431,11 @@ export class MessageHandler {
               if (transcribeResult.success && transcribeData?.text) {
                 transcriptionText = transcribeData.text as string;
                 log.info(
-                  { requestId },
                   `🎤 Auto-transcribed voice msg ${message.id}: "${transcriptionText?.substring(0, 80)}..."`
                 );
               }
             } catch (err) {
-              log.warn({ err, requestId }, `Failed to auto-transcribe voice message ${message.id}`);
+              log.warn({ err }, `Failed to auto-transcribe voice message ${message.id}`);
             }
           }
 
@@ -471,7 +468,6 @@ export class MessageHandler {
             mediaType: message.mediaType,
             messageId: message.id,
             replyContext,
-            requestId,
           });
 
           // 8. Handle response based on whether tools were used
@@ -482,7 +478,7 @@ export class MessageHandler {
             hasToolCalls && response.toolCalls?.some((tc) => TELEGRAM_SEND_TOOLS.has(tc.name));
 
           if (isSilentReply(response.content)) {
-            log.debug({ requestId }, "Silent reply suppressed");
+            log.debug("Silent reply suppressed");
           } else if (
             !telegramSendCalled &&
             response.content &&
@@ -531,9 +527,9 @@ export class MessageHandler {
           if (typingInterval) clearInterval(typingInterval);
         }
 
-        log.debug({ requestId }, `Processed message ${message.id} in chat ${message.chatId}`);
+        log.debug(`Processed message ${message.id} in chat ${message.chatId}`);
       } catch (error) {
-        log.error({ err: error, requestId }, "Error handling message");
+        log.error({ err: error }, "Error handling message");
       }
     });
   }
