@@ -249,6 +249,8 @@ export class GrammyBotBridge implements ITelegramBridge {
 
     for await (const chunk of textStream) {
       fullText += chunk;
+      // Don't stream silent tokens or heartbeat tokens as visible drafts
+      if (fullText.trim() === "__SILENT__" || fullText.trim() === "NO_ACTION") continue;
       const now = Date.now();
       if (now - lastDraftTime >= THROTTLE_MS && fullText.length > 0) {
         try {

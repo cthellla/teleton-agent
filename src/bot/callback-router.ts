@@ -53,10 +53,10 @@ export class CallbackRouter {
     // Single-use: delete after consumption
     this.nonceMap.delete(callbackData);
 
-    // Build synthetic TelegramMessage
+    // Build synthetic TelegramMessage — use the actual chat where the button was clicked
     return {
-      id: 0,
-      chatId: entry.chatId,
+      id: -(Date.now() % 2_147_483_647),
+      chatId,
       senderId: fromId,
       senderUsername: fromUsername,
       senderFirstName: fromFirstName,

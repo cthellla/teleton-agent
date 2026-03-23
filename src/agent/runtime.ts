@@ -1086,12 +1086,17 @@ export class AgentRuntime {
         await this.hookRunner.runObservingHook("response:after", responseAfterEvent);
       }
 
-      // Finalize streaming draft → send the real message
+      // Finalize streaming draft — clear bubble, send final message only if no send tool was used
       if (wasStreamed && opts.streamToChat) {
         const { isBotBridge } = await import("../telegram/bridge-guards.js");
         const bridge = opts.streamToChat.bridge;
         if (isBotBridge(bridge)) {
-          await bridge.finalizeDraft(opts.streamToChat.chatId, content);
+          if (usedTelegramSendTool) {
+            // Agent already sent via tool — just clear the draft bubble
+            await bridge.clearDraft(opts.streamToChat.chatId);
+          } else {
+            await bridge.finalizeDraft(opts.streamToChat.chatId, content);
+          }
         }
       }
 

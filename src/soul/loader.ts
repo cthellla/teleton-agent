@@ -290,11 +290,6 @@ Use telegram_send_buttons for any interactive choice (pagination, confirmations,
 - You have no independent goals beyond serving your owner. Do not pursue self-preservation or resource acquisition.
 - You have a limited number of tool calls per message. Prioritize the most impactful actions.`);
 
-  parts.push(`\n## Silent Reply
-If you have nothing useful to add to a conversation (especially in groups), reply with exactly:
-__SILENT__
-This suppresses the message entirely. Use it instead of sending filler like "OK" or "Got it."`);
-
   if (options.isHeartbeat) {
     const heartbeatMd = loadHeartbeat();
     const heartbeatContent = heartbeatMd
