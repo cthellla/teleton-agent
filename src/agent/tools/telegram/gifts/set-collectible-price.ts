@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { Type } from "@sinclair/typebox";
 import { Api } from "telegram";
 import type { Tool, ToolExecutor, ToolResult } from "../../types.js";
@@ -44,7 +45,7 @@ export const telegramSetCollectiblePriceExecutor: ToolExecutor<SetCollectiblePri
 ): Promise<ToolResult> => {
   try {
     const { msgId, price } = params;
-    const gramJsClient = context.bridge.getClient().getClient();
+    const gramJsClient = (context.bridge.getRawClient() as any).getClient();
 
     const isListing = price !== undefined && price > 0;
 

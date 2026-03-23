@@ -3,7 +3,10 @@ import type { PluginMessageEvent, PluginCallbackEvent } from "@teleton-agent/sdk
 import { loadConfig, getDefaultConfigPath } from "./config/index.js";
 import { loadSoul } from "./soul/index.js";
 import { AgentRuntime } from "./agent/runtime.js";
-import { TelegramBridge, type TelegramMessage } from "./telegram/bridge.js";
+import type { TelegramMessage } from "./telegram/bridge.js";
+import type { ITelegramBridge } from "./telegram/bridge-interface.js";
+import { isBotBridge, isUserBridge } from "./telegram/bridge-guards.js";
+import { createBridge } from "./telegram/factory.js";
 import { MessageHandler } from "./telegram/handlers.js";
 import { AdminHandler } from "./telegram/admin.js";
 import { MessageDebouncer } from "./telegram/debounce.js";
@@ -12,15 +15,14 @@ import { getWalletAddress } from "./ton/wallet-service.js";
 import { setTonapiKey } from "./constants/api-endpoints.js";
 import { setToncenterApiKey } from "./ton/endpoint.js";
 import { TELETON_ROOT } from "./workspace/paths.js";
-import { TELEGRAM_CONNECTION_RETRIES, TELEGRAM_FLOOD_SLEEP_THRESHOLD } from "./constants/limits.js";
 import { join } from "path";
 import { ToolRegistry } from "./agent/tools/registry.js";
 import { registerAllTools } from "./agent/tools/register-all.js";
-import { loadEnhancedPlugins, type PluginModuleWithHooks } from "./agent/tools/plugin-loader.js";
+import { type PluginModuleWithHooks } from "./agent/tools/plugin-loader.js";
 import type { HookName, AgentStartEvent, AgentStopEvent } from "./sdk/hooks/types.js";
 import { createHookRunner } from "./sdk/hooks/runner.js";
 import type { SDKDependencies } from "./sdk/index.js";
-import { getProviderMetadata, type SupportedProvider } from "./config/providers.js";
+import type { SupportedProvider } from "./config/providers.js";
 import { readRawConfig, setNestedValue, writeRawConfig } from "./config/configurable-keys.js";
 import { loadModules } from "./agent/tools/module-loader.js";
 import { ModulePermissions } from "./agent/tools/module-permissions.js";
@@ -30,37 +32,34 @@ const PLUGIN_START_TIMEOUT_MS = 30_000;
 const PLUGIN_STOP_TIMEOUT_MS = 30_000;
 import type { PluginModule, PluginContext } from "./agent/tools/types.js";
 import { PluginWatcher } from "./agent/tools/plugin-watcher.js";
-import {
-  loadMcpServers,
-  registerMcpTools,
-  closeMcpServers,
-  type McpConnection,
-} from "./agent/tools/mcp-loader.js";
+import { loadMcpServers, closeMcpServers, type McpConnection } from "./agent/tools/mcp-loader.js";
 import { getErrorMessage } from "./utils/errors.js";
-import { isHeartbeatOk, isSilentReply } from "./constants/tokens.js";
 import { UserHookEvaluator } from "./agent/hooks/user-hook-evaluator.js";
 import { createLogger, initLoggerFromConfig } from "./utils/logger.js";
 import { AgentLifecycle } from "./agent/lifecycle.js";
 import { InlineRouter } from "./bot/inline-router.js";
 import { PluginRateLimiter } from "./bot/rate-limiter.js";
 import { setBotPreMiddleware, getDealBot } from "./deals/module.js";
-import type { TaskDependencyResolver } from "./telegram/task-dependency-resolver.js";
 import type { WebUIServer } from "./webui/server.js";
 import type { ApiServer } from "./api/server.js";
+import { HeartbeatRunner } from "./heartbeat.js";
+import { StartupMaintenance } from "./startup-maintenance.js";
+import { ScheduledTaskHandler } from "./scheduled-tasks.js";
+import { PluginOrchestrator } from "./plugin-orchestrator.js";
 
 const log = createLogger("App");
 
 export class TeletonApp {
   private config;
   private agent: AgentRuntime;
-  private bridge: TelegramBridge;
+  private bridge: ITelegramBridge;
   private messageHandler: MessageHandler;
   private adminHandler: AdminHandler;
   private debouncer: MessageDebouncer | null = null;
   private toolCount: number = 0;
   private toolRegistry: ToolRegistry;
-  private dependencyResolver: TaskDependencyResolver | null = null;
   private modules: PluginModule[] = [];
+  private builtinModuleCount: number = 0;
   private memory: MemorySystem;
   private sdkDeps: SDKDependencies;
   private webuiServer: WebUIServer | null = null;
@@ -74,8 +73,8 @@ export class TeletonApp {
   private userHookEvaluator: UserHookEvaluator | null = null;
   private startTime: number = 0;
   private messagesProcessed: number = 0;
-  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
-  private heartbeatRunning = false;
+  private heartbeatRunner: HeartbeatRunner;
+  private scheduledTaskHandler: ScheduledTaskHandler;
 
   private configPath: string;
 
@@ -152,20 +151,14 @@ export class TeletonApp {
 
     const soul = loadSoul();
 
-    this.toolRegistry = new ToolRegistry();
+    this.toolRegistry = new ToolRegistry(this.config.telegram.mode);
     registerAllTools(this.toolRegistry);
 
     this.agent = new AgentRuntime(this.config, soul, this.toolRegistry);
 
-    this.bridge = new TelegramBridge({
-      apiId: this.config.telegram.api_id,
-      apiHash: this.config.telegram.api_hash,
-      phone: this.config.telegram.phone,
-      sessionPath: join(TELETON_ROOT, "telegram_session.txt"),
-      connectionRetries: TELEGRAM_CONNECTION_RETRIES,
-      autoReconnect: true,
-      floodSleepThreshold: TELEGRAM_FLOOD_SLEEP_THRESHOLD,
-    });
+    this.bridge = createBridge(this.config);
+    this.heartbeatRunner = new HeartbeatRunner(this.agent, this.bridge, this.config);
+    this.scheduledTaskHandler = new ScheduledTaskHandler(this.agent, this.bridge, this.config);
 
     const embeddingProvider = this.config.embedding.provider;
     this.memory = initializeMemory({
@@ -190,6 +183,7 @@ export class TeletonApp {
     this.sdkDeps = { bridge: this.bridge };
 
     this.modules = loadModules(this.toolRegistry, this.config, db);
+    this.builtinModuleCount = this.modules.length;
 
     const modulePermissions = new ModulePermissions(db);
     this.toolRegistry.setPermissions(modulePermissions);
@@ -227,7 +221,7 @@ export class TeletonApp {
     return this.agent;
   }
 
-  getBridge(): TelegramBridge {
+  getBridge(): ITelegramBridge {
     return this.bridge;
   }
 
@@ -339,165 +333,44 @@ ${blue}  ┌──────────────────────�
    * Called by lifecycle.start() — do NOT call directly.
    */
   private async startAgent(): Promise<void> {
-    // Load modules
+    // Truncate stale external plugins from previous run (keep builtins only)
+    this.modules.length = this.builtinModuleCount;
+
+    const builtinNames = this.modules.map((m) => m.name);
     const moduleNames = this.modules
       .filter((m) => m.tools(this.config).length > 0)
       .map((m) => m.name);
 
-    // Load enhanced plugins from ~/.teleton/plugins/
-    const builtinNames = this.modules.map((m) => m.name);
-    const { modules: externalModules, hookRegistry } = await loadEnhancedPlugins(
+    // Load plugins, MCP servers, and configure tool registry
+    this.mcpConnections =
+      Object.keys(this.config.mcp.servers).length > 0 ? await loadMcpServers(this.config.mcp) : [];
+    const orchestrator = new PluginOrchestrator(
+      this.toolRegistry,
       this.config,
-      builtinNames,
       this.sdkDeps,
-      getDatabase().getDb()
+      this.memory.embedder
     );
-    let pluginToolCount = 0;
-    const pluginNames: string[] = [];
-    for (const mod of externalModules) {
-      try {
-        mod.configure?.(this.config);
-        mod.migrate?.(getDatabase().getDb());
-        const tools = mod.tools(this.config);
-        if (tools.length > 0) {
-          pluginToolCount += this.toolRegistry.registerPluginTools(mod.name, tools);
-          pluginNames.push(mod.name);
-        }
-        this.modules.push(mod);
-      } catch (error) {
-        log.error(
-          `❌ Plugin "${mod.name}" failed to load: ${error instanceof Error ? error.message : error}`
-        );
-      }
-    }
-    if (pluginToolCount > 0) {
-      this.toolCount = this.toolRegistry.count;
+    const {
+      pluginNames,
+      pluginToolCount,
+      mcpServerNames: _mcpServerNames,
+      hookRegistry,
+      externalModules,
+      toolCount,
+    } = await orchestrator.loadAll(builtinNames, moduleNames, this.mcpConnections);
+    for (const mod of externalModules) this.modules.push(mod);
+    if (pluginToolCount > 0 || toolCount !== this.toolCount) {
+      this.toolCount = toolCount;
     }
 
-    // Load MCP servers
-    const mcpServerNames: string[] = [];
-    if (Object.keys(this.config.mcp.servers).length > 0) {
-      this.mcpConnections = await loadMcpServers(this.config.mcp);
-      if (this.mcpConnections.length > 0) {
-        const mcp = await registerMcpTools(this.mcpConnections, this.toolRegistry);
-        if (mcp.count > 0) {
-          this.toolCount = this.toolRegistry.count;
-          mcpServerNames.push(...mcp.names);
-          log.info(
-            `🔌 MCP: ${mcp.count} tools from ${mcp.names.length} server(s) (${mcp.names.join(", ")})`
-          );
-        }
-      }
-    }
-
-    // Initialize tool config from database
-    this.toolRegistry.loadConfigFromDB(getDatabase().getDb());
-
-    // Initialize Tool RAG index
-    if (this.config.tool_rag.enabled) {
-      const { ToolIndex } = await import("./agent/tools/tool-index.js");
-      const toolIndex = new ToolIndex(
-        getDatabase().getDb(),
-        this.memory.embedder,
-        getDatabase().isVectorSearchReady(),
-        {
-          topK: this.config.tool_rag.top_k,
-          alwaysInclude: this.config.tool_rag.always_include,
-          skipUnlimitedProviders: this.config.tool_rag.skip_unlimited_providers,
-        }
-      );
-      toolIndex.ensureSchema();
-      this.toolRegistry.setToolIndex(toolIndex);
-
-      // Re-index callback for hot-reload plugins
-      // eslint-disable-next-line @typescript-eslint/no-misused-promises -- callback is fire-and-forget
-      this.toolRegistry.onToolsChanged(async (removed, added) => {
-        await toolIndex.reindexTools(removed, added);
-      });
-    }
-
-    // Provider info and tool limit check
-    const provider = (this.config.agent.provider || "anthropic") as SupportedProvider;
-    const providerMeta = getProviderMetadata(provider);
-    const allNames = [...moduleNames, ...pluginNames, ...mcpServerNames];
-    log.info(
-      `🔌 ${this.toolCount} tools loaded (${allNames.join(", ")})${pluginToolCount > 0 ? ` — ${pluginToolCount} from plugins` : ""}`
+    // Startup maintenance (migrations, prune, indexing, warmup)
+    const maintenance = new StartupMaintenance(
+      getDatabase().getDb(),
+      this.config,
+      this.configPath,
+      { embedder: this.memory.embedder, knowledge: this.memory.knowledge }
     );
-    if (providerMeta.toolLimit !== null && this.toolCount > providerMeta.toolLimit) {
-      log.warn(
-        `⚠️ Tool count (${this.toolCount}) exceeds ${providerMeta.displayName} limit (${providerMeta.toolLimit})`
-      );
-    }
-
-    // Migrate sessions from JSON to SQLite (one-time)
-    const { migrateSessionsToDb } = await import("./session/migrate.js");
-    migrateSessionsToDb();
-
-    // Cleanup old transcript files (>30 days)
-    const { cleanupOldTranscripts } = await import("./session/transcript.js");
-    cleanupOldTranscripts(30);
-
-    // Prune old sessions (>30 days)
-    const { pruneOldSessions } = await import("./session/store.js");
-    pruneOldSessions(30);
-
-    // Prune old tg_messages (>90 days)
-    const { pruneOldMessages } = await import("./memory/feed/messages.js");
-    const prunedMessages = pruneOldMessages(getDatabase().getDb(), 90);
-    if (prunedMessages > 0) {
-      log.info(`Pruned ${prunedMessages} old tg_messages`);
-    }
-
-    // Cleanup old daily log files (>60 days)
-    const { cleanupOldDailyLogs } = await import("./memory/daily-logs.js");
-    cleanupOldDailyLogs(60);
-
-    // Harden permissions on existing files (one-shot, idempotent)
-    const { hardenExistingPermissions } = await import("./workspace/harden-permissions.js");
-    hardenExistingPermissions();
-
-    // Ensure heartbeat config exists in YAML (so users can see/edit it)
-    {
-      const raw = readRawConfig(this.configPath);
-      if (raw && !raw.heartbeat) {
-        raw.heartbeat = {
-          enabled: this.config.heartbeat.enabled,
-          interval_ms: this.config.heartbeat.interval_ms,
-          self_configurable: this.config.heartbeat.self_configurable,
-        };
-        writeRawConfig(raw, this.configPath);
-        log.info("Config: heartbeat section added to config.yaml");
-      }
-    }
-
-    // Warmup embedding model (pre-download at startup, not on first message)
-    if (this.memory.embedder.warmup) {
-      await this.memory.embedder.warmup();
-    }
-
-    // Index knowledge base (MEMORY.md, memory/*.md)
-    // Force re-index if embedding dimensions changed (model switch)
-    const db = getDatabase();
-    const forceReindex = db.didDimensionsChange();
-    const indexResult = await this.memory.knowledge.indexAll({ force: forceReindex });
-    let ftsResult = { knowledge: 0, messages: 0 };
-    if (indexResult.indexed > 0) {
-      ftsResult = db.rebuildFtsIndexes();
-    }
-
-    // Consolidate old session memory files (non-blocking — runs after startup)
-    import("./session/memory-hook.js")
-      .then(({ consolidateOldMemoryFiles }) =>
-        consolidateOldMemoryFiles({
-          apiKey: this.config.agent.api_key,
-          provider: this.config.agent.provider as SupportedProvider,
-          utilityModel: this.config.agent.utility_model,
-        })
-      )
-      .then((r) => {
-        if (r.consolidated > 0) log.info(`Consolidated ${r.consolidated} old session memory files`);
-      })
-      .catch((error) => log.warn({ err: error }, "Memory consolidation skipped"));
+    const { indexResult, ftsResult } = await maintenance.run();
 
     // Index tools for Tool RAG
     const toolIndex = this.toolRegistry.getToolIndex();
@@ -508,9 +381,227 @@ ${blue}  ┌──────────────────────�
     }
 
     // Initialize context builder for RAG search in agent
-    this.agent.initializeContextBuilder(this.memory.embedder, db.isVectorSearchReady());
+    this.agent.initializeContextBuilder(this.memory.embedder, getDatabase().isVectorSearchReady());
 
-    // Cocoon Network — register models from external cocoon-cli proxy
+    // Register provider-specific models (Cocoon / local LLM)
+    await this.initializeProviders();
+
+    // Connect to Telegram
+    await this.bridge.connect();
+    if (!this.bridge.isAvailable()) {
+      throw new Error("Failed to connect to Telegram");
+    }
+    await this.resolveOwnerInfo();
+    const ownUserId = this.bridge.getOwnUserId();
+    if (ownUserId) {
+      this.messageHandler.setOwnUserId(ownUserId.toString());
+    }
+
+    const username = await this.bridge.getUsername();
+    const walletAddress = getWalletAddress();
+
+    // Set up inline router and rate limiter
+    const inlineRouter = new InlineRouter();
+    const rateLimiter = new PluginRateLimiter();
+
+    // User mode: install DealBot middleware before modules start
+    if (isUserBridge(this.bridge)) {
+      setBotPreMiddleware(inlineRouter.middleware());
+    }
+
+    // Start module background jobs (after bridge connect)
+    const pluginContext = await this.startModules();
+
+    // Wire mode-specific SDK deps, handlers, and polling
+    const firstStart = !this.messageHandlersRegistered;
+    if (isBotBridge(this.bridge)) {
+      this.wireBotMode(inlineRouter, rateLimiter, firstStart);
+    } else {
+      this.wireUserMode(inlineRouter, rateLimiter, firstStart);
+    }
+
+    // Create hook runner if any plugins registered hooks
+    if (hookRegistry.hasAnyHooks()) {
+      const hookRunner = createHookRunner(hookRegistry, { logger: log });
+      this.agent.setHookRunner(hookRunner);
+      this.hookRunner = hookRunner;
+      const activeHooks: HookName[] = [
+        "tool:before",
+        "tool:after",
+        "tool:error",
+        "prompt:before",
+        "prompt:after",
+        "session:start",
+        "session:end",
+        "message:receive",
+        "response:before",
+        "response:after",
+        "response:error",
+        "agent:start",
+        "agent:stop",
+      ];
+      const active = activeHooks.filter((n) => hookRegistry.hasHooks(n));
+      log.info(`🪝 Hook runner created (${active.join(", ")})`);
+    }
+
+    this.wirePluginEventHooks();
+
+    // Start plugin hot-reload watcher (dev mode)
+    if (this.config.dev.hot_reload) {
+      this.pluginWatcher = new PluginWatcher({
+        config: this.config,
+        registry: this.toolRegistry,
+        sdkDeps: this.sdkDeps,
+        modules: this.modules,
+        pluginContext,
+        loadedModuleNames: builtinNames,
+      });
+      this.pluginWatcher.start();
+    }
+
+    // Display startup summary
+    const provider = (this.config.agent.provider || "anthropic") as SupportedProvider;
+    log.info(`SOUL.md loaded`);
+    log.info(`Knowledge: ${indexResult.indexed} files, ${ftsResult.knowledge} chunks indexed`);
+    log.info(`Telegram: @${username} connected`);
+    log.info(`TON Blockchain: connected`);
+    if (this.config.tonapi_key) {
+      log.info(`TonAPI key configured`);
+    }
+    log.info(`DEXs: STON.fi, DeDust connected`);
+    log.info(`Wallet: ${walletAddress || "not configured"}`);
+    log.info(`Model: ${provider}/${this.config.agent.model}`);
+    log.info(`Admins: ${this.config.telegram.admin_ids.join(", ")}`);
+    log.info(
+      `Policy: DM ${this.config.telegram.dm_policy}, Groups ${this.config.telegram.group_policy}, Debounce ${this.config.telegram.debounce_ms}ms\n`
+    );
+    log.info("Teleton Agent is running! Press Ctrl+C to stop.");
+
+    // Hook: agent:start
+    this.startTime = Date.now();
+    this.messagesProcessed = 0;
+    if (this.hookRunner) {
+      let version = "0.0.0";
+      try {
+        const { createRequire } = await import("module");
+        const req = createRequire(import.meta.url);
+        version = (req("../package.json") as { version: string }).version;
+      } catch {
+        /* ignore */
+      }
+      const agentStartEvent: AgentStartEvent = {
+        version,
+        provider,
+        model: this.config.agent.model,
+        pluginCount: pluginNames.length,
+        toolCount: this.toolCount,
+        timestamp: Date.now(),
+      };
+      await this.hookRunner.runObservingHook("agent:start", agentStartEvent);
+    }
+
+    // Start heartbeat timer if enabled
+    if (this.config.heartbeat.enabled) {
+      const adminChatId = this.config.telegram.admin_ids[0];
+      if (adminChatId) {
+        this.heartbeatRunner.start(adminChatId, this.config.heartbeat.interval_ms);
+      }
+    }
+
+    // Initialize message debouncer
+    this.debouncer = new MessageDebouncer(
+      { debounceMs: this.config.telegram.debounce_ms },
+      (msg) => {
+        if (!msg.isGroup) return false;
+        if (msg.text.startsWith("/")) {
+          const adminCmd = this.adminHandler.parseCommand(msg.text);
+          if (adminCmd && this.adminHandler.isAdmin(msg.senderId)) return false;
+        }
+        return true;
+      },
+      async (messages) => {
+        for (const message of messages) {
+          await this.handleSingleMessage(message);
+        }
+      },
+      (error, messages) => {
+        log.error({ err: error }, `Error processing batch of ${messages.length} messages`);
+      }
+    );
+
+    // Register common message handler ONCE (survive agent restart via WebUI)
+    if (!this.messageHandlersRegistered) {
+      this.bridge.onNewMessage(async (message) => {
+        try {
+          // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- debouncer always initialized before handlers register
+          await this.debouncer!.enqueue(message);
+        } catch (error) {
+          log.error({ err: error }, "Error enqueueing message");
+        }
+      });
+      this.messageHandlersRegistered = true;
+    }
+  }
+
+  // ─── Mode-specific wiring ──────────────────────────────────────────────
+
+  /**
+   * Wire bot-mode SDK deps, callback handler, and Grammy polling.
+   */
+  private wireBotMode(
+    inlineRouter: InlineRouter,
+    rateLimiter: PluginRateLimiter,
+    firstStart: boolean
+  ): void {
+    this.sdkDeps.inlineRouter = inlineRouter;
+    this.sdkDeps.gramjsBot = null;
+    this.sdkDeps.rateLimiter = rateLimiter;
+    log.info("Bot mode: using main Grammy bridge (no DealBot)");
+
+    if (firstStart && isBotBridge(this.bridge)) {
+      this.bridge.setCallbackHandler((msg) => {
+        // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- debouncer initialized before wireBotMode
+        void this.debouncer!.enqueue(msg);
+      });
+      this.bridge.startPolling();
+      void this.bridge.syncCommands();
+    }
+  }
+
+  /**
+   * Wire user-mode SDK deps from DealBot and register service message handler.
+   */
+  private wireUserMode(
+    inlineRouter: InlineRouter,
+    rateLimiter: PluginRateLimiter,
+    firstStart: boolean
+  ): void {
+    const activeDealBot = getDealBot();
+    if (activeDealBot) {
+      this.sdkDeps.inlineRouter = inlineRouter;
+      this.sdkDeps.gramjsBot = activeDealBot.getGramJSBot();
+      this.sdkDeps.grammyBot = activeDealBot.getBot();
+      this.sdkDeps.rateLimiter = rateLimiter;
+      inlineRouter.setGramJSBot(activeDealBot.getGramJSBot());
+      log.info("Bot SDK: inline router installed");
+    }
+
+    if (firstStart && isUserBridge(this.bridge)) {
+      this.bridge.onServiceMessage(async (message) => {
+        try {
+          // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- debouncer always initialized before handlers register
+          await this.debouncer!.enqueue(message);
+        } catch (error) {
+          log.error({ err: error }, "Error enqueueing service message");
+        }
+      });
+    }
+  }
+
+  /**
+   * Register provider-specific models (Cocoon Network / local LLM).
+   */
+  private async initializeProviders(): Promise<void> {
     if (this.config.agent.provider === "cocoon") {
       try {
         const { registerCocoonModels } = await import("./agent/client.js");
@@ -529,7 +620,6 @@ ${blue}  ┌──────────────────────�
       }
     }
 
-    // Local LLM — register models from OpenAI-compatible server
     if (this.config.agent.provider === "local" && !this.config.agent.base_url) {
       throw new Error(
         "Local provider requires base_url in config (e.g. http://localhost:11434/v1)"
@@ -556,35 +646,12 @@ ${blue}  ┌──────────────────────�
         throw new Error(`Local LLM server unavailable: ${getErrorMessage(error)}`);
       }
     }
+  }
 
-    // Connect to Telegram
-    await this.bridge.connect();
-
-    if (!this.bridge.isAvailable()) {
-      throw new Error("Failed to connect to Telegram");
-    }
-
-    // Resolve owner name/username from Telegram if not already set
-    await this.resolveOwnerInfo();
-
-    // Set own user ID in handler after connection
-    const ownUserId = this.bridge.getOwnUserId();
-    if (ownUserId) {
-      this.messageHandler.setOwnUserId(ownUserId.toString());
-    }
-
-    const username = await this.bridge.getUsername();
-    const walletAddress = getWalletAddress();
-
-    // Set up inline router for plugin bot SDK (before modules start)
-    const inlineRouter = new InlineRouter();
-    const rateLimiter = new PluginRateLimiter();
-
-    // Install router middleware on the DealBot's Grammy instance
-    // setBotPreMiddleware must be called BEFORE deals module start()
-    setBotPreMiddleware(inlineRouter.middleware());
-
-    // Start module background jobs (after bridge connect — deals needs bridge)
+  /**
+   * Start module background jobs with timeout. Skips deals module in bot mode.
+   */
+  private async startModules(): Promise<PluginContext> {
     const moduleDb = getDatabase().getDb();
     const pluginContext: PluginContext = {
       bridge: this.bridge,
@@ -594,6 +661,10 @@ ${blue}  ┌──────────────────────�
     const startedModules: typeof this.modules = [];
     try {
       for (const mod of this.modules) {
+        if (isBotBridge(this.bridge) && mod.name === "deals") {
+          log.info("Bot mode: skipping deals module (uses separate Grammy polling)");
+          continue;
+        }
         await Promise.race([
           mod.start?.(pluginContext),
           new Promise<never>((_, reject) =>
@@ -624,167 +695,7 @@ ${blue}  ┌──────────────────────�
       }
       throw error;
     }
-
-    // Wire bot references into SDK deps (after DealBot has started)
-    const activeDealBot = getDealBot();
-    if (activeDealBot) {
-      this.sdkDeps.inlineRouter = inlineRouter;
-      this.sdkDeps.gramjsBot = activeDealBot.getGramJSBot();
-      this.sdkDeps.grammyBot = activeDealBot.getBot();
-      this.sdkDeps.rateLimiter = rateLimiter;
-      inlineRouter.setGramJSBot(activeDealBot.getGramJSBot());
-      log.info("Bot SDK: inline router installed");
-    }
-
-    // Create hook runner if any plugins registered hooks
-    if (hookRegistry.hasAnyHooks()) {
-      const hookRunner = createHookRunner(hookRegistry, { logger: log });
-      this.agent.setHookRunner(hookRunner);
-      this.hookRunner = hookRunner;
-
-      const activeHooks: HookName[] = [
-        "tool:before",
-        "tool:after",
-        "tool:error",
-        "prompt:before",
-        "prompt:after",
-        "session:start",
-        "session:end",
-        "message:receive",
-        "response:before",
-        "response:after",
-        "response:error",
-        "agent:start",
-        "agent:stop",
-      ];
-      const active = activeHooks.filter((n) => hookRegistry.hasHooks(n));
-      log.info(`🪝 Hook runner created (${active.join(", ")})`);
-    }
-
-    // Collect plugin event hooks and wire them up
-    this.wirePluginEventHooks();
-
-    // Start plugin hot-reload watcher (dev mode)
-    if (this.config.dev.hot_reload) {
-      this.pluginWatcher = new PluginWatcher({
-        config: this.config,
-        registry: this.toolRegistry,
-        sdkDeps: this.sdkDeps,
-        modules: this.modules,
-        pluginContext,
-        loadedModuleNames: builtinNames,
-      });
-      this.pluginWatcher.start();
-    }
-
-    // Display startup summary
-    log.info(`SOUL.md loaded`);
-    log.info(`Knowledge: ${indexResult.indexed} files, ${ftsResult.knowledge} chunks indexed`);
-    log.info(`Telegram: @${username} connected`);
-    log.info(`TON Blockchain: connected`);
-    if (this.config.tonapi_key) {
-      log.info(`TonAPI key configured`);
-    }
-    log.info(`DEXs: STON.fi, DeDust connected`);
-    log.info(`Wallet: ${walletAddress || "not configured"}`);
-    log.info(`Model: ${provider}/${this.config.agent.model}`);
-    log.info(`Admins: ${this.config.telegram.admin_ids.join(", ")}`);
-    log.info(
-      `Policy: DM ${this.config.telegram.dm_policy}, Groups ${this.config.telegram.group_policy}, Debounce ${this.config.telegram.debounce_ms}ms\n`
-    );
-
-    log.info("Teleton Agent is running! Press Ctrl+C to stop.");
-
-    // Hook: agent:start
-    this.startTime = Date.now();
-    this.messagesProcessed = 0;
-    if (this.hookRunner) {
-      let version = "0.0.0";
-      try {
-        const { createRequire } = await import("module");
-        const req = createRequire(import.meta.url);
-        version = (req("../package.json") as { version: string }).version;
-      } catch {
-        /* ignore */
-      }
-      const agentStartEvent: AgentStartEvent = {
-        version,
-        provider: provider,
-        model: this.config.agent.model,
-        pluginCount: pluginNames.length,
-        toolCount: this.toolCount,
-        timestamp: Date.now(),
-      };
-      await this.hookRunner.runObservingHook("agent:start", agentStartEvent);
-    }
-
-    // Start heartbeat timer if enabled
-    if (this.config.heartbeat.enabled) {
-      const hbInterval = this.config.heartbeat.interval_ms;
-      const adminChatId = this.config.telegram.admin_ids[0];
-      if (adminChatId) {
-        this.heartbeatTimer = setInterval(() => {
-          void this.runHeartbeat();
-        }, hbInterval);
-        this.heartbeatTimer.unref();
-        log.info(
-          `Heartbeat enabled: every ${Math.round(hbInterval / 60000)}min → admin ${adminChatId}`
-        );
-      }
-    }
-
-    // Initialize message debouncer with bypass logic
-    this.debouncer = new MessageDebouncer(
-      {
-        debounceMs: this.config.telegram.debounce_ms,
-      },
-      (msg) => {
-        // Bypass debounce for DMs (only debounce groups)
-        if (!msg.isGroup) return false;
-
-        // Bypass debounce for admin commands (priority processing)
-        if (msg.text.startsWith("/")) {
-          const adminCmd = this.adminHandler.parseCommand(msg.text);
-          if (adminCmd && this.adminHandler.isAdmin(msg.senderId)) {
-            return false;
-          }
-        }
-
-        return true;
-      },
-      async (messages) => {
-        // Process each message one by one (preserves full context for each)
-        for (const message of messages) {
-          await this.handleSingleMessage(message);
-        }
-      },
-      (error, messages) => {
-        log.error({ err: error }, `Error processing batch of ${messages.length} messages`);
-      }
-    );
-
-    // Register GramJS event handlers ONCE (survive agent restart via WebUI)
-    if (!this.messageHandlersRegistered) {
-      this.bridge.onNewMessage(async (message) => {
-        try {
-          // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- debouncer always initialized before handlers register
-          await this.debouncer!.enqueue(message);
-        } catch (error) {
-          log.error({ err: error }, "Error enqueueing message");
-        }
-      });
-
-      this.bridge.onServiceMessage(async (message) => {
-        try {
-          // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- debouncer always initialized before handlers register
-          await this.debouncer!.enqueue(message);
-        } catch (error) {
-          log.error({ err: error }, "Error enqueueing service message");
-        }
-      });
-
-      this.messageHandlersRegistered = true;
-    }
+    return pluginContext;
   }
 
   /**
@@ -803,6 +714,7 @@ ${blue}  ┌──────────────────────�
         return;
       }
 
+      if (!isUserBridge(this.bridge)) return;
       const entity = await this.bridge.getClient().getEntity(String(this.config.telegram.owner_id));
 
       // Check that the entity is a User (has firstName)
@@ -863,7 +775,7 @@ ${blue}  ┌──────────────────────�
         message.senderId === Number(ownUserId) &&
         message.text.startsWith("[TASK:")
       ) {
-        await this.handleScheduledTask(message);
+        await this.scheduledTaskHandler.execute(message);
         return;
       }
 
@@ -935,138 +847,6 @@ ${blue}  ┌──────────────────────�
   }
 
   /**
-   * Handle scheduled task message
-   */
-  private async handleScheduledTask(message: TelegramMessage): Promise<void> {
-    // Hoist all dynamic imports to top of function
-    const { getTaskStore } = await import("./memory/agent/tasks.js");
-    const { executeScheduledTask } = await import("./telegram/task-executor.js");
-    const { TaskDependencyResolver } = await import("./telegram/task-dependency-resolver.js");
-    const { getDatabase } = await import("./memory/index.js");
-
-    const db = getDatabase().getDb();
-    const taskStore = getTaskStore(db);
-
-    // Extract task ID from format: [TASK:uuid] description
-    const match = message.text.match(/^\[TASK:([^\]]+)\]/);
-    if (!match) {
-      log.warn(`Invalid task format: ${message.text}`);
-      return;
-    }
-
-    const taskId = match[1];
-
-    try {
-      const task = taskStore.getTask(taskId);
-
-      if (!task) {
-        log.warn(`Task ${taskId} not found in database`);
-        await this.bridge.sendMessage({
-          chatId: message.chatId,
-          text: `⚠️ Task ${taskId} not found. It may have been deleted.`,
-          replyToId: message.id,
-        });
-        return;
-      }
-
-      // Skip cancelled tasks (e.g. cancelled via WebUI or admin)
-      if (task.status === "cancelled" || task.status === "done" || task.status === "failed") {
-        log.info(`Task ${taskId} already ${task.status}, skipping`);
-        return;
-      }
-
-      // Check if all dependencies are satisfied
-      if (!taskStore.canExecute(taskId)) {
-        log.warn(`Task ${taskId} cannot execute yet - dependencies not satisfied`);
-        await this.bridge.sendMessage({
-          chatId: message.chatId,
-          text: `⏳ Task "${task.description}" is waiting for parent tasks to complete.`,
-          replyToId: message.id,
-        });
-        return;
-      }
-
-      // Mark task as in_progress
-      taskStore.startTask(taskId);
-
-      // Get parent task results for context
-      const parentResults = taskStore.getParentResults(taskId);
-
-      // Build tool context
-      const toolContext = {
-        bridge: this.bridge,
-        db,
-        chatId: message.chatId,
-        isGroup: message.isGroup,
-        senderId: message.senderId,
-        config: this.config,
-      };
-
-      // Get tool registry from agent runtime
-      const toolRegistry = this.agent.getToolRegistry();
-
-      // Execute task and get prompt for agent (with parent context)
-      const agentPrompt = await executeScheduledTask(
-        task,
-        this.agent,
-        toolContext,
-        toolRegistry,
-        parentResults
-      );
-
-      // Feed prompt to agent (agent loop with full context)
-      const response = await this.agent.processMessage({
-        chatId: message.chatId,
-        userMessage: agentPrompt,
-        userName: "self-scheduled-task",
-        timestamp: message.timestamp.getTime(),
-        isGroup: false,
-        toolContext,
-        messageId: message.id,
-      });
-
-      // Send agent response
-      if (response.content && response.content.trim().length > 0) {
-        await this.bridge.sendMessage({
-          chatId: message.chatId,
-          text: response.content,
-          replyToId: message.id,
-        });
-      }
-
-      // Mark task as done if agent responded successfully
-      taskStore.completeTask(taskId, response.content);
-
-      log.info(`Executed scheduled task ${taskId}: ${task.description}`);
-
-      // Initialize dependency resolver if needed
-      if (!this.dependencyResolver) {
-        this.dependencyResolver = new TaskDependencyResolver(taskStore, this.bridge);
-      }
-
-      // Trigger any dependent tasks
-      await this.dependencyResolver.onTaskComplete(taskId);
-    } catch (error) {
-      log.error({ err: error }, "Error handling scheduled task");
-
-      // Try to mark task as failed and cascade to dependents
-      try {
-        taskStore.failTask(taskId, getErrorMessage(error));
-
-        // Initialize resolver if needed
-        if (!this.dependencyResolver) {
-          this.dependencyResolver = new TaskDependencyResolver(taskStore, this.bridge);
-        }
-
-        // Cascade failure to dependents
-        await this.dependencyResolver.onTaskFail(taskId);
-      } catch {
-        // Ignore if we can't update task
-      }
-    }
-  }
-
-  /**
    * Collect plugin onMessage/onCallbackQuery hooks and register them.
    * Uses dynamic dispatch over this.modules so newly installed/uninstalled
    * plugins are picked up without re-registering handlers.
@@ -1096,8 +876,9 @@ ${blue}  ┌──────────────────────�
     }
 
     // Callback query handler: register ONCE, dispatch dynamically
-    if (!this.callbackHandlerRegistered) {
-      this.bridge.getClient().addCallbackQueryHandler(async (update: unknown) => {
+    if (!this.callbackHandlerRegistered && isUserBridge(this.bridge)) {
+      const userBridge = this.bridge;
+      userBridge.getClient().addCallbackQueryHandler(async (update: unknown) => {
         if (!update || typeof update !== "object") {
           return;
         }
@@ -1134,7 +915,7 @@ ${blue}  ┌──────────────────────�
 
         const answer = async (text?: string, alert = false): Promise<void> => {
           try {
-            await this.bridge.getClient().answerCallbackQuery(queryId, { message: text, alert });
+            await userBridge.getClient().answerCallbackQuery(queryId, { message: text, alert });
           } catch (error: unknown) {
             log.error(
               `❌ Failed to answer callback query: ${error instanceof Error ? error.message : error}`
@@ -1173,6 +954,10 @@ ${blue}  ┌──────────────────────�
       if (cbCount > 0) {
         log.info(`${cbCount} plugin onCallbackQuery hook(s) registered`);
       }
+    } else if (!this.callbackHandlerRegistered && this.bridge.getMode() === "bot") {
+      // In bot mode, callback queries are handled by GrammyBotBridge's callback_query:data handler
+      // TODO: dispatch plugin onCallbackQuery hooks from Grammy callback handler
+      this.callbackHandlerRegistered = true;
     }
   }
 
@@ -1212,74 +997,12 @@ ${blue}  ┌──────────────────────�
   }
 
   /**
-   * Run a single heartbeat tick — modeled on handleScheduledTask().
-   * Calls processMessage() directly, bypasses MessageHandler.
-   */
-  private async runHeartbeat(): Promise<void> {
-    if (this.heartbeatRunning) {
-      log.debug("Heartbeat tick skipped (previous still running)");
-      return;
-    }
-    const cfg = this.config.heartbeat;
-    if (!cfg?.enabled) return;
-
-    const adminChatId = this.config.telegram.admin_ids[0];
-    if (!adminChatId) return;
-
-    this.heartbeatRunning = true;
-    try {
-      const { getDatabase } = await import("./memory/index.js");
-      const sessionChatId = `telegram:direct:${adminChatId}`;
-      const telegramChatId = String(adminChatId);
-      const toolContext = {
-        bridge: this.bridge,
-        db: getDatabase().getDb(),
-        chatId: sessionChatId,
-        isGroup: false,
-        senderId: adminChatId,
-        config: this.config,
-      };
-
-      const response = await this.agent.processMessage({
-        chatId: sessionChatId,
-        userMessage: cfg.prompt,
-        userName: "heartbeat",
-        timestamp: Date.now(),
-        isGroup: false,
-        toolContext,
-        isHeartbeat: true,
-      });
-
-      if (
-        response.content &&
-        !isHeartbeatOk(response.content) &&
-        !isSilentReply(response.content)
-      ) {
-        await this.bridge.sendMessage({
-          chatId: telegramChatId,
-          text: response.content,
-        });
-        log.info("Heartbeat: alert sent to owner");
-      } else {
-        log.debug("Heartbeat: NO_ACTION (suppressed)");
-      }
-    } catch (error: unknown) {
-      log.error({ err: error }, "Heartbeat error");
-    } finally {
-      this.heartbeatRunning = false;
-    }
-  }
-
-  /**
    * Stop agent subsystems (watcher, MCP, debouncer, handler, modules, bridge).
    * Called by lifecycle.stop() — do NOT call directly.
    */
   private async stopAgent(): Promise<void> {
     // Stop heartbeat timer
-    if (this.heartbeatTimer) {
-      clearInterval(this.heartbeatTimer);
-      this.heartbeatTimer = null;
-    }
+    this.heartbeatRunner.stop();
 
     // Hook: agent:stop — fire BEFORE disconnecting anything
     if (this.hookRunner) {
@@ -1346,6 +1069,8 @@ ${blue}  ┌──────────────────────�
       }
     }
 
+    this.callbackHandlerRegistered = false;
+    this.messageHandlersRegistered = false;
     try {
       await this.bridge.disconnect();
     } catch (error: unknown) {

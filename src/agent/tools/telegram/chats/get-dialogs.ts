@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { Type } from "@sinclair/typebox";
 import type { Tool, ToolExecutor, ToolResult } from "../../types.js";
 import { getErrorMessage } from "../../../../utils/errors.js";
@@ -55,7 +56,7 @@ export const telegramGetDialogsExecutor: ToolExecutor<GetDialogsParams> = async 
     const { limit = 50, archived = false, unreadOnly = false } = params;
 
     // Get underlying GramJS client
-    const gramJsClient = context.bridge.getClient().getClient();
+    const gramJsClient = (context.bridge.getRawClient() as any).getClient();
 
     // Fetch dialogs
     const dialogs = await gramJsClient.getDialogs({
@@ -64,7 +65,7 @@ export const telegramGetDialogsExecutor: ToolExecutor<GetDialogsParams> = async 
     });
 
     // Format dialogs
-    let formattedDialogs = dialogs.map((dialog) => ({
+    let formattedDialogs = dialogs.map((dialog: any) => ({
       id: dialog.id?.toString() || null,
       title: dialog.title || "Unknown",
       type: dialog.isChannel ? "channel" : dialog.isGroup ? "group" : "dm",
@@ -78,12 +79,15 @@ export const telegramGetDialogsExecutor: ToolExecutor<GetDialogsParams> = async 
 
     // Filter unread only if requested
     if (unreadOnly) {
-      formattedDialogs = formattedDialogs.filter((d) => d.unreadCount > 0);
+      formattedDialogs = formattedDialogs.filter((d: any) => d.unreadCount > 0);
     }
 
     // Calculate summary stats
-    const totalUnread = formattedDialogs.reduce((sum, d) => sum + d.unreadCount, 0);
-    const totalMentions = formattedDialogs.reduce((sum, d) => sum + d.unreadMentionsCount, 0);
+    const totalUnread = formattedDialogs.reduce((sum: any, d: any) => sum + d.unreadCount, 0);
+    const totalMentions = formattedDialogs.reduce(
+      (sum: any, d: any) => sum + d.unreadMentionsCount,
+      0
+    );
 
     return {
       success: true,

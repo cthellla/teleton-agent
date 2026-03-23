@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { Type } from "@sinclair/typebox";
 import { Api } from "telegram";
 import type { Tool, ToolExecutor, ToolResult } from "../../types.js";
@@ -46,7 +47,7 @@ export const telegramSearchGifsExecutor: ToolExecutor<SearchGifsParams> = async 
     const { query, limit = 10 } = params;
 
     // Get underlying GramJS client
-    const gramJsClient = context.bridge.getClient().getClient();
+    const gramJsClient = (context.bridge.getRawClient() as any).getClient();
 
     // Get @gif bot entity
     const gifBot = await gramJsClient.getEntity("@gif");
@@ -61,7 +62,7 @@ export const telegramSearchGifsExecutor: ToolExecutor<SearchGifsParams> = async 
       })
     );
 
-    const gifs = result.results.slice(0, limit).map((res, idx: number) => ({
+    const gifs = result.results.slice(0, limit).map((res: any, idx: number) => ({
       id: res.id,
       type: res.type,
       title: res.title || `GIF ${idx + 1}`,

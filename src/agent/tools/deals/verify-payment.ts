@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { Type } from "@sinclair/typebox";
 import type { Tool, ToolExecutor, ToolResult } from "../types.js";
 import type { Deal } from "../../../deals/types.js";
@@ -166,7 +167,7 @@ export const dealVerifyPaymentExecutor: ToolExecutor<DealVerifyPaymentParams> = 
 
       // Use GiftDetector to poll for new gifts
       // Note: We need to pass the agent's own user ID (bot's Telegram ID)
-      const me = context.bridge.getClient().getMe();
+      const me = (context.bridge.getRawClient() as any).getMe();
 
       if (!me) {
         return {

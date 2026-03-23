@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { Type } from "@sinclair/typebox";
 import type { Tool, ToolExecutor, ToolResult } from "../../types.js";
 import { Api, helpers } from "telegram";
@@ -59,7 +60,7 @@ export const telegramQuoteReplyExecutor: ToolExecutor<QuoteReplyParams> = async 
     const { chatId, messageId, quoteText, text, quoteOffset = 0 } = params;
 
     // Get the underlying GramJS client
-    const client = context.bridge.getClient().getClient();
+    const client = (context.bridge.getRawClient() as any).getClient();
 
     // Resolve the peer (chat entity)
     const peer = await client.getInputEntity(chatId);

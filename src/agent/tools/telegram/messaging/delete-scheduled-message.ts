@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { Type } from "@sinclair/typebox";
 import { Api } from "telegram";
 import type { Tool, ToolExecutor, ToolResult } from "../../types.js";
@@ -32,7 +33,7 @@ export const telegramDeleteScheduledMessageExecutor: ToolExecutor<
 > = async (params, context): Promise<ToolResult> => {
   try {
     const { chatId, messageIds } = params;
-    const gramJsClient = context.bridge.getClient().getClient();
+    const gramJsClient = (context.bridge.getRawClient() as any).getClient();
     const entity = await gramJsClient.getEntity(chatId);
 
     await gramJsClient.invoke(

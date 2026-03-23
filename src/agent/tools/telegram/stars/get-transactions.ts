@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { Type } from "@sinclair/typebox";
 import { Api } from "telegram";
 import type { Tool, ToolExecutor, ToolResult } from "../../types.js";
@@ -52,7 +53,7 @@ export const telegramGetStarsTransactionsExecutor: ToolExecutor<GetTransactionsP
 ): Promise<ToolResult> => {
   try {
     const { limit = 20, inbound, outbound } = params;
-    const gramJsClient = context.bridge.getClient().getClient();
+    const gramJsClient = (context.bridge.getRawClient() as any).getClient();
 
     const result = await gramJsClient.invoke(
       new Api.payments.GetStarsTransactions({
@@ -64,7 +65,7 @@ export const telegramGetStarsTransactionsExecutor: ToolExecutor<GetTransactionsP
       })
     );
 
-    const transactions = (result.history || []).map((tx) => ({
+    const transactions = (result.history || []).map((tx: any) => ({
       id: tx.id,
       stars: tx.amount?.amount?.toString(),
       date: tx.date,

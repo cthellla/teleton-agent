@@ -60,39 +60,83 @@ export const AgentConfigSchema = z.object({
   session_reset_policy: SessionResetPolicySchema.default(SessionResetPolicySchema.parse({})),
 });
 
-export const TelegramConfigSchema = z.object({
-  api_id: z.number(),
-  api_hash: z.string(),
-  phone: z.string(),
-  session_name: z.string().default("teleton_session"),
-  session_path: z.string().default("~/.teleton"),
-  dm_policy: DMPolicy.default("allowlist"),
-  allow_from: z.array(z.number()).default([]),
-  group_policy: GroupPolicy.default("open"),
-  group_allow_from: z.array(z.number()).default([]),
-  require_mention: z.boolean().default(true),
-  max_message_length: z.number().default(TELEGRAM_MAX_MESSAGE_LENGTH),
-  typing_simulation: z.boolean().default(true),
-  rate_limit_messages_per_second: z.number().default(1.0),
-  rate_limit_groups_per_minute: z.number().default(20),
-  admin_ids: z.array(z.number()).default([]),
-  agent_channel: z.string().nullable().default(null),
-  owner_name: z.string().optional().describe("Owner's first name (e.g., 'Alex')"),
-  owner_username: z.string().optional().describe("Owner's Telegram username (without @)"),
-  owner_id: z.number().optional().describe("Owner's Telegram user ID"),
-  debounce_ms: z
-    .number()
-    .default(1500)
-    .describe("Debounce delay in milliseconds for group messages (0 = disabled)"),
-  bot_token: z
-    .string()
-    .optional()
-    .describe("Telegram Bot token from @BotFather for inline deal buttons"),
-  bot_username: z
-    .string()
-    .optional()
-    .describe("Bot username without @ (e.g., 'teleton_deals_bot')"),
-});
+export const TelegramConfigSchema = z
+  .object({
+    mode: z.enum(["user", "bot"]).default("user"),
+    api_id: z.number().optional(),
+    api_hash: z.string().optional(),
+    phone: z.string().optional(),
+    session_name: z.string().default("teleton_session"),
+    session_path: z.string().default("~/.teleton"),
+    dm_policy: DMPolicy.default("allowlist"),
+    allow_from: z.array(z.number()).default([]),
+    group_policy: GroupPolicy.default("open"),
+    group_allow_from: z.array(z.number()).default([]),
+    require_mention: z.boolean().default(true),
+    max_message_length: z.number().default(TELEGRAM_MAX_MESSAGE_LENGTH),
+    typing_simulation: z.boolean().default(true),
+    rate_limit_messages_per_second: z.number().default(1.0),
+    rate_limit_groups_per_minute: z.number().default(20),
+    admin_ids: z.array(z.number()).default([]),
+    agent_channel: z.string().nullable().default(null),
+    owner_name: z.string().optional().describe("Owner's first name (e.g., 'Alex')"),
+    owner_username: z.string().optional().describe("Owner's Telegram username (without @)"),
+    owner_id: z.number().optional().describe("Owner's Telegram user ID"),
+    debounce_ms: z
+      .number()
+      .default(1500)
+      .describe("Debounce delay in milliseconds for group messages (0 = disabled)"),
+    bot_token: z
+      .string()
+      .optional()
+      .describe("Telegram Bot token from @BotFather for inline deal buttons"),
+    bot_username: z
+      .string()
+      .optional()
+      .describe("Bot username without @ (e.g., 'teleton_deals_bot')"),
+    stream_mode: z
+      .enum(["all", "replace", "off"])
+      .default("replace")
+      .describe(
+        "Bot streaming mode: replace=each iteration replaces draft (default), all=concatenate all iterations, off=no streaming"
+      ),
+  })
+  .superRefine((data, ctx) => {
+    if (data.mode === "user") {
+      if (!data.api_id)
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "api_id is required in user mode",
+          path: ["api_id"],
+        });
+      if (!data.api_hash)
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "api_hash is required in user mode",
+          path: ["api_hash"],
+        });
+      if (!data.phone)
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "phone is required in user mode",
+          path: ["phone"],
+        });
+    }
+    if (data.mode === "bot") {
+      if (!data.bot_token)
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "bot_token is required in bot mode",
+          path: ["bot_token"],
+        });
+      if (!data.owner_id)
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "owner_id is required in bot mode",
+          path: ["owner_id"],
+        });
+    }
+  });
 
 export const StorageConfigSchema = z.object({
   sessions_file: z.string().default("~/.teleton/sessions.json"),

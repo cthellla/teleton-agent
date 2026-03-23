@@ -290,9 +290,9 @@ describe("createTelegramSocialSDK", () => {
     });
 
     it("returns null on unexpected top-level error, logs it", async () => {
-      // Make getClient throw to hit the outer catch
-      const originalGetClient = mockBridge.getClient;
-      mockBridge.getClient = () => {
+      // Make getRawClient throw to hit the outer catch
+      const originalGetRawClient = mockBridge.getRawClient;
+      mockBridge.getRawClient = () => {
         throw new Error("unexpected");
       };
 
@@ -302,7 +302,7 @@ describe("createTelegramSocialSDK", () => {
       expect(result).toBeNull();
       expect(mockLog.error).toHaveBeenCalled();
 
-      mockBridge.getClient = originalGetClient;
+      mockBridge.getRawClient = originalGetRawClient;
     });
   });
 

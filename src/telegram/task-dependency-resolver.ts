@@ -1,5 +1,6 @@
 import type { TaskStore } from "../memory/agent/tasks.js";
-import type { TelegramBridge } from "./bridge.js";
+import type { ITelegramBridge } from "./bridge-interface.js";
+import type { Config } from "../config/schema.js";
 import { BATCH_TRIGGER_DELAY_MS } from "../constants/timeouts.js";
 import { MAX_DEPENDENTS_PER_TASK } from "../constants/limits.js";
 import { createLogger } from "../utils/logger.js";
@@ -19,7 +20,8 @@ const log = createLogger("Telegram");
 export class TaskDependencyResolver {
   constructor(
     private taskStore: TaskStore,
-    private bridge: TelegramBridge
+    private bridge: ITelegramBridge,
+    private config?: Config
   ) {}
 
   /**
@@ -172,16 +174,31 @@ export class TaskDependencyResolver {
 
       log.info(`Triggering dependent task: ${task.description}`);
 
-      // Get "me" entity for Saved Messages
-      const gramJsClient = this.bridge.getClient().getClient();
-      const me = await gramJsClient.getMe();
+      if (this.bridge.getMode() === "bot") {
+        // Bot mode: send to first admin via bridge
+        const adminId = this.config?.telegram?.admin_ids?.[0];
+        if (adminId) {
+          await this.bridge.sendMessage({
+            chatId: String(adminId),
+            text: `[TASK:${taskId}] ${task.description}`,
+          });
+          log.info(`↳ Sent [TASK:${taskId}] to admin ${adminId}`);
+        } else {
+          log.warn(`↳ Cannot trigger [TASK:${taskId}]: no admin_id configured in bot mode`);
+        }
+      } else {
+        // User mode: send to Saved Messages via GramJS
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- user-only MTProto path
+        const gramJsClient = this.bridge.getRawClient() as any;
+        const me = await gramJsClient.getMe();
 
-      // Send task message immediately (no scheduling)
-      await gramJsClient.sendMessage(me, {
-        message: `[TASK:${taskId}] ${task.description}`,
-      });
+        // Send task message immediately (no scheduling)
+        await gramJsClient.sendMessage(me, {
+          message: `[TASK:${taskId}] ${task.description}`,
+        });
 
-      log.info(`↳ Sent [TASK:${taskId}] to Saved Messages`);
+        log.info(`↳ Sent [TASK:${taskId}] to Saved Messages`);
+      }
     } catch (error) {
       log.error({ err: error }, `Error triggering task ${taskId}`);
 

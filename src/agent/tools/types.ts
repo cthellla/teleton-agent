@@ -1,5 +1,5 @@
 import type { TSchema } from "@sinclair/typebox";
-import type { TelegramBridge } from "../../telegram/bridge.js";
+import type { ITelegramBridge } from "../../telegram/bridge-interface.js";
 import type Database from "better-sqlite3";
 import type { Config } from "../../config/schema.js";
 
@@ -8,7 +8,7 @@ import type { Config } from "../../config/schema.js";
  */
 export interface ToolContext {
   /** Telegram bridge for sending messages, reactions, etc. */
-  bridge: TelegramBridge;
+  bridge: ITelegramBridge;
   /** Database instance for storage */
   db: Database.Database;
   /** Current chat ID where the tool is being executed */
@@ -86,6 +86,8 @@ export interface ToolEntry {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- tool executors accept varied param shapes
   executor: ToolExecutor<any>;
   scope?: ToolScope;
+  /** When set to "user", excluded in bot mode. When set to "bot", excluded in user mode. */
+  requiredMode?: "user" | "bot";
 }
 
 /**
@@ -117,7 +119,7 @@ export interface PluginModule {
  * Context provided to plugin modules during start()
  */
 export interface PluginContext {
-  bridge: TelegramBridge;
+  bridge: ITelegramBridge;
   db: Database.Database;
   config: Config;
   /** Plugin-specific config from config.yaml plugins section (external plugins only) */

@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 /**
  * Moderation tools: kick, ban, unban users from groups/channels
  */
@@ -44,7 +45,7 @@ export const telegramKickUserExecutor: ToolExecutor<KickUserParams> = async (
       };
     }
 
-    const client = context.bridge.getClient().getClient();
+    const client = (context.bridge.getRawClient() as any).getClient();
 
     // Kick = ban then immediately unban
     await client.invoke(
@@ -141,7 +142,7 @@ export const telegramBanUserExecutor: ToolExecutor<BanUserParams> = async (
       };
     }
 
-    const client = context.bridge.getClient().getClient();
+    const client = (context.bridge.getRawClient() as any).getClient();
 
     // Calculate until_date (0 = permanent)
     const untilDate = duration_hours ? Math.floor(Date.now() / 1000) + duration_hours * 3600 : 0;
@@ -235,7 +236,7 @@ export const telegramUnbanUserExecutor: ToolExecutor<UnbanUserParams> = async (
       };
     }
 
-    const client = context.bridge.getClient().getClient();
+    const client = (context.bridge.getRawClient() as any).getClient();
 
     await client.invoke(
       new Api.channels.EditBanned({

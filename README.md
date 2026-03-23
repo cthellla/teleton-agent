@@ -146,6 +146,26 @@ Agent: [Displays uptime, model, tool count, wallet balance]
 
 ---
 
+## User Mode vs Bot Mode
+
+Teleton can run as a **user account** (MTProto) or a **Telegram bot** (Bot API). Set `telegram.mode` in your config:
+
+| | User Mode (default) | Bot Mode |
+|---|---|---|
+| **Auth** | Phone + api_id + api_hash | Bot token from @BotFather |
+| **Protocol** | MTProto (GramJS) | Bot API (Grammy) |
+| **Tools** | 135+ | 67 (11 Telegram + 56 non-Telegram) |
+| **Risk** | Account ban possible | No ban risk |
+| **Dialogs/History** | Full access | Not available |
+| **Media sending** | All types | Photos only (v1) |
+| **Inline keyboards** | Via bot_token | Native |
+| **Stars/Gifts** | Full access | Not available |
+| **Profile editing** | Yes | No |
+| **Scheduled tasks** | Yes | Not available |
+| **Setup** | `telegram.mode: "user"` | `telegram.mode: "bot"` |
+
+---
+
 ## Configuration
 
 The `teleton setup` wizard generates a fully configured `~/.teleton/config.yaml` file. Manual editing is only necessary if you want to adjust settings after the initial setup.

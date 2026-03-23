@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { Type } from "@sinclair/typebox";
 import { Api } from "telegram";
 import type { Tool, ToolExecutor, ToolResult } from "../../types.js";
@@ -43,7 +44,7 @@ export const telegramAddChatToFolderExecutor: ToolExecutor<AddChatToFolderParams
     const { folderId, chatId } = params;
 
     // Get underlying GramJS client
-    const gramJsClient = context.bridge.getClient().getClient();
+    const gramJsClient = (context.bridge.getRawClient() as any).getClient();
 
     // Get existing filters
     // GetDialogFilters returns messages.DialogFilters { filters: [] } (not a plain array)

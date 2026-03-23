@@ -20,10 +20,18 @@ export { telegramTranscribeAudioTool, telegramTranscribeAudioExecutor };
 
 export const tools: ToolEntry[] = [
   { tool: telegramSendPhotoTool, executor: telegramSendPhotoExecutor },
-  { tool: telegramSendVoiceTool, executor: telegramSendVoiceExecutor },
-  { tool: telegramSendStickerTool, executor: telegramSendStickerExecutor },
-  { tool: telegramSendGifTool, executor: telegramSendGifExecutor },
-  { tool: telegramDownloadMediaTool, executor: telegramDownloadMediaExecutor },
-  { tool: visionAnalyzeTool, executor: visionAnalyzeExecutor },
-  { tool: telegramTranscribeAudioTool, executor: telegramTranscribeAudioExecutor },
+  { tool: telegramSendVoiceTool, executor: telegramSendVoiceExecutor, requiredMode: "user" },
+  { tool: telegramSendStickerTool, executor: telegramSendStickerExecutor, requiredMode: "user" },
+  { tool: telegramSendGifTool, executor: telegramSendGifExecutor, requiredMode: "user" },
+  {
+    tool: telegramDownloadMediaTool,
+    executor: telegramDownloadMediaExecutor,
+    requiredMode: "user",
+  },
+  { tool: visionAnalyzeTool, executor: visionAnalyzeExecutor, requiredMode: "user" },
+  {
+    tool: telegramTranscribeAudioTool,
+    executor: telegramTranscribeAudioExecutor,
+    requiredMode: "user",
+  },
 ];

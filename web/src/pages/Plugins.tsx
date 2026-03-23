@@ -315,7 +315,7 @@ export function Plugins() {
 
       {priorityChanged && (
         <div className="alert" style={{ marginBottom: '14px', fontSize: '13px', color: 'var(--text-secondary)', background: 'rgba(110,168,254,0.08)', border: '1px solid rgba(110,168,254,0.2)' }}>
-          Priority updated — changes take effect on next agent restart
+          Priority updated - changes take effect on next agent restart
         </div>
       )}
 
@@ -509,7 +509,7 @@ export function Plugins() {
                           )}
                         </td>
                         <td style={{ textAlign: 'center', padding: '8px 10px' }}>
-                          {module ? <span className="badge count">{module.toolCount}</span> : <span style={{ color: 'var(--text-tertiary)' }}>—</span>}
+                          {module ? <span className="badge count">{module.toolCount}</span> : <span style={{ color: 'var(--text-tertiary)' }}>-</span>}
                         </td>
                         <td style={{ textAlign: 'center', padding: '8px 10px' }} onClick={(e) => e.stopPropagation()}>
                           {isUpdatable && marketEntry ? (

@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { Type } from "@sinclair/typebox";
 import { Api } from "telegram";
 import type { Tool, ToolExecutor, ToolResult } from "../../types.js";
@@ -29,7 +30,7 @@ export const telegramGetAdminedChannelsExecutor: ToolExecutor<GetAdminedChannels
   context
 ): Promise<ToolResult> => {
   try {
-    const gramJsClient = context.bridge.getClient().getClient();
+    const gramJsClient = (context.bridge.getRawClient() as any).getClient();
 
     const result = await gramJsClient.invoke(
       new Api.channels.GetAdminedPublicChannels({

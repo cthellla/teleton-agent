@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { Type } from "@sinclair/typebox";
 import { Api } from "telegram";
 import type { Tool, ToolExecutor, ToolResult } from "../../types.js";
@@ -53,7 +54,7 @@ export const telegramGetResaleGiftsExecutor: ToolExecutor<GetResaleGiftsParams> 
 ): Promise<ToolResult> => {
   try {
     const { giftId, limit = 30, sortByPrice = false } = params;
-    const gramJsClient = context.bridge.getClient().getClient();
+    const gramJsClient = (context.bridge.getRawClient() as any).getClient();
 
     if (!/^\d+$/.test(giftId)) {
       return {
@@ -72,12 +73,12 @@ export const telegramGetResaleGiftsExecutor: ToolExecutor<GetResaleGiftsParams> 
       })
     );
 
-    const listings = (result.gifts || []).map((gift) => {
+    const listings = (result.gifts || []).map((gift: any) => {
       if (gift.className === "StarGiftUnique") {
         // StarGiftUnique: individual collectible with slug, num, owner, attributes
         const resellAmounts = gift.resellAmount || [];
-        const starsPrice = resellAmounts.find((a) => !("ton" in a));
-        const tonPrice = resellAmounts.find((a) => "ton" in a);
+        const starsPrice = resellAmounts.find((a: any) => !("ton" in a));
+        const tonPrice = resellAmounts.find((a: any) => "ton" in a);
 
         return {
           type: "unique" as const,
@@ -91,7 +92,7 @@ export const telegramGetResaleGiftsExecutor: ToolExecutor<GetResaleGiftsParams> 
           ownerName: gift.ownerName || undefined,
           priceStars: starsPrice ? starsPrice.amount?.toString() : undefined,
           priceTon: tonPrice ? tonPrice.amount?.toString() : undefined,
-          attributes: (gift.attributes || []).map((attr) => ({
+          attributes: (gift.attributes || []).map((attr: any) => ({
             type: attr.className?.replace("StarGiftAttribute", "").toLowerCase(),
             name: "name" in attr ? attr.name : undefined,
           })),

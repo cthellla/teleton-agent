@@ -49,16 +49,36 @@ export { telegramSendScheduledNowTool, telegramSendScheduledNowExecutor };
 
 export const tools: ToolEntry[] = [
   { tool: telegramSendMessageTool, executor: telegramSendMessageExecutor },
-  { tool: telegramQuoteReplyTool, executor: telegramQuoteReplyExecutor },
-  { tool: telegramGetRepliesTool, executor: telegramGetRepliesExecutor },
+  { tool: telegramQuoteReplyTool, executor: telegramQuoteReplyExecutor, requiredMode: "user" },
+  { tool: telegramGetRepliesTool, executor: telegramGetRepliesExecutor, requiredMode: "user" },
   { tool: telegramEditMessageTool, executor: telegramEditMessageExecutor },
-  { tool: telegramScheduleMessageTool, executor: telegramScheduleMessageExecutor },
-  { tool: telegramGetScheduledMessagesTool, executor: telegramGetScheduledMessagesExecutor },
-  { tool: telegramDeleteScheduledMessageTool, executor: telegramDeleteScheduledMessageExecutor },
-  { tool: telegramSendScheduledNowTool, executor: telegramSendScheduledNowExecutor },
-  { tool: telegramSearchMessagesTool, executor: telegramSearchMessagesExecutor },
+  {
+    tool: telegramScheduleMessageTool,
+    executor: telegramScheduleMessageExecutor,
+    requiredMode: "user",
+  },
+  {
+    tool: telegramGetScheduledMessagesTool,
+    executor: telegramGetScheduledMessagesExecutor,
+    requiredMode: "user",
+  },
+  {
+    tool: telegramDeleteScheduledMessageTool,
+    executor: telegramDeleteScheduledMessageExecutor,
+    requiredMode: "user",
+  },
+  {
+    tool: telegramSendScheduledNowTool,
+    executor: telegramSendScheduledNowExecutor,
+    requiredMode: "user",
+  },
+  {
+    tool: telegramSearchMessagesTool,
+    executor: telegramSearchMessagesExecutor,
+    requiredMode: "user",
+  },
   { tool: telegramPinMessageTool, executor: telegramPinMessageExecutor },
-  { tool: telegramUnpinMessageTool, executor: telegramUnpinMessageExecutor },
+  { tool: telegramUnpinMessageTool, executor: telegramUnpinMessageExecutor, requiredMode: "user" },
   { tool: telegramForwardMessageTool, executor: telegramForwardMessageExecutor },
   { tool: telegramDeleteMessageTool, executor: telegramDeleteMessageExecutor },
 ];

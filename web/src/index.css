@@ -11,7 +11,7 @@
   color-scheme: dark;
 
   /* ── Surfaces (dark gray, not black — easier on eyes) ── */
-  --bg-primary: #141418;
+  --bg-primary: #000000;
   --bg-secondary: #1c1c22;
   --bg-tertiary: #26262e;
   --bg-muted: rgba(255, 255, 255, 0.06);
@@ -36,12 +36,12 @@
   --text-tertiary: rgba(255, 255, 255, 0.38);
   --text-on-accent: #ffffff;
 
-  /* ── Accent (pastel blue) ── */
-  --accent: #7aafff;
-  --accent-hover: #5c9bf5;
-  --accent-subtle: rgba(122, 175, 255, 0.10);
-  --accent-soft: #a4c8ff;
-  --accent-dim: rgba(122, 175, 255, 0.12);
+  /* ── Accent (electric blue) ── */
+  --accent: #2d8cf0;
+  --accent-hover: #1a6dd6;
+  --accent-subtle: rgba(45, 140, 240, 0.10);
+  --accent-soft: #5aa8f5;
+  --accent-dim: rgba(45, 140, 240, 0.12);
   --accent-shadow: none;
 
   /* ── Semantic (pastel / desaturated) ── */
@@ -88,15 +88,21 @@
   --space-xl: 24px;
   --space-2xl: 32px;
 
-  /* ── Typography ── */
+  /* ── Typography (Major Third scale 1.25, base 15px) ── */
   --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   --font-mono: 'JetBrains Mono', 'SF Mono', 'Fira Code', monospace;
-  --font-xs: 11px;
-  --font-sm: 12px;
-  --font-md: 13px;
-  --font-base: 14px;
-  --font-lg: 16px;
-  --font-xl: 20px;
+  --font-xs: 12px;
+  --font-sm: 13px;
+  --font-md: 14px;
+  --font-base: 15px;
+  --font-lg: 18px;
+  --font-xl: 22px;
+  --font-2xl: 28px;
+
+  /* ── Line heights ── */
+  --leading-tight: 1.2;
+  --leading-normal: 1.5;
+  --leading-relaxed: 1.6;
 }
 
 html, body {
@@ -107,8 +113,8 @@ body {
   font-family: var(--font-sans);
   background: var(--bg-primary);
   color: var(--text-primary);
-  line-height: 1.5;
-  font-size: 14px;
+  line-height: var(--leading-relaxed);
+  font-size: var(--font-base);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
@@ -144,7 +150,7 @@ body {
 
 .sidebar-brand {
   padding: 4px 12px 20px;
-  font-size: 15px;
+  font-size: var(--font-lg);
   font-weight: 600;
   letter-spacing: -0.2px;
   color: var(--text-primary);
@@ -164,7 +170,7 @@ body {
   border-radius: var(--radius-sm);
   color: var(--text-secondary);
   text-decoration: none;
-  font-size: 13px;
+  font-size: var(--font-md);
   font-weight: 500;
   transition: all var(--duration-color) var(--easing-standard);
 }
@@ -221,15 +227,17 @@ body {
 }
 
 .header h1 {
-  font-size: 22px;
+  font-size: var(--font-2xl);
   font-weight: 600;
+  line-height: var(--leading-tight);
   letter-spacing: -0.4px;
   margin-bottom: 4px;
 }
 
 .header p {
   color: var(--text-secondary);
-  font-size: 13px;
+  font-size: var(--font-md);
+  line-height: var(--leading-normal);
 }
 
 /* ---- Glass Card ---- */
@@ -243,8 +251,9 @@ body {
 }
 
 .card h2 {
-  font-size: 15px;
+  font-size: var(--font-lg);
   font-weight: 600;
+  line-height: var(--leading-tight);
   letter-spacing: -0.2px;
 }
 
@@ -265,7 +274,7 @@ body {
 }
 
 .stat-card h3 {
-  font-size: 12px;
+  font-size: var(--font-sm);
   font-weight: 500;
   color: var(--text-secondary);
   margin-bottom: 6px;
@@ -306,7 +315,7 @@ body {
 }
 
 .metric-label {
-  font-size: 11px;
+  font-size: var(--font-xs);
   font-weight: 500;
   color: var(--text-secondary);
   text-transform: uppercase;
@@ -314,13 +323,13 @@ body {
 }
 
 .metric-value {
-  font-size: 14px;
+  font-size: var(--font-base);
   font-weight: 600;
   color: var(--text-primary);
 }
 
 .metric-value.mono {
-  font-size: 13px;
+  font-size: var(--font-md);
   font-family: var(--font-mono);
 }
 
@@ -407,8 +416,8 @@ input, textarea, select {
   color: var(--text-primary);
   height: 44px;
   padding: 10px 14px;
-  border-radius: var(--radius-sm);
-  font-size: 13px;
+  border-radius: var(--radius-pill);
+  font-size: var(--font-md);
   outline: none;
   transition: border-color var(--duration-color) var(--easing-standard), box-shadow var(--duration-color) var(--easing-standard);
 }
@@ -438,8 +447,8 @@ select {
   border: 1px solid var(--border-glass);
   color: var(--text-primary);
   padding: 10px 14px;
-  border-radius: var(--radius-sm);
-  font-size: 13px;
+  border-radius: var(--radius-pill);
+  font-size: var(--font-md);
   font-family: var(--font-sans);
   cursor: pointer;
   transition: border-color var(--duration-color) var(--easing-standard);
@@ -463,7 +472,7 @@ select {
 .custom-select-menu {
   background: var(--bg-primary);
   border: 1px solid var(--border-strong);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-lg);
   padding: 4px;
   z-index: 10000;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
@@ -518,7 +527,7 @@ textarea {
   font-size: 13px;
   line-height: 1.6;
   resize: vertical;
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-xl);
 }
 
 /* ---- Links ---- */
@@ -551,7 +560,7 @@ a:hover {
 .badge.count { color: var(--text-primary); }
 .badge.warn { color: var(--text-secondary); border-color: rgba(255, 255, 255, 0.12); }
 .badge.error { color: var(--red); border-color: color-mix(in srgb, var(--red) 30%, transparent); }
-.badge.always { color: var(--green); border-color: color-mix(in srgb, var(--green) 30%, transparent); }
+.badge.always { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 30%, transparent); }
 
 /* ---- Tabs ---- */
 
@@ -679,13 +688,13 @@ button.btn-sm {
 /* ---- Form ---- */
 
 .form-group {
-  margin-bottom: 16px;
+  margin-bottom: var(--space-xl);
 }
 
 .form-group label:not(.label-inline):not(.card-toggle):not(.toggle) {
   display: block;
   margin-bottom: 6px;
-  font-size: 13px;
+  font-size: var(--font-base);
   font-weight: 500;
   color: var(--text-primary);
 }
@@ -884,7 +893,7 @@ button.btn-sm {
 /* ---- Section title inside cards ---- */
 
 .section-title {
-  font-size: 13px;
+  font-size: var(--font-md);
   font-weight: 600;
   color: var(--text-primary);
   text-transform: uppercase;
@@ -899,9 +908,10 @@ button.btn-sm {
   margin-bottom: 2px;
 }
 .card-description {
-  font-size: 13px;
+  font-size: var(--font-md);
   color: var(--text-secondary);
-  margin: 0 0 0 0;
+  line-height: var(--leading-normal);
+  margin: 0;
 }
 
 /* ---- Empty state ---- */
@@ -1013,7 +1023,7 @@ button.btn-sm {
 }
 
 .toggle input:checked + .toggle-track {
-  background: var(--green);
+  background: var(--accent);
 }
 
 .toggle-thumb {
@@ -1040,28 +1050,103 @@ button.btn-sm {
   opacity: 0.4;
 }
 
+/* ---- Stepper (iOS-style −/+ control) ---- */
+.stepper {
+  display: inline-flex;
+  align-items: center;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-glass);
+  border-radius: var(--radius-pill);
+  overflow: hidden;
+  height: 36px;
+}
+
+.stepper-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 100%;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  color: var(--accent);
+  font-size: 18px;
+  font-weight: 400;
+  cursor: pointer;
+  padding: 0;
+  box-shadow: none;
+  transition: background 0.15s ease;
+}
+
+.stepper-btn:hover:not(:disabled) {
+  background: var(--bg-glass-hover);
+}
+
+.stepper-btn:active:not(:disabled) {
+  background: var(--glass-thick);
+  transform: none;
+}
+
+.stepper-btn:disabled {
+  color: var(--text-tertiary);
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.stepper-divider {
+  width: 1px;
+  height: 18px;
+  background: var(--border-glass);
+  flex-shrink: 0;
+}
+
 /* ---- Modal ---- */
 
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.6);
+  background: rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
   display: flex;
   align-items: center;
   justify-content: center;
   z-index: 100;
+  animation: modal-overlay-in var(--duration-enter) var(--easing-ease-out);
 }
 
 .modal {
-  background: var(--bg-primary);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-lg);
-  padding: 24px;
+  background: rgba(30, 30, 35, 0.65);
+  backdrop-filter: blur(50px) saturate(1.8);
+  -webkit-backdrop-filter: blur(50px) saturate(1.8);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: var(--radius-xl);
+  padding: 28px;
   max-width: 480px;
   width: 90%;
   max-height: 80vh;
   overflow-y: auto;
-  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+  box-shadow:
+    0 24px 80px rgba(0, 0, 0, 0.6),
+    0 0 1px rgba(255, 255, 255, 0.1) inset;
+  animation: modal-in var(--duration-enter) var(--easing-spring);
+}
+
+@keyframes modal-overlay-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes modal-in {
+  from {
+    opacity: 0;
+    transform: scale(0.95) translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
 }
 
 /* ---- Loading ---- */
@@ -1172,9 +1257,9 @@ button.btn-sm {
 }
 
 .step-dot.completed {
-  background: var(--green-dim);
-  color: var(--green);
-  border-color: rgba(48, 209, 88, 0.3);
+  background: rgba(45, 140, 240, 0.25);
+  color: var(--accent-soft);
+  border-color: rgba(45, 140, 240, 0.4);
 }
 
 .step-line {
@@ -1186,7 +1271,7 @@ button.btn-sm {
 }
 
 .step-line.completed {
-  background: rgba(48, 209, 88, 0.3);
+  background: var(--accent-subtle);
 }
 
 .step-label {
@@ -1408,21 +1493,33 @@ button.btn-sm {
 /* ---- Setup Step Utilities ---- */
 
 .step-title {
+  font-size: var(--font-xl);
+  font-weight: 600;
+  line-height: var(--leading-tight);
+  letter-spacing: -0.3px;
+  margin-bottom: var(--space-sm);
+}
+
+.step-subtitle {
   font-size: var(--font-lg);
   font-weight: 600;
+  line-height: var(--leading-tight);
   letter-spacing: -0.2px;
-  margin-bottom: var(--space-xs);
+  margin-top: var(--space-2xl);
+  margin-bottom: var(--space-lg);
 }
 
 .step-description {
-  font-size: var(--font-md);
-  color: rgba(255, 255, 255, 0.75);
-  margin-bottom: var(--space-lg);
+  font-size: var(--font-base);
+  color: var(--text-secondary);
+  line-height: var(--leading-relaxed);
+  margin-bottom: var(--space-xl);
 }
 
 .helper-text {
   font-size: var(--font-sm);
   color: var(--text-secondary);
+  line-height: var(--leading-normal);
   margin-top: var(--space-xs);
 }
 
@@ -1509,6 +1606,9 @@ button.btn-sm {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  font-size: var(--font-base);
+  font-weight: 500;
+  color: var(--text-primary);
 }
 
 .card-toggle.open {

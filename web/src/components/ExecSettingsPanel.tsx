@@ -16,7 +16,7 @@ export function ExecSettingsPanel({ getLocal, saveConfig }: ExecSettingsPanelPro
       <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
         <label style={{ fontSize: '13px', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: 4 }} htmlFor="exec-yolo">
           YOLO
-          <InfoTip text="Full system access — exec_run, exec_install, exec_service, exec_status. Requires restart." />
+          <InfoTip text="Full system access - exec_run, exec_install, exec_service, exec_status. Requires restart." />
         </label>
         <label className="toggle">
           <input

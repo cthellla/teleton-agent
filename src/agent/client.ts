@@ -1,5 +1,6 @@
 import {
   complete,
+  stream,
   getModel,
   type Model,
   type Api,
@@ -330,6 +331,81 @@ export async function chatWithContext(
     text,
     context: updatedContext,
   };
+}
+
+export interface StreamResult {
+  textStream: AsyncIterable<string>;
+  result: Promise<ChatResponse>;
+}
+
+export function streamWithContext(config: AgentConfig, options: ChatOptions): StreamResult {
+  const provider = (config.provider || "anthropic") as SupportedProvider;
+  const model = getProviderModel(provider, config.model);
+
+  const tools =
+    provider === "google" && options.tools ? sanitizeToolsForGemini(options.tools) : options.tools;
+
+  const systemPrompt = options.systemPrompt || options.context.systemPrompt || "";
+
+  const context: Context = {
+    ...options.context,
+    systemPrompt,
+    tools,
+  };
+
+  const temperature = options.temperature ?? config.temperature;
+
+  const streamOptions: Record<string, unknown> = {
+    apiKey: getEffectiveApiKey(provider, config.api_key),
+    maxTokens: options.maxTokens ?? config.max_tokens,
+    temperature,
+    sessionId: options.sessionId,
+    cacheRetention: "long",
+  };
+
+  const eventStream = stream(model, context, streamOptions as ProviderStreamOptions);
+
+  // Transform event stream into a simple text delta async iterable
+  async function* textDeltas(): AsyncIterable<string> {
+    for await (const event of eventStream) {
+      if (event.type === "text_delta" && event.delta) {
+        yield event.delta;
+      }
+      // Stop yielding text when tool calls start — the response needs full processing
+      if (event.type === "toolcall_start") {
+        return;
+      }
+    }
+  }
+
+  // Result promise: wait for the stream to complete and build ChatResponse
+  const resultPromise = (async (): Promise<ChatResponse> => {
+    const response = await eventStream.result();
+
+    // Strip <think> blocks
+    const thinkRe = /<think>[\s\S]*?<\/think>/g;
+    for (const block of response.content) {
+      if (block.type === "text" && block.text.includes("<think>")) {
+        block.text = block.text.replace(thinkRe, "").trim();
+      }
+    }
+
+    if (options.persistTranscript && options.sessionId) {
+      appendToTranscript(options.sessionId, response);
+    }
+
+    const textContent = response.content.find((block) => block.type === "text");
+    const text = textContent?.type === "text" ? textContent.text : "";
+
+    const updatedContext: Context = {
+      ...context,
+      messages: [...context.messages, response],
+    };
+
+    return { message: response, text, context: updatedContext };
+  })();
+
+  return { textStream: textDeltas(), result: resultPromise };
 }
 
 export function loadContextFromTranscript(sessionId: string, systemPrompt?: string): Context {

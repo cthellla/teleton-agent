@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 /**
  * telegram_set_chat_photo - Set or delete chat/group/channel photo
  */
@@ -46,7 +47,7 @@ export const telegramSetChatPhotoExecutor: ToolExecutor<SetChatPhotoParams> = as
   try {
     const { chat_id, photo_path, delete_photo = false } = params;
 
-    const client = context.bridge.getClient().getClient();
+    const client = (context.bridge.getRawClient() as any).getClient();
 
     // Get entity to determine if it's a channel or regular chat
     const entity = await client.getEntity(chat_id);

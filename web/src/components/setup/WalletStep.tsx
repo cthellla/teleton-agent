@@ -79,7 +79,7 @@ export function WalletStep({ data, onChange }: StepProps) {
       {walletStatus?.exists && walletStatus.address && !showMnemonic && (
         <div className="card">
           <div className="helper-text" style={{ marginTop: 0, marginBottom: '4px' }}>Current wallet</div>
-          <div className="mono" style={{ fontSize: '13px', wordBreak: 'break-all' }}>
+          <div className="mono" style={{ wordBreak: 'break-all' }}>
             {walletStatus.address}
           </div>
         </div>
@@ -131,7 +131,7 @@ export function WalletStep({ data, onChange }: StepProps) {
         <>
           {data.walletAddress && (
             <div className="card" style={{ marginBottom: '16px' }}>
-              <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '4px' }}>Wallet Address</div>
+              <div style={{ color: 'var(--text-secondary)', marginBottom: '4px' }}>Wallet Address</div>
               <div className="form-row" style={{ alignItems: 'center' }}>
                 <span className="mono" style={{ fontWeight: 600, fontSize: '14px', wordBreak: 'break-all', color: 'var(--text-primary)' }}>
                   {data.walletAddress}

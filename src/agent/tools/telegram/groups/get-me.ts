@@ -1,5 +1,4 @@
 import { Type } from "@sinclair/typebox";
-import type { Api } from "telegram";
 import type { Tool, ToolExecutor, ToolResult } from "../../types.js";
 import { getErrorMessage } from "../../../../utils/errors.js";
 import { createLogger } from "../../../../utils/logger.js";
@@ -24,26 +23,19 @@ export const telegramGetMeExecutor: ToolExecutor<{}> = async (
   context
 ): Promise<ToolResult> => {
   try {
-    // Get underlying GramJS client
-    const gramJsClient = context.bridge.getClient().getClient();
+    const me = await context.bridge.getMe();
 
-    // Get own user info using getMe()
-    const me = (await gramJsClient.getMe()) as Api.User;
+    if (!me) {
+      return { success: false, error: "Could not retrieve account info" };
+    }
 
-    // Extract and format user information
     return {
       success: true,
       data: {
         id: me.id.toString(),
         username: me.username || null,
-        firstName: me.firstName || null,
-        lastName: me.lastName || null,
-        phone: me.phone || null,
-        isBot: me.bot || false,
-        isPremium: me.premium || false,
-        languageCode: me.langCode || null,
-        // Full name for convenience
-        fullName: [me.firstName, me.lastName].filter(Boolean).join(" ") || null,
+        firstName: me.firstName,
+        isBot: me.isBot,
       },
     };
   } catch (error) {

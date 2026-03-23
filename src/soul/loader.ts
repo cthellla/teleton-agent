@@ -143,6 +143,7 @@ export function buildSystemPrompt(options: {
   memoryFlushWarning?: boolean;
   isHeartbeat?: boolean;
   agentModel?: string;
+  telegramMode?: "user" | "bot";
 }): string {
   const soul = options.soul ?? loadSoul();
   const parts = [soul];
@@ -271,6 +272,18 @@ Your conversation context is approaching the limit and may be compacted soon.
 Before answering questions about prior conversations, decisions, or people: use \`memory_read\` to check your memory files first.
 Don't guess from context — verify with your memory tools.`);
 
+  if (options.telegramMode === "bot") {
+    parts.push(`\n## Telegram Bot Mode
+You are operating as a Telegram Bot (not a user account).
+
+Available actions: send/edit/delete/forward messages, react, pin messages, send photos, send dice, create inline keyboard buttons (telegram_send_buttons).
+
+NOT available in bot mode: browsing dialogs, reading chat history, editing profile, posting stories, accessing Stars/gifts, scheduling tasks, transcribing voice, sending stickers/voice/GIFs, searching messages, managing folders, channel operations.
+
+For transactions: ALWAYS include Confirm/Cancel inline buttons using telegram_send_buttons.
+Use telegram_send_buttons for any interactive choice (pagination, confirmations, quick actions).`);
+  }
+
   parts.push(`\n## Safety
 - Take local, reversible actions freely (read files, search, check balances).
 - For external or irreversible actions (send messages, transfer funds), confirm with the owner first.
@@ -287,9 +300,13 @@ This suppresses the message entirely. Use it instead of sending filler like "OK"
     const heartbeatContent = heartbeatMd
       ? sanitizeForContext(heartbeatMd)
       : "_No HEARTBEAT.md found._";
+    let heartbeatPreamble = "";
+    if (options.telegramMode === "bot") {
+      heartbeatPreamble = `\nIMPORTANT: You are running in BOT mode. User-mode tools like telegram_get_dialogs, telegram_get_history, telegram_search_messages are NOT available. Skip any checklist steps that require them. Only use tools that are in your available tool list.\n`;
+    }
     parts.push(`\n## Heartbeat Protocol
 You have been woken by your periodic heartbeat timer.
-
+${heartbeatPreamble}
 ${heartbeatContent}
 
 IMPORTANT: You MUST execute the checklist above step by step using tool calls. Do not skip steps.

@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { Type } from "@sinclair/typebox";
 import {
   completeSimple,
@@ -157,7 +158,7 @@ export const visionAnalyzeExecutor: ToolExecutor<VisionAnalyzeParams> = async (
       log.info(`Downloading image from message ${messageId}...`);
 
       // Get underlying GramJS client
-      const gramJsClient = context.bridge.getClient().getClient();
+      const gramJsClient = (context.bridge.getRawClient() as any).getClient();
 
       // Get the message
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- chatId/messageId guaranteed in this branch

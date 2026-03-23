@@ -1,6 +1,7 @@
 import { Link, useLocation } from 'react-router-dom';
 import { Shell } from './Shell';
 import { AgentControl } from './AgentControl';
+import { ModeSwitch } from './ModeSwitch';
 import { logout } from '../lib/api';
 import { CSSProperties, ReactNode } from 'react';
 
@@ -49,6 +50,24 @@ function IconMemory() {
       <ellipse cx="12" cy="5" rx="9" ry="3" />
       <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3" />
       <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5" />
+    </svg>
+  );
+}
+
+function IconConversations() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+    </svg>
+  );
+}
+
+function IconWallet() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M21 12V7H5a2 2 0 0 1 0-4h14v4" />
+      <path d="M3 5v14a2 2 0 0 0 2 2h16v-5" />
+      <path d="M18 12a2 2 0 0 0 0 4h4v-4z" />
     </svg>
   );
 }
@@ -159,6 +178,8 @@ function DashboardNav() {
     { to: '/plugins',   icon: <IconPlugins />,   label: 'Plugins' },
     { to: '/soul',      icon: <IconSoul />,      label: 'Soul' },
     { to: '/memory',    icon: <IconMemory />,    label: 'Memory' },
+    { to: '/conversations', icon: <IconConversations />, label: 'Chats' },
+    { to: '/wallet',        icon: <IconWallet />,        label: 'Wallet' },
     { to: '/workspace', icon: <IconWorkspace />, label: 'Workspace' },
     { to: '/tasks',     icon: <IconTasks />,     label: 'Tasks' },
     { to: '/mcp',       icon: <IconMCP />,       label: 'MCP' },
@@ -192,6 +213,7 @@ function DashboardNav() {
       </nav>
 
       <div style={{ marginTop: 'auto' }}>
+        <ModeSwitch />
         <div style={{ margin: '8px 0', padding: '0 4px' }}>
           <AgentControl />
         </div>

@@ -10,5 +10,6 @@ export const tools: ToolEntry[] = [
     tool: botInlineSendTool,
     executor: botInlineSendExecutor,
     scope: "always",
+    requiredMode: "user",
   },
 ];

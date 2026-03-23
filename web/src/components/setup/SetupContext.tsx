@@ -3,7 +3,7 @@ import { setup, SetupConfig } from '../../lib/api';
 
 // ── Step metadata ───────────────────────────────────────────────────
 
-export const STEPS = [
+const ALL_STEPS = [
   { id: 'welcome',  label: 'Welcome' },
   { id: 'provider', label: 'Provider' },
   { id: 'config',   label: 'Config' },
@@ -11,6 +11,16 @@ export const STEPS = [
   { id: 'telegram', label: 'Telegram' },
   { id: 'connect',  label: 'Connect' },
 ];
+
+const BOT_EXCLUDED_STEPS = new Set(['telegram', 'connect']);
+
+export function getSteps(telegramMode: 'user' | 'bot') {
+  if (telegramMode === 'bot') return ALL_STEPS.filter((s) => !BOT_EXCLUDED_STEPS.has(s.id));
+  return ALL_STEPS;
+}
+
+// Default export for backward compat — components can use getSteps(data.telegramMode) for dynamic
+export const STEPS = ALL_STEPS;
 
 // ── Shared types ────────────────────────────────────────────────────
 
@@ -26,6 +36,7 @@ export interface WizardData {
   phone: string;
   userId: number;
   mode: 'quick' | 'advanced';
+  telegramMode: 'user' | 'bot';
   model: string;
   customModel: string;
   dmPolicy: string;
@@ -69,6 +80,7 @@ const DEFAULTS: WizardData = {
   phone: '',
   userId: 0,
   mode: 'quick',
+  telegramMode: 'user',
   model: '',
   customModel: '',
   dmPolicy: 'admin-only',
@@ -120,6 +132,7 @@ export function validateStep(step: number, data: WizardData): boolean {
         const modelValue = data.model === '__custom__' ? data.customModel : data.model;
         if (!modelValue) return false;
       }
+      if (data.telegramMode === 'bot' && !data.botToken) return false;
       return data.userId > 0 && data.maxIterations >= 1 && data.maxIterations <= 50;
     }
     case 3:
@@ -176,11 +189,12 @@ export function SetupProvider({ children }: { children: ReactNode }) {
   const [launching, setLaunching] = useState(false);
   const [launchError, setLaunchError] = useState('');
 
+  const steps = getSteps(data.telegramMode);
   const canAdvance = validateStep(step, data);
 
   const next = useCallback(() => {
-    if (canAdvance) setStep((s) => Math.min(s + 1, STEPS.length - 1));
-  }, [canAdvance]);
+    if (canAdvance) setStep((s) => Math.min(s + 1, steps.length - 1));
+  }, [canAdvance, steps.length]);
 
   const prev = useCallback(() => {
     setStep((s) => Math.max(s - 1, 0));
@@ -204,14 +218,15 @@ export function SetupProvider({ children }: { children: ReactNode }) {
           max_agentic_iterations: data.maxIterations,
         },
         telegram: {
+          ...(data.telegramMode === 'bot' ? { mode: 'bot' as const } : {}),
           api_id: data.apiId,
           api_hash: data.apiHash,
           phone: data.phone,
           admin_ids: [data.userId],
           owner_id: data.userId,
-          dm_policy: data.dmPolicy,
+          dm_policy: data.telegramMode === 'bot' ? 'admin-only' : data.dmPolicy,
           group_policy: data.groupPolicy,
-          require_mention: data.requireMention,
+          require_mention: data.telegramMode === 'bot' ? true : data.requireMention,
           ...(data.botToken ? { bot_token: data.botToken } : {}),
           ...(data.botUsername ? { bot_username: data.botUsername } : {}),
         },
@@ -253,14 +268,15 @@ export function SetupProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  // Auto-save when Telegram connects on the last step
+  // Auto-save when Telegram connects on the last step (user mode only)
+  // In bot mode, the last step is Wallet — save is triggered by the Finish button
   const saveRef = useRef(handleSave);
   saveRef.current = handleSave;
   useEffect(() => {
-    if (step === STEPS.length - 1 && data.telegramUser && !saved && !loading) {
+    if (step === steps.length - 1 && data.telegramUser && data.telegramMode === 'user' && !saved && !loading) {
       saveRef.current();
     }
-  }, [step, data.telegramUser, saved, loading]);
+  }, [step, steps.length, data.telegramUser, data.telegramMode, saved, loading]);
 
   return (
     <SetupContext.Provider

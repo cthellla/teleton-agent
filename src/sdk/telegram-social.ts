@@ -1,4 +1,5 @@
-import type { TelegramBridge } from "../telegram/bridge.js";
+/* eslint-disable @typescript-eslint/no-explicit-any */
+import type { ITelegramBridge } from "../telegram/bridge-interface.js";
 import type { Api } from "telegram";
 import type {
   PluginLogger,
@@ -26,9 +27,24 @@ import {
   toSimpleMessage,
 } from "./telegram-utils.js";
 
-export function createTelegramSocialSDK(bridge: TelegramBridge, log: PluginLogger) {
+export function createTelegramSocialSDK(
+  bridge: ITelegramBridge,
+  log: PluginLogger,
+  mode?: "user" | "bot"
+) {
+  const telegramMode = mode ?? bridge.getMode();
+
   function requireBridge(): void {
     requireBridgeUtil(bridge);
+  }
+
+  function requireUserMode(methodName: string): void {
+    if (telegramMode === "bot") {
+      throw new PluginSDKError(
+        `sdk.telegram.${methodName}() requires user mode`,
+        "OPERATION_FAILED"
+      );
+    }
   }
 
   function getClient() {
@@ -39,6 +55,7 @@ export function createTelegramSocialSDK(bridge: TelegramBridge, log: PluginLogge
     // ─── Chat & Users ─────────────────────────────────────────
 
     async getChatInfo(chatId: string): Promise<ChatInfo | null> {
+      requireUserMode("getChatInfo");
       requireBridge();
       try {
         const client = getClient();
@@ -122,6 +139,7 @@ export function createTelegramSocialSDK(bridge: TelegramBridge, log: PluginLogge
     },
 
     async getUserInfo(userId: number | string): Promise<UserInfo | null> {
+      requireUserMode("getUserInfo");
       requireBridge();
       try {
         const client = getClient();
@@ -154,6 +172,7 @@ export function createTelegramSocialSDK(bridge: TelegramBridge, log: PluginLogge
     },
 
     async resolveUsername(username: string): Promise<ResolvedPeer | null> {
+      requireUserMode("resolveUsername");
       requireBridge();
       try {
         const client = getClient();
@@ -215,6 +234,7 @@ export function createTelegramSocialSDK(bridge: TelegramBridge, log: PluginLogge
     },
 
     async getParticipants(chatId: string, limit?: number): Promise<UserInfo[]> {
+      requireUserMode("getParticipants");
       requireBridge();
       try {
         const client = getClient();
@@ -264,6 +284,7 @@ export function createTelegramSocialSDK(bridge: TelegramBridge, log: PluginLogge
       answers: string[],
       opts?: PollOptions
     ): Promise<number | null> {
+      requireUserMode("createPoll");
       requireBridge();
       if (!answers || answers.length < 2) {
         throw new PluginSDKError("Poll must have at least 2 answers", "OPERATION_FAILED");
@@ -330,6 +351,7 @@ export function createTelegramSocialSDK(bridge: TelegramBridge, log: PluginLogge
       correctIndex: number,
       explanation?: string
     ): Promise<number | null> {
+      requireUserMode("createQuiz");
       requireBridge();
       if (!answers || answers.length < 2) {
         throw new PluginSDKError("Quiz must have at least 2 answers", "OPERATION_FAILED");
@@ -400,6 +422,7 @@ export function createTelegramSocialSDK(bridge: TelegramBridge, log: PluginLogge
     // ─── Moderation ───────────────────────────────────────────
 
     async banUser(chatId: string, userId: number | string): Promise<void> {
+      requireUserMode("banUser");
       requireBridge();
       try {
         const client = getClient();
@@ -432,6 +455,7 @@ export function createTelegramSocialSDK(bridge: TelegramBridge, log: PluginLogge
     },
 
     async unbanUser(chatId: string, userId: number | string): Promise<void> {
+      requireUserMode("unbanUser");
       requireBridge();
       try {
         const client = getClient();
@@ -456,6 +480,7 @@ export function createTelegramSocialSDK(bridge: TelegramBridge, log: PluginLogge
     },
 
     async muteUser(chatId: string, userId: number | string, untilDate: number): Promise<void> {
+      requireUserMode("muteUser");
       requireBridge();
       try {
         const client = getClient();
@@ -483,6 +508,7 @@ export function createTelegramSocialSDK(bridge: TelegramBridge, log: PluginLogge
     // ─── Stars & Gifts ────────────────────────────────────────
 
     async getStarsBalance(): Promise<number> {
+      requireUserMode("getStarsBalance");
       requireBridge();
       try {
         const client = getClient();
@@ -509,6 +535,7 @@ export function createTelegramSocialSDK(bridge: TelegramBridge, log: PluginLogge
       giftId: string,
       opts?: { message?: string; anonymous?: boolean }
     ): Promise<void> {
+      requireUserMode("sendGift");
       requireBridge();
       try {
         const client = getClient();
@@ -547,6 +574,7 @@ export function createTelegramSocialSDK(bridge: TelegramBridge, log: PluginLogge
     },
 
     async getAvailableGifts(): Promise<StarGift[]> {
+      requireUserMode("getAvailableGifts");
       requireBridge();
       try {
         const client = getClient();
@@ -558,9 +586,9 @@ export function createTelegramSocialSDK(bridge: TelegramBridge, log: PluginLogge
           return [];
         }
 
-        return (result.gifts || [])
+        return ((result.gifts || []) as Api.TypeStarGift[])
           .filter((g): g is Api.StarGift => g.className !== "StarGiftUnique" && !g.soldOut)
-          .map((gift) => ({
+          .map((gift: Api.StarGift) => ({
             id: gift.id?.toString(),
             starsAmount: Number(gift.stars?.toString() || "0"),
             availableAmount: gift.limited
@@ -580,6 +608,7 @@ export function createTelegramSocialSDK(bridge: TelegramBridge, log: PluginLogge
     },
 
     async getMyGifts(limit?: number): Promise<ReceivedGift[]> {
+      requireUserMode("getMyGifts");
       requireBridge();
       try {
         const client = getClient();
@@ -593,7 +622,7 @@ export function createTelegramSocialSDK(bridge: TelegramBridge, log: PluginLogge
           })
         );
 
-        return (result.gifts || []).map((savedGift) => {
+        return (result.gifts || []).map((savedGift: any) => {
           const gift = savedGift.gift as Api.StarGift;
           return {
             id: gift?.id?.toString() || "",
@@ -614,6 +643,7 @@ export function createTelegramSocialSDK(bridge: TelegramBridge, log: PluginLogge
     },
 
     async getResaleGifts(giftId: string, limit?: number): Promise<StarGift[]> {
+      requireUserMode("getResaleGifts");
       requireBridge();
       try {
         const client = getClient();
@@ -627,7 +657,7 @@ export function createTelegramSocialSDK(bridge: TelegramBridge, log: PluginLogge
           })
         );
 
-        return (result.gifts || []).map((g) => {
+        return (result.gifts || []).map((g: any) => {
           const listing = g as Api.StarGiftUnique;
           return {
             id: listing.slug || listing.id?.toString() || "",
@@ -644,6 +674,7 @@ export function createTelegramSocialSDK(bridge: TelegramBridge, log: PluginLogge
     },
 
     async buyResaleGift(giftId: string): Promise<void> {
+      requireUserMode("buyResaleGift");
       requireBridge();
       try {
         const client = getClient();
@@ -675,12 +706,13 @@ export function createTelegramSocialSDK(bridge: TelegramBridge, log: PluginLogge
     // ─── Chat ───────────────────────────────────────────────────
 
     async getDialogs(limit?: number): Promise<Dialog[]> {
+      requireUserMode("getDialogs");
       requireBridge();
       try {
         const client = getClient();
         const dialogs = await client.getDialogs({ limit: Math.min(limit ?? 50, 100) });
 
-        return dialogs.map((dialog) => ({
+        return dialogs.map((dialog: any) => ({
           id: dialog.id?.toString() || null,
           title: dialog.title || "Unknown",
           type: (dialog.isChannel ? "channel" : dialog.isGroup ? "group" : "dm") as Dialog["type"],
@@ -699,6 +731,7 @@ export function createTelegramSocialSDK(bridge: TelegramBridge, log: PluginLogge
     },
 
     async getHistory(chatId: string, limit?: number): Promise<SimpleMessage[]> {
+      requireUserMode("getHistory");
       requireBridge();
       try {
         const client = getClient();
@@ -717,6 +750,7 @@ export function createTelegramSocialSDK(bridge: TelegramBridge, log: PluginLogge
     // ─── Extended Moderation ──────────────────────────────────
 
     async kickUser(chatId: string, userId: number | string): Promise<void> {
+      requireUserMode("kickUser");
       // Ban then immediately unban = kick (user is removed but can rejoin)
       await this.banUser(chatId, userId);
       await this.unbanUser(chatId, userId);
@@ -725,6 +759,7 @@ export function createTelegramSocialSDK(bridge: TelegramBridge, log: PluginLogge
     // ─── Extended Stars & Gifts ─────────────────────────────────
 
     async getStarsTransactions(limit?: number): Promise<StarsTransaction[]> {
+      requireUserMode("getStarsTransactions");
       requireBridge();
       try {
         const client = getClient();
@@ -738,7 +773,7 @@ export function createTelegramSocialSDK(bridge: TelegramBridge, log: PluginLogge
           })
         );
 
-        return (result.history || []).map((tx) => ({
+        return (result.history || []).map((tx: any) => ({
           id: tx.id?.toString() || "",
           amount: Number(tx.amount?.amount?.toString() || "0"),
           date: tx.date || 0,
@@ -753,6 +788,7 @@ export function createTelegramSocialSDK(bridge: TelegramBridge, log: PluginLogge
     },
 
     async transferCollectible(msgId: number, toUserId: number | string): Promise<TransferResult> {
+      requireUserMode("transferCollectible");
       requireBridge();
       try {
         const client = getClient();
@@ -800,6 +836,7 @@ export function createTelegramSocialSDK(bridge: TelegramBridge, log: PluginLogge
     },
 
     async setCollectiblePrice(msgId: number, price: number): Promise<void> {
+      requireUserMode("setCollectiblePrice");
       requireBridge();
       try {
         const client = getClient();
@@ -824,6 +861,7 @@ export function createTelegramSocialSDK(bridge: TelegramBridge, log: PluginLogge
     },
 
     async getCollectibleInfo(slug: string): Promise<CollectibleInfo | null> {
+      requireUserMode("getCollectibleInfo");
       requireBridge();
       try {
         const client = getClient();
@@ -862,6 +900,8 @@ export function createTelegramSocialSDK(bridge: TelegramBridge, log: PluginLogge
           }
         }
 
+        if (!result) return null;
+
         return {
           type,
           value: slug,
@@ -880,6 +920,7 @@ export function createTelegramSocialSDK(bridge: TelegramBridge, log: PluginLogge
     },
 
     async getUniqueGift(slug: string): Promise<UniqueGift | null> {
+      requireUserMode("getUniqueGift");
       requireBridge();
       try {
         const client = getClient();
@@ -892,7 +933,7 @@ export function createTelegramSocialSDK(bridge: TelegramBridge, log: PluginLogge
         const ownerPeer = gift.ownerId;
         const ownerUserId =
           ownerPeer && "userId" in ownerPeer ? ownerPeer.userId?.toString() : undefined;
-        const ownerUser = users.find(
+        const ownerUser = (users as Api.TypeUser[]).find(
           (u): u is Api.User => u.className === "User" && u.id?.toString() === ownerUserId
         );
 
@@ -940,6 +981,7 @@ export function createTelegramSocialSDK(bridge: TelegramBridge, log: PluginLogge
     },
 
     async getUniqueGiftValue(slug: string): Promise<GiftValue | null> {
+      requireUserMode("getUniqueGiftValue");
       requireBridge();
       try {
         const client = getClient();
@@ -977,6 +1019,7 @@ export function createTelegramSocialSDK(bridge: TelegramBridge, log: PluginLogge
       price: number,
       opts?: GiftOfferOptions
     ): Promise<void> {
+      requireUserMode("sendGiftOffer");
       requireBridge();
       try {
         const client = getClient();
@@ -1006,6 +1049,7 @@ export function createTelegramSocialSDK(bridge: TelegramBridge, log: PluginLogge
     // ─── Stories ───────────────────────────────────────────────
 
     async sendStory(mediaPath: string, opts?: { caption?: string }): Promise<number | null> {
+      requireUserMode("sendStory");
       requireBridge();
       try {
         const client = getClient();

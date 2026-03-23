@@ -12,9 +12,13 @@ export { telegramReactTool, telegramReactExecutor };
 export { telegramSendDiceTool, telegramSendDiceExecutor };
 
 export const tools: ToolEntry[] = [
-  { tool: telegramCreatePollTool, executor: telegramCreatePollExecutor },
-  { tool: telegramCreateQuizTool, executor: telegramCreateQuizExecutor },
-  { tool: telegramReplyKeyboardTool, executor: telegramReplyKeyboardExecutor },
+  { tool: telegramCreatePollTool, executor: telegramCreatePollExecutor, requiredMode: "user" },
+  { tool: telegramCreateQuizTool, executor: telegramCreateQuizExecutor, requiredMode: "user" },
+  {
+    tool: telegramReplyKeyboardTool,
+    executor: telegramReplyKeyboardExecutor,
+    requiredMode: "user",
+  },
   { tool: telegramReactTool, executor: telegramReactExecutor },
   { tool: telegramSendDiceTool, executor: telegramSendDiceExecutor },
 ];

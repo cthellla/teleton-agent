@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { Type } from "@sinclair/typebox";
 import { Api } from "telegram";
 import type { Tool, ToolExecutor, ToolResult } from "../../types.js";
@@ -45,7 +46,7 @@ export const telegramSetGiftStatusExecutor: ToolExecutor<SetGiftStatusParams> = 
 ): Promise<ToolResult> => {
   try {
     const { collectibleId, clear = false } = params;
-    const gramJsClient = context.bridge.getClient().getClient();
+    const gramJsClient = (context.bridge.getRawClient() as any).getClient();
 
     let emojiStatus: Api.TypeEmojiStatus;
 

@@ -5,6 +5,7 @@
 
 import { Type } from "@sinclair/typebox";
 import { Api } from "telegram";
+import type { TelegramClient } from "telegram";
 import type { Tool, ToolExecutor, ToolResult } from "../../types.js";
 import { getErrorMessage } from "../../../../utils/errors.js";
 import { createLogger } from "../../../../utils/logger.js";
@@ -46,18 +47,9 @@ export const telegramPinMessageExecutor: ToolExecutor<PinMessageParams> = async 
   context
 ): Promise<ToolResult> => {
   try {
-    const { chat_id, message_id, silent = false, both_sides = true } = params;
+    const { chat_id, message_id } = params;
 
-    const client = context.bridge.getClient().getClient();
-
-    await client.invoke(
-      new Api.messages.UpdatePinnedMessage({
-        peer: chat_id,
-        id: message_id,
-        silent,
-        pmOneside: !both_sides,
-      })
-    );
+    await context.bridge.pinMessage(chat_id, message_id);
 
     return {
       success: true,
@@ -111,7 +103,7 @@ export const telegramUnpinMessageExecutor: ToolExecutor<UnpinMessageParams> = as
   try {
     const { chat_id, message_id, unpin_all = false } = params;
 
-    const client = context.bridge.getClient().getClient();
+    const client = context.bridge.getRawClient() as TelegramClient;
 
     if (unpin_all) {
       await client.invoke(

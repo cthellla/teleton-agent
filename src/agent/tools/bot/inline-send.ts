@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 /**
  * Generic inline bot send tool — sends plugin inline results into chats.
  * Replicates the userbot→bot inline query pattern from deal proposals.
@@ -51,7 +52,7 @@ export const botInlineSendExecutor: ToolExecutor<BotInlineSendParams> = async (p
   }
 
   try {
-    const gramJsClient = context.bridge.getClient().getClient();
+    const gramJsClient = (context.bridge.getRawClient() as any).getClient();
 
     // Resolve bot and chat entities
     const bot = await gramJsClient.getInputEntity(botUsername);

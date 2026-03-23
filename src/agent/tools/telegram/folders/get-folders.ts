@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { Type } from "@sinclair/typebox";
 import { Api } from "telegram";
 import type { Tool, ToolExecutor, ToolResult } from "../../types.js";
@@ -25,7 +26,7 @@ export const telegramGetFoldersExecutor: ToolExecutor<{}> = async (
 ): Promise<ToolResult> => {
   try {
     // Get underlying GramJS client
-    const gramJsClient = context.bridge.getClient().getClient();
+    const gramJsClient = (context.bridge.getRawClient() as any).getClient();
 
     // Get dialog filters (folders)
     // GetDialogFilters returns messages.DialogFilters { filters: [] } (not a plain array)

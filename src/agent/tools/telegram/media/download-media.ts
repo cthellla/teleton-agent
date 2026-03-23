@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { Type } from "@sinclair/typebox";
 import type { Api } from "telegram";
 import { writeFileSync } from "fs";
@@ -52,7 +53,7 @@ export const telegramDownloadMediaExecutor: ToolExecutor<DownloadMediaParams> = 
     const { chatId, messageId, filename } = params;
 
     // Get underlying GramJS client
-    const gramJsClient = context.bridge.getClient().getClient();
+    const gramJsClient = (context.bridge.getRawClient() as any).getClient();
 
     // Get the message
     const messages = await gramJsClient.getMessages(chatId, {

@@ -41,36 +41,56 @@ export { telegramCheckChannelUsernameTool, telegramCheckChannelUsernameExecutor 
 export { telegramSetChannelUsernameTool, telegramSetChannelUsernameExecutor };
 
 export const tools: ToolEntry[] = [
-  { tool: telegramGetDialogsTool, executor: telegramGetDialogsExecutor },
-  { tool: telegramGetHistoryTool, executor: telegramGetHistoryExecutor },
+  { tool: telegramGetDialogsTool, executor: telegramGetDialogsExecutor, requiredMode: "user" },
+  { tool: telegramGetHistoryTool, executor: telegramGetHistoryExecutor, requiredMode: "user" },
   { tool: telegramGetChatInfoTool, executor: telegramGetChatInfoExecutor },
-  { tool: telegramMarkAsReadTool, executor: telegramMarkAsReadExecutor },
-  { tool: telegramJoinChannelTool, executor: telegramJoinChannelExecutor, scope: "dm-only" },
-  { tool: telegramLeaveChannelTool, executor: telegramLeaveChannelExecutor, scope: "dm-only" },
-  { tool: telegramCreateChannelTool, executor: telegramCreateChannelExecutor, scope: "dm-only" },
+  { tool: telegramMarkAsReadTool, executor: telegramMarkAsReadExecutor, requiredMode: "user" },
+  {
+    tool: telegramJoinChannelTool,
+    executor: telegramJoinChannelExecutor,
+    scope: "dm-only",
+    requiredMode: "user",
+  },
+  {
+    tool: telegramLeaveChannelTool,
+    executor: telegramLeaveChannelExecutor,
+    scope: "dm-only",
+    requiredMode: "user",
+  },
+  {
+    tool: telegramCreateChannelTool,
+    executor: telegramCreateChannelExecutor,
+    scope: "dm-only",
+    requiredMode: "user",
+  },
   {
     tool: telegramEditChannelInfoTool,
     executor: telegramEditChannelInfoExecutor,
     scope: "dm-only",
+    requiredMode: "user",
   },
   {
     tool: telegramInviteToChannelTool,
     executor: telegramInviteToChannelExecutor,
     scope: "dm-only",
+    requiredMode: "user",
   },
   {
     tool: telegramGetAdminedChannelsTool,
     executor: telegramGetAdminedChannelsExecutor,
     scope: "dm-only",
+    requiredMode: "user",
   },
   {
     tool: telegramCheckChannelUsernameTool,
     executor: telegramCheckChannelUsernameExecutor,
     scope: "dm-only",
+    requiredMode: "user",
   },
   {
     tool: telegramSetChannelUsernameTool,
     executor: telegramSetChannelUsernameExecutor,
     scope: "dm-only",
+    requiredMode: "user",
   },
 ];

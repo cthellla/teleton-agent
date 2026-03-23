@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { Type } from "@sinclair/typebox";
 import { Api } from "telegram";
 import type { Tool, ToolExecutor, ToolResult } from "../../types.js";
@@ -48,7 +49,7 @@ export const telegramJoinChannelExecutor: ToolExecutor<JoinChannelParams> = asyn
     const { channel } = params;
 
     // Get underlying GramJS client
-    const gramJsClient = context.bridge.getClient().getClient();
+    const gramJsClient = (context.bridge.getRawClient() as any).getClient();
 
     // Try invite link first if the input looks like one
     const inviteHash = extractInviteHash(channel);

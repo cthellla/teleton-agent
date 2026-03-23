@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { Type } from "@sinclair/typebox";
 import type { Tool, ToolExecutor, ToolResult } from "../../types.js";
 import { Api } from "telegram";
@@ -38,7 +39,7 @@ export const telegramBlockUserExecutor: ToolExecutor<BlockUserParams> = async (
     const { userId } = params;
 
     // Get underlying GramJS client
-    const gramJsClient = context.bridge.getClient().getClient();
+    const gramJsClient = (context.bridge.getRawClient() as any).getClient();
 
     // Get user entity
     const userEntity = await gramJsClient.getInputEntity(userId);

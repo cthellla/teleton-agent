@@ -30,10 +30,39 @@ export { telegramSetChatPhotoTool, telegramSetChatPhotoExecutor };
 
 export const tools: ToolEntry[] = [
   { tool: telegramGetMeTool, executor: telegramGetMeExecutor },
-  { tool: telegramGetParticipantsTool, executor: telegramGetParticipantsExecutor },
-  { tool: telegramKickUserTool, executor: telegramKickUserExecutor, scope: "group-only" },
-  { tool: telegramBanUserTool, executor: telegramBanUserExecutor, scope: "group-only" },
-  { tool: telegramUnbanUserTool, executor: telegramUnbanUserExecutor, scope: "group-only" },
-  { tool: telegramCreateGroupTool, executor: telegramCreateGroupExecutor, scope: "dm-only" },
-  { tool: telegramSetChatPhotoTool, executor: telegramSetChatPhotoExecutor, scope: "group-only" },
+  {
+    tool: telegramGetParticipantsTool,
+    executor: telegramGetParticipantsExecutor,
+    requiredMode: "user",
+  },
+  {
+    tool: telegramKickUserTool,
+    executor: telegramKickUserExecutor,
+    scope: "group-only",
+    requiredMode: "user",
+  },
+  {
+    tool: telegramBanUserTool,
+    executor: telegramBanUserExecutor,
+    scope: "group-only",
+    requiredMode: "user",
+  },
+  {
+    tool: telegramUnbanUserTool,
+    executor: telegramUnbanUserExecutor,
+    scope: "group-only",
+    requiredMode: "user",
+  },
+  {
+    tool: telegramCreateGroupTool,
+    executor: telegramCreateGroupExecutor,
+    scope: "dm-only",
+    requiredMode: "user",
+  },
+  {
+    tool: telegramSetChatPhotoTool,
+    executor: telegramSetChatPhotoExecutor,
+    scope: "group-only",
+    requiredMode: "user",
+  },
 ];

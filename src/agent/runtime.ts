@@ -1,4 +1,5 @@
 import type { Config } from "../config/schema.js";
+import type { ITelegramBridge } from "../telegram/bridge-interface.js";
 import {
   MAX_TOOL_RESULT_SIZE,
   COMPACTION_MAX_MESSAGES,
@@ -92,6 +93,7 @@ export interface ProcessMessageOptions {
   messageId?: number;
   replyContext?: { senderName?: string; text: string; isAgent?: boolean };
   isHeartbeat?: boolean;
+  streamToChat?: { chatId: string; bridge: ITelegramBridge; mode: "all" | "replace" | "off" };
 }
 
 export interface AgentResponse {
@@ -100,6 +102,7 @@ export interface AgentResponse {
     name: string;
     input: Record<string, unknown>;
   }>;
+  streamed?: boolean;
 }
 
 /** Compact summary of tool params for the iteration log line. */
@@ -457,6 +460,7 @@ export class AgentRuntime {
         memoryFlushWarning: needsMemoryFlush,
         isHeartbeat,
         agentModel: this.config.agent.model,
+        telegramMode: this.config.telegram.mode,
       });
 
       // Hook: prompt:after — observing, analytics on prompt size
@@ -547,6 +551,8 @@ export class AgentRuntime {
       const accumulatedTexts: string[] = [];
       const accumulatedUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalCost: 0 };
       const seenToolSignatures = new Set<string>();
+      let wasStreamed = false;
+      let streamAccumulatedText = ""; // For "all" mode: concatenate text across iterations
 
       interface ToolPlan {
         block: ToolCall;
@@ -573,13 +579,82 @@ export class AgentRuntime {
         });
         const maskedContext: Context = { ...context, messages: maskedMessages };
 
-        const response: ChatResponse = await chatWithContext(this.config.agent, {
-          systemPrompt,
-          context: maskedContext,
-          sessionId: session.sessionId,
-          persistTranscript: true,
-          tools,
-        });
+        let response: ChatResponse;
+        let streamed = false;
+
+        const streamMode = opts.streamToChat?.mode;
+        const shouldStream =
+          opts.streamToChat?.bridge.streamResponse &&
+          streamMode !== undefined &&
+          streamMode !== "off";
+
+        if (shouldStream) {
+          const { streamWithContext } = await import("./client.js");
+          const { isBotBridge } = await import("../telegram/bridge-guards.js");
+
+          // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- guarded by shouldStream check
+          const bridge = opts.streamToChat!.bridge;
+          if (isBotBridge(bridge)) {
+            if (streamMode === "replace") {
+              // Reset draft for each iteration (new draft bubble)
+              // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- guarded by shouldStream
+              bridge.resetDraft(opts.streamToChat!.chatId);
+              streamAccumulatedText = "";
+            }
+
+            const { textStream, result } = streamWithContext(this.config.agent, {
+              systemPrompt,
+              context: maskedContext,
+              sessionId: session.sessionId,
+              persistTranscript: true,
+              tools,
+            });
+
+            // "all" mode: prepend accumulated text from previous iterations
+            const prefix = streamMode === "all" ? streamAccumulatedText : "";
+            async function* prefixedStream(): AsyncIterable<string> {
+              let first = true;
+              for await (const chunk of textStream) {
+                if (first && prefix) {
+                  yield prefix + chunk;
+                  first = false;
+                } else {
+                  yield chunk;
+                }
+              }
+            }
+
+            // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- guarded by shouldStream check
+            const draftText = await bridge.streamDraft(opts.streamToChat!.chatId, prefixedStream());
+            if (streamMode === "all") {
+              if (draftText.length === 0 && streamAccumulatedText.length > 0) {
+                // LLM produced only tool calls — clear the stale draft bubble
+                // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- guarded by shouldStream
+                await bridge.clearDraft(opts.streamToChat!.chatId);
+              }
+              streamAccumulatedText = draftText + "\n\n";
+            }
+
+            response = await result;
+          } else {
+            response = await chatWithContext(this.config.agent, {
+              systemPrompt,
+              context: maskedContext,
+              sessionId: session.sessionId,
+              persistTranscript: true,
+              tools,
+            });
+          }
+          streamed = true;
+        } else {
+          response = await chatWithContext(this.config.agent, {
+            systemPrompt,
+            context: maskedContext,
+            sessionId: session.sessionId,
+            persistTranscript: true,
+            tools,
+          });
+        }
 
         const assistantMsg = response.message;
         if (assistantMsg.stopReason === "error") {
@@ -700,6 +775,7 @@ export class AgentRuntime {
         if (toolCalls.length === 0) {
           log.info(`${iteration}/${maxIterations} → done`);
           finalResponse = response;
+          wasStreamed = streamed;
           break;
         }
 
@@ -1010,9 +1086,19 @@ export class AgentRuntime {
         await this.hookRunner.runObservingHook("response:after", responseAfterEvent);
       }
 
+      // Finalize streaming draft → send the real message
+      if (wasStreamed && opts.streamToChat) {
+        const { isBotBridge } = await import("../telegram/bridge-guards.js");
+        const bridge = opts.streamToChat.bridge;
+        if (isBotBridge(bridge)) {
+          await bridge.finalizeDraft(opts.streamToChat.chatId, content);
+        }
+      }
+
       return {
         content,
         toolCalls: totalToolCalls,
+        streamed: wasStreamed,
       };
     } catch (error) {
       log.error({ err: error }, "Agent error");

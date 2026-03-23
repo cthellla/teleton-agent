@@ -63,9 +63,11 @@ export interface OnboardOptions {
   nonInteractive?: boolean;
   ui?: boolean;
   uiPort?: string;
+  mode?: "user" | "bot";
   apiId?: number;
   apiHash?: string;
   phone?: string;
+  botToken?: string;
   apiKey?: string;
   baseUrl?: string;
   userId?: number;
@@ -187,6 +189,7 @@ async function runInteractiveOnboarding(
   let tonapiKey: string | undefined;
   let toncenterApiKey: string | undefined;
   let tavilyApiKey: string | undefined;
+  let telegramMode: "user" | "bot" = "user";
   let botToken: string | undefined;
   let botUsername: string | undefined;
   let dmPolicy: "open" | "allowlist" | "admin-only" | "disabled" = "admin-only";
@@ -269,6 +272,24 @@ async function runInteractiveOnboarding(
     const updated = identity.replace("[Your name - pick one or ask your human]", agentName.trim());
     writeFileSync(workspace.identityPath, updated, "utf-8");
   }
+
+  telegramMode = await select({
+    message: "Telegram mode",
+    default: "user",
+    theme,
+    choices: [
+      {
+        value: "user" as const,
+        name: "User Account (full power)",
+        description: "Log in with your personal Telegram account",
+      },
+      {
+        value: "bot" as const,
+        name: "Bot Telegram (simpler setup)",
+        description: "Use a Telegram bot token — no phone number needed",
+      },
+    ],
+  });
 
   STEPS[0].value = agentName;
 
@@ -502,43 +523,49 @@ async function runInteractiveOnboarding(
       });
   userId = parseInt(userIdStr);
 
-  dmPolicy = await select({
-    message: "DM policy (private messages)",
-    default: "admin-only",
-    theme,
-    choices: [
-      {
-        value: "admin-only" as const,
-        name: "Admin Only",
-        description: "Only admins can DM the agent",
-      },
-      { value: "allowlist" as const, name: "Allowlist", description: "Only specific users" },
-      { value: "open" as const, name: "Open", description: "Reply to everyone" },
-      { value: "disabled" as const, name: "Disabled", description: "Ignore all DMs" },
-    ],
-  });
+  if (telegramMode === "bot") {
+    dmPolicy = "admin-only";
+    groupPolicy = "admin-only";
+    requireMention = true;
+  } else {
+    dmPolicy = await select({
+      message: "DM policy (private messages)",
+      default: "admin-only",
+      theme,
+      choices: [
+        {
+          value: "admin-only" as const,
+          name: "Admin Only",
+          description: "Only admins can DM the agent",
+        },
+        { value: "allowlist" as const, name: "Allowlist", description: "Only specific users" },
+        { value: "open" as const, name: "Open", description: "Reply to everyone" },
+        { value: "disabled" as const, name: "Disabled", description: "Ignore all DMs" },
+      ],
+    });
 
-  groupPolicy = await select({
-    message: "Group policy",
-    default: "admin-only",
-    theme,
-    choices: [
-      {
-        value: "admin-only" as const,
-        name: "Admin Only",
-        description: "Only admins can trigger the agent",
-      },
-      { value: "allowlist" as const, name: "Allowlist", description: "Only specific groups" },
-      { value: "open" as const, name: "Open", description: "Reply in all groups" },
-      { value: "disabled" as const, name: "Disabled", description: "Ignore all group messages" },
-    ],
-  });
+    groupPolicy = await select({
+      message: "Group policy",
+      default: "admin-only",
+      theme,
+      choices: [
+        {
+          value: "admin-only" as const,
+          name: "Admin Only",
+          description: "Only admins can trigger the agent",
+        },
+        { value: "allowlist" as const, name: "Allowlist", description: "Only specific groups" },
+        { value: "open" as const, name: "Open", description: "Reply in all groups" },
+        { value: "disabled" as const, name: "Disabled", description: "Ignore all group messages" },
+      ],
+    });
 
-  requireMention = await confirm({
-    message: "Require @mention in groups?",
-    default: true,
-    theme,
-  });
+    requireMention = await confirm({
+      message: "Require @mention in groups?",
+      default: true,
+      theme,
+    });
+  }
 
   maxAgenticIterations = await input({
     message: "Max agentic iterations (tool call loops per message)",
@@ -573,12 +600,15 @@ async function runInteractiveOnboarding(
 
   const extras: string[] = [];
 
-  // Bot token (recommended — required for deals module)
-  const setupBot = await confirm({
-    message: `Add a Telegram bot token? ${DIM("(recommended — enables deals & inline buttons)")}`,
-    default: true,
-    theme,
-  });
+  // Bot token (recommended — required for deals module; skipped in bot mode, handled at step 5)
+  const setupBot =
+    telegramMode === "user"
+      ? await confirm({
+          message: `Add a Telegram bot token? ${DIM("(recommended — enables deals & inline buttons)")}`,
+          default: true,
+          theme,
+        })
+      : false;
 
   if (setupBot) {
     noteBox(
@@ -863,62 +893,102 @@ async function runInteractiveOnboarding(
   // ════════════════════════════════════════════════════════════════════
   redraw(5);
 
-  noteBox(
-    "To get your API credentials:\n" +
-      "\n" +
-      "  1. Go to https://my.telegram.org/apps\n" +
-      "  2. Log in with your phone number\n" +
-      '  3. Click "API development tools"\n' +
-      "  4. Create an application (any name/short name works)\n" +
-      "  5. Copy the API ID (number) and API Hash (hex string)\n" +
-      "\n" +
-      "⚠ Do NOT use a VPN — Telegram will block the login page.",
-    "Telegram",
-    TON
-  );
+  if (telegramMode === "bot") {
+    noteBox(
+      "Create or use an existing bot with @BotFather on Telegram:\n" +
+        "1. Send /newbot and follow the instructions\n" +
+        "2. Copy the bot token (format: 123456:ABC-DEF...)\n" +
+        "3. Start the bot by sending /start to it",
+      "Bot Token",
+      TON
+    );
 
-  const envApiId = process.env.TELETON_TG_API_ID;
-  const envApiHash = process.env.TELETON_TG_API_HASH;
-  const envPhone = process.env.TELETON_TG_PHONE;
+    const tokenInput = await password({
+      message: "Bot token (from @BotFather)",
+      theme,
+      validate: (value = "") => {
+        if (!value) return "Bot token is required";
+        if (!/^[0-9]+:[A-Za-z0-9_-]+$/.test(value))
+          return "Invalid format (expected 123456:ABC...)";
+        return true;
+      },
+    });
+    botToken = tokenInput;
 
-  const apiIdStr = options.apiId
-    ? options.apiId.toString()
-    : await input({
-        message: envApiId ? "API ID (from env)" : "API ID (from my.telegram.org)",
-        default: envApiId,
-        theme,
-        validate: (value) => {
-          if (!value || isNaN(parseInt(value))) return "Invalid API ID (must be a number)";
-          return true;
-        },
-      });
-  apiId = parseInt(apiIdStr);
+    // Validate and fetch bot username
+    spinner.start(DIM("Validating bot token..."));
+    try {
+      const res = await fetchWithTimeout(`https://api.telegram.org/bot${botToken}/getMe`);
+      const data = await res.json();
+      if (!data.ok) {
+        spinner.warn(DIM("Bot token validation failed — saving anyway"));
+      } else {
+        botUsername = data.result.username;
+        spinner.succeed(DIM(`Bot verified: @${botUsername}`));
+      }
+    } catch {
+      spinner.warn(DIM("Could not validate bot token (network error) — saving anyway"));
+    }
 
-  apiHash = options.apiHash
-    ? options.apiHash
-    : await input({
-        message: envApiHash ? "API Hash (from env)" : "API Hash (from my.telegram.org)",
-        default: envApiHash,
-        theme,
-        validate: (value) => {
-          if (!value || value.length < 10) return "Invalid API Hash";
-          return true;
-        },
-      });
+    STEPS[5].value = botUsername ? `@${botUsername}` : "bot token set";
+  } else {
+    noteBox(
+      "To get your API credentials:\n" +
+        "\n" +
+        "  1. Go to https://my.telegram.org/apps\n" +
+        "  2. Log in with your phone number\n" +
+        '  3. Click "API development tools"\n' +
+        "  4. Create an application (any name/short name works)\n" +
+        "  5. Copy the API ID (number) and API Hash (hex string)\n" +
+        "\n" +
+        "⚠ Do NOT use a VPN — Telegram will block the login page.",
+      "Telegram",
+      TON
+    );
 
-  phone = options.phone
-    ? options.phone
-    : await input({
-        message: envPhone ? "Phone number (from env)" : "Phone number (international format)",
-        default: envPhone,
-        theme,
-        validate: (value) => {
-          if (!value || !value.startsWith("+")) return "Must start with +";
-          return true;
-        },
-      });
+    const envApiId = process.env.TELETON_TG_API_ID;
+    const envApiHash = process.env.TELETON_TG_API_HASH;
+    const envPhone = process.env.TELETON_TG_PHONE;
 
-  STEPS[5].value = phone;
+    const apiIdStr = options.apiId
+      ? options.apiId.toString()
+      : await input({
+          message: envApiId ? "API ID (from env)" : "API ID (from my.telegram.org)",
+          default: envApiId,
+          theme,
+          validate: (value) => {
+            if (!value || isNaN(parseInt(value))) return "Invalid API ID (must be a number)";
+            return true;
+          },
+        });
+    apiId = parseInt(apiIdStr);
+
+    apiHash = options.apiHash
+      ? options.apiHash
+      : await input({
+          message: envApiHash ? "API Hash (from env)" : "API Hash (from my.telegram.org)",
+          default: envApiHash,
+          theme,
+          validate: (value) => {
+            if (!value || value.length < 10) return "Invalid API Hash";
+            return true;
+          },
+        });
+
+    phone = options.phone
+      ? options.phone
+      : await input({
+          message: envPhone ? "Phone number (from env)" : "Phone number (international format)",
+          default: envPhone,
+          theme,
+          validate: (value) => {
+            if (!value || !value.startsWith("+")) return "Must start with +";
+            return true;
+          },
+        });
+
+    STEPS[5].value = phone;
+  }
 
   // ════════════════════════════════════════════════════════════════════
   // Step 6: Connect — save config + Telegram auth
@@ -949,9 +1019,10 @@ async function runInteractiveOnboarding(
       },
     },
     telegram: {
-      api_id: apiId,
-      api_hash: apiHash,
-      phone,
+      mode: telegramMode,
+      api_id: telegramMode === "user" ? apiId : 0,
+      api_hash: telegramMode === "user" ? apiHash : "",
+      phone: telegramMode === "user" ? phone : "",
       session_name: "teleton_session",
       session_path: workspace.sessionPath,
       dm_policy: dmPolicy,
@@ -969,6 +1040,7 @@ async function runInteractiveOnboarding(
       debounce_ms: 1500,
       bot_token: botToken,
       bot_username: botUsername,
+      stream_mode: "all",
     },
     storage: {
       sessions_file: `${workspace.root}/sessions.json`,
@@ -1032,41 +1104,47 @@ async function runInteractiveOnboarding(
 
   // Telegram authentication
   let telegramConnected = false;
-  const connectNow = await confirm({
-    message: `Connect to Telegram now? ${DIM("(verification code will be sent to your phone)")}`,
-    default: true,
-    theme,
-  });
+  if (telegramMode === "bot") {
+    console.log(`\n  ${DIM("Bot mode — no Telegram auth required. Ready to start.")}\n`);
+    STEPS[6].value = "Bot mode ✓";
+    telegramConnected = true;
+  } else {
+    const connectNow = await confirm({
+      message: `Connect to Telegram now? ${DIM("(verification code will be sent to your phone)")}`,
+      default: true,
+      theme,
+    });
 
-  if (connectNow) {
-    console.log(
-      `\n  ${DIM("Connecting to Telegram... Check your phone for the verification code.")}`
-    );
-    try {
-      const sessionPath = join(TELETON_ROOT, "telegram_session.txt");
-      const client = new TelegramUserClient({
-        apiId,
-        apiHash,
-        phone,
-        sessionPath,
-      });
-      await client.connect();
-      const me = client.getMe();
-      await client.disconnect();
-      telegramConnected = true;
-      const displayName = `${me?.firstName || ""}${me?.username ? ` (@${me.username})` : ""}`;
-      console.log(`  ${GREEN("✓")} ${DIM("Telegram connected as")} ${CYAN(displayName)}\n`);
-      STEPS[6].value = `Connected${me?.username ? ` (@${me.username})` : ""}`;
-    } catch (error) {
-      prompter.warn(
-        `Telegram connection failed: ${error instanceof Error ? error.message : String(error)}\n` +
-          "You can authenticate later when running: teleton start"
+    if (connectNow) {
+      console.log(
+        `\n  ${DIM("Connecting to Telegram... Check your phone for the verification code.")}`
       );
+      try {
+        const sessionPath = join(TELETON_ROOT, "telegram_session.txt");
+        const client = new TelegramUserClient({
+          apiId,
+          apiHash,
+          phone,
+          sessionPath,
+        });
+        await client.connect();
+        const me = client.getMe();
+        await client.disconnect();
+        telegramConnected = true;
+        const displayName = `${me?.firstName || ""}${me?.username ? ` (@${me.username})` : ""}`;
+        console.log(`  ${GREEN("✓")} ${DIM("Telegram connected as")} ${CYAN(displayName)}\n`);
+        STEPS[6].value = `Connected${me?.username ? ` (@${me.username})` : ""}`;
+      } catch (error) {
+        prompter.warn(
+          `Telegram connection failed: ${error instanceof Error ? error.message : String(error)}\n` +
+            "You can authenticate later when running: teleton start"
+        );
+        STEPS[6].value = "Auth on first start";
+      }
+    } else {
+      console.log(`\n  ${DIM("You can authenticate later when running: teleton start")}\n`);
       STEPS[6].value = "Auth on first start";
     }
-  } else {
-    console.log(`\n  ${DIM("You can authenticate later when running: teleton start")}\n`);
-    STEPS[6].value = "Auth on first start";
   }
 
   // ════════════════════════════════════════════════════════════════════
@@ -1092,10 +1170,26 @@ async function runNonInteractiveOnboarding(
   prompter: ReturnType<typeof createPrompter>
 ): Promise<void> {
   const selectedProvider = options.provider || "anthropic";
+  const nonInteractiveMode = options.mode || "user";
   const needsApiKey = selectedProvider !== "cocoon" && selectedProvider !== "local";
-  if (!options.apiId || !options.apiHash || !options.phone || !options.userId) {
-    prompter.error("Non-interactive mode requires: --api-id, --api-hash, --phone, --user-id");
-    process.exit(1);
+  if (nonInteractiveMode === "bot") {
+    if (!options.botToken) {
+      prompter.error("Non-interactive bot mode requires: --bot-token");
+      process.exit(1);
+    }
+    if (!/^[0-9]+:[A-Za-z0-9_-]+$/.test(options.botToken)) {
+      prompter.error("--bot-token format invalid (expected 123456:ABC...)");
+      process.exit(1);
+    }
+    if (!options.userId) {
+      prompter.error("Non-interactive bot mode requires: --user-id");
+      process.exit(1);
+    }
+  } else {
+    if (!options.apiId || !options.apiHash || !options.phone || !options.userId) {
+      prompter.error("Non-interactive mode requires: --api-id, --api-hash, --phone, --user-id");
+      process.exit(1);
+    }
   }
   if (needsApiKey && !options.apiKey) {
     prompter.error(`Non-interactive mode requires --api-key for provider "${selectedProvider}"`);
@@ -1136,9 +1230,10 @@ async function runNonInteractiveOnboarding(
       },
     },
     telegram: {
-      api_id: options.apiId,
-      api_hash: options.apiHash,
-      phone: options.phone,
+      mode: nonInteractiveMode,
+      api_id: nonInteractiveMode === "user" ? (options.apiId ?? 0) : 0,
+      api_hash: nonInteractiveMode === "user" ? (options.apiHash ?? "") : "",
+      phone: nonInteractiveMode === "user" ? (options.phone ?? "") : "",
       session_name: "teleton_session",
       session_path: workspace.sessionPath,
       dm_policy: "admin-only",
@@ -1150,12 +1245,13 @@ async function runNonInteractiveOnboarding(
       typing_simulation: true,
       rate_limit_messages_per_second: 1.0,
       rate_limit_groups_per_minute: 20,
-      admin_ids: [options.userId],
-      owner_id: options.userId,
+      admin_ids: [options.userId ?? 0],
+      owner_id: options.userId ?? 0,
       agent_channel: null,
       debounce_ms: 1500,
-      bot_token: undefined,
+      bot_token: nonInteractiveMode === "bot" ? options.botToken : undefined,
       bot_username: undefined,
+      stream_mode: "all",
     },
     storage: {
       sessions_file: `${workspace.root}/sessions.json`,

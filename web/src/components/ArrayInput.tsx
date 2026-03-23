@@ -173,7 +173,7 @@ export function ArrayInput({ value, onChange, validate, placeholder, disabled }:
                 background: 'var(--bg-glass)',
                 border: '1px solid var(--border-glass)',
                 color: 'var(--text-secondary)',
-                borderRadius: '6px',
+                borderRadius: '999px',
                 fontSize: 'var(--font-sm)',
                 lineHeight: '1.4',
                 outline: focusedChip === idx ? '2px solid var(--border-strong)' : 'none',
@@ -223,7 +223,6 @@ export function ArrayInput({ value, onChange, validate, placeholder, disabled }:
             flex: 1,
             background: 'var(--bg-glass)',
             border: '1px solid var(--border-glass)',
-            borderRadius: '6px',
             color: 'var(--text-primary)',
             fontSize: 'var(--font-sm)',
             padding: '5px 10px',
@@ -240,7 +239,6 @@ export function ArrayInput({ value, onChange, validate, placeholder, disabled }:
           style={{
             padding: '4px 10px',
             fontSize: 'var(--font-sm)',
-            borderRadius: '6px',
             minHeight: 'auto',
             lineHeight: '1.4',
           }}
@@ -257,12 +255,12 @@ export function ArrayInput({ value, onChange, validate, placeholder, disabled }:
       {isDirty && (
         <div style={{ display: 'flex', gap: '6px', marginTop: 'var(--space-sm)' }}>
           <button type="button" onClick={handleSave} disabled={disabled}
-            style={{ padding: '4px 12px', fontSize: 'var(--font-sm)', borderRadius: '6px', minHeight: 'auto' }}
+            style={{ padding: '4px 12px', fontSize: 'var(--font-sm)', minHeight: 'auto' }}
           >
             Save
           </button>
           <button type="button" className="btn-ghost" onClick={handleCancel} disabled={disabled}
-            style={{ padding: '4px 12px', fontSize: 'var(--font-sm)', borderRadius: '6px', minHeight: 'auto' }}
+            style={{ padding: '4px 12px', fontSize: 'var(--font-sm)', minHeight: 'auto' }}
           >
             Cancel
           </button>

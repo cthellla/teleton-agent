@@ -66,6 +66,33 @@ export function WelcomeStep({ data, onChange }: StepProps) {
         </div>
       </div>
 
+      <div className="form-group">
+        <label>Telegram Mode</label>
+        <div style={{ display: 'flex', gap: '8px' }}>
+          <button
+            type="button"
+            className={data.telegramMode === 'user' ? 'btn-active' : 'btn-ghost'}
+            onClick={() => onChange({ ...data, telegramMode: 'user' })}
+            style={{ flex: 1 }}
+          >
+            User Account
+          </button>
+          <button
+            type="button"
+            className={data.telegramMode === 'bot' ? 'btn-active' : 'btn-ghost'}
+            onClick={() => onChange({ ...data, telegramMode: 'bot' })}
+            style={{ flex: 1 }}
+          >
+            Bot
+          </button>
+        </div>
+        <div className="helper-text">
+          {data.telegramMode === 'user'
+            ? 'Full access via your Telegram account (MTProto). Requires API ID, hash, and phone.'
+            : 'Runs as a Telegram Bot (Bot API). Requires only a bot token. Some features are unavailable.'}
+        </div>
+      </div>
+
       {status?.configExists && (
         <div className="info-box">
           Existing configuration detected. It will be overwritten when setup completes.
@@ -74,16 +101,7 @@ export function WelcomeStep({ data, onChange }: StepProps) {
 
       {error && <div className="alert error">{error}</div>}
 
-      <div className="form-group">
-        <label className="label-inline">
-          <input
-            type="checkbox"
-            checked={data.riskAccepted}
-            onChange={(e) => handleAccept(e.target.checked)}
-          />
-          <span>I understand the risks and accept full responsibility</span>
-        </label>
-      </div>
+      {/* Risk checkbox moved to setup-nav bar (Setup.tsx) for inline layout with Next button */}
 
       {loading && <div className="loading">Checking workspace...</div>}
     </div>

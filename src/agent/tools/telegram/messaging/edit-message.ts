@@ -47,26 +47,18 @@ export const telegramEditMessageExecutor: ToolExecutor<EditMessageParams> = asyn
   try {
     const { chatId, messageId, text } = params;
 
-    // Get underlying GramJS client
-    const gramJsClient = context.bridge.getClient().getClient();
-
     // Convert Markdown to Telegram HTML
     const formattedText = markdownToTelegramHtml(text);
 
-    // Edit message using GramJS high-level method with HTML parseMode
-    const result = await gramJsClient.editMessage(chatId, {
-      message: messageId,
-      text: formattedText,
-      parseMode: "html",
-    });
+    const result = await context.bridge.editMessage({ chatId, messageId, text: formattedText });
 
     return {
       success: true,
       data: {
-        messageId,
-        chatId,
+        messageId: result.id,
+        chatId: result.chatId,
         edited: true,
-        date: result?.date || Math.floor(Date.now() / 1000),
+        date: result.date,
       },
     };
   } catch (error) {

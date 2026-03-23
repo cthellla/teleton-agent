@@ -32,8 +32,8 @@ const ALL_CATEGORIES: ToolEntry[][] = [
 
 export function registerAllTools(registry: ToolRegistry): void {
   for (const category of ALL_CATEGORIES) {
-    for (const { tool, executor, scope } of category) {
-      registry.register(tool, executor, scope);
+    for (const { tool, executor, scope, requiredMode } of category) {
+      registry.register(tool, executor, scope, requiredMode);
     }
   }
 }

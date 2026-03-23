@@ -2,10 +2,8 @@
  * telegram_send_dice - Send animated dice/games in Telegram
  */
 
-import { randomLong } from "../../../../utils/gramjs-bigint.js";
 import { Type } from "@sinclair/typebox";
 import type { Tool, ToolExecutor, ToolResult } from "../../types.js";
-import { Api } from "telegram";
 import { getErrorMessage } from "../../../../utils/errors.js";
 import { createLogger } from "../../../../utils/logger.js";
 
@@ -44,77 +42,16 @@ export const telegramSendDiceExecutor: ToolExecutor<SendDiceParams> = async (
   context
 ): Promise<ToolResult> => {
   try {
-    const { chat_id, emoticon = "🎲", reply_to } = params;
+    const { chat_id, emoticon = "🎲" } = params;
 
-    // Get underlying GramJS client
-    const gramJsClient = context.bridge.getClient().getClient();
-
-    // Send dice using SendMedia
-    const result = await gramJsClient.invoke(
-      new Api.messages.SendMedia({
-        peer: chat_id,
-        media: new Api.InputMediaDice({ emoticon }),
-        message: "",
-        randomId: randomLong(),
-        replyTo: reply_to ? new Api.InputReplyToMessage({ replyToMsgId: reply_to }) : undefined,
-      })
-    );
-
-    // Extract dice value from the result
-    let value: number | undefined;
-    let messageId: number | undefined;
-
-    // Handle different response types
-    if (result instanceof Api.Updates || result instanceof Api.UpdatesCombined) {
-      for (const update of result.updates) {
-        if (
-          update instanceof Api.UpdateNewMessage ||
-          update instanceof Api.UpdateNewChannelMessage
-        ) {
-          const msg = update.message;
-          if (msg instanceof Api.Message && msg.media instanceof Api.MessageMediaDice) {
-            value = msg.media.value;
-            messageId = msg.id;
-            break;
-          }
-        }
-      }
-    }
-
-    // Interpret the result
-    let interpretation = "";
-    if (value !== undefined) {
-      switch (emoticon) {
-        case "🎲":
-          interpretation = `Rolled ${value}`;
-          break;
-        case "🎯":
-          interpretation = value === 6 ? "🎯 Bullseye!" : `Scored ${value}/6`;
-          break;
-        case "🏀":
-          interpretation = value >= 4 ? "🏀 Score!" : `Missed (${value}/5)`;
-          break;
-        case "⚽":
-          interpretation = value >= 4 ? "⚽ Goal!" : `Missed (${value}/5)`;
-          break;
-        case "🎰":
-          interpretation = value === 64 ? "🎰 JACKPOT 777!" : `Spin result: ${value}/64`;
-          break;
-        case "🎳":
-          interpretation = value === 6 ? "🎳 Strike!" : `Knocked ${value}/6 pins`;
-          break;
-      }
-    }
+    const result = await context.bridge.sendDice(chat_id, emoticon);
 
     return {
       success: true,
       data: {
         chat_id,
         emoticon,
-        value,
-        interpretation,
-        message_id: messageId,
-        message: `${emoticon} ${interpretation}`,
+        message_id: result.id,
       },
     };
   } catch (error) {

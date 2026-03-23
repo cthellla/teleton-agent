@@ -1,9 +1,9 @@
-import type { TelegramBridge } from "../telegram/bridge.js";
+import type { ITelegramBridge } from "../telegram/bridge-interface.js";
 import type { Api } from "telegram";
 import type { SimpleMessage } from "@teleton-agent/sdk";
 import { PluginSDKError } from "@teleton-agent/sdk";
 
-export function requireBridge(bridge: TelegramBridge): void {
+export function requireBridge(bridge: ITelegramBridge): void {
   if (!bridge.isAvailable()) {
     throw new PluginSDKError(
       "Telegram bridge not connected. SDK telegram methods can only be called at runtime (inside tool executors or start()), not during plugin loading.",
@@ -12,8 +12,9 @@ export function requireBridge(bridge: TelegramBridge): void {
   }
 }
 
-export function getClient(bridge: TelegramBridge) {
-  return bridge.getClient().getClient();
+export function getClient(bridge: ITelegramBridge) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- user-only escape hatch, cast to GramJS client
+  return bridge.getRawClient() as any;
 }
 
 /** Convert a GramJS message to a SimpleMessage */

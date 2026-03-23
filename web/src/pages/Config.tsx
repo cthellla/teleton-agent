@@ -339,7 +339,7 @@ export function Config() {
                       Running (PID {proxyStatus.pid})
                     </span>
                   )}
-                  <InfoTip text="Enable TON Proxy — auto-downloads the binary if not found" />
+                  <InfoTip text="Enable TON Proxy - auto-downloads the binary if not found" />
                 </div>
                 {!(proxyStatus?.enabled) && (
                   <button
@@ -460,7 +460,7 @@ export function Config() {
           <div className="card-header">
             <div className="section-title">Tool RAG</div>
             <p className="card-description">
-              Semantic tool selection — sends only the most relevant tools to the LLM per message.
+              Semantic tool selection - sends only the most relevant tools to the LLM per message.
             </p>
           </div>
           <div className="card">

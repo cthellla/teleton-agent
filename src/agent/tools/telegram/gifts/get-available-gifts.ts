@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { Type } from "@sinclair/typebox";
 import { Api } from "telegram";
 import type { Tool, ToolExecutor, ToolResult } from "../../types.js";
@@ -108,7 +109,7 @@ export const telegramGetAvailableGiftsExecutor: ToolExecutor<GetAvailableGiftsPa
 ): Promise<ToolResult> => {
   try {
     const { filter = "all", includeSoldOut = true, limit = 20, offset = 0, sort, search } = params;
-    const gramJsClient = context.bridge.getClient().getClient();
+    const gramJsClient = (context.bridge.getRawClient() as any).getClient();
 
     const result = await gramJsClient.invoke(new Api.payments.GetStarGifts({ hash: 0 }));
 
@@ -121,8 +122,8 @@ export const telegramGetAvailableGiftsExecutor: ToolExecutor<GetAvailableGiftsPa
 
     // Map all gifts (catalog only contains StarGift, not StarGiftUnique)
     let gifts: CatalogGiftSummary[] = (result.gifts || [])
-      .filter((g): g is Api.StarGift => g.className === "StarGift")
-      .map((gift) => ({
+      .filter((g: any): g is Api.StarGift => g.className === "StarGift")
+      .map((gift: any) => ({
         id: gift.id?.toString(),
         title: gift.title || null,
         stars: Number(gift.stars?.toString() || "0"),

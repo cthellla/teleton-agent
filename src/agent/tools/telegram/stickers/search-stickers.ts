@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { Type } from "@sinclair/typebox";
 import { Api } from "telegram";
 import type { Tool, ToolExecutor, ToolResult } from "../../types.js";
@@ -47,7 +48,7 @@ export const telegramSearchStickersExecutor: ToolExecutor<SearchStickersParams> 
     const { query, limit = 10 } = params;
 
     // Get underlying GramJS client
-    const gramJsClient = context.bridge.getClient().getClient();
+    const gramJsClient = (context.bridge.getRawClient() as any).getClient();
 
     // Search for sticker sets
     const result = await gramJsClient.invoke(
@@ -64,7 +65,7 @@ export const telegramSearchStickersExecutor: ToolExecutor<SearchStickersParams> 
       };
     }
 
-    const sets = result.sets.slice(0, limit).map((set) => ({
+    const sets = result.sets.slice(0, limit).map((set: any) => ({
       shortName: set.set.shortName,
       title: set.set.title,
       count: set.set.count,

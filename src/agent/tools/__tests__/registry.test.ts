@@ -53,7 +53,7 @@ describe("ToolRegistry", () => {
     `);
 
     mockContext = {
-      bridge: {} as any,
+      bridge: { getMode: () => "user" } as any,
       db,
       chatId: "test-chat",
       senderId: 12345,

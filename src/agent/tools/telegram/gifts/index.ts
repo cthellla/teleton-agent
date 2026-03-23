@@ -46,29 +46,72 @@ export { telegramSendGiftOfferTool, telegramSendGiftOfferExecutor };
 export { telegramResolveGiftOfferTool, telegramResolveGiftOfferExecutor };
 
 export const tools: ToolEntry[] = [
-  { tool: telegramGetAvailableGiftsTool, executor: telegramGetAvailableGiftsExecutor },
-  { tool: telegramSendGiftTool, executor: telegramSendGiftExecutor, scope: "dm-only" },
-  { tool: telegramGetMyGiftsTool, executor: telegramGetMyGiftsExecutor },
+  {
+    tool: telegramGetAvailableGiftsTool,
+    executor: telegramGetAvailableGiftsExecutor,
+    requiredMode: "user",
+  },
+  {
+    tool: telegramSendGiftTool,
+    executor: telegramSendGiftExecutor,
+    scope: "dm-only",
+    requiredMode: "user",
+  },
+  { tool: telegramGetMyGiftsTool, executor: telegramGetMyGiftsExecutor, requiredMode: "user" },
   {
     tool: telegramTransferCollectibleTool,
     executor: telegramTransferCollectibleExecutor,
     scope: "dm-only",
+    requiredMode: "user",
   },
   {
     tool: telegramSetCollectiblePriceTool,
     executor: telegramSetCollectiblePriceExecutor,
     scope: "dm-only",
+    requiredMode: "user",
   },
-  { tool: telegramGetResaleGiftsTool, executor: telegramGetResaleGiftsExecutor },
-  { tool: telegramBuyResaleGiftTool, executor: telegramBuyResaleGiftExecutor, scope: "dm-only" },
-  { tool: telegramSetGiftStatusTool, executor: telegramSetGiftStatusExecutor, scope: "dm-only" },
-  { tool: telegramGetCollectibleInfoTool, executor: telegramGetCollectibleInfoExecutor },
-  { tool: telegramGetUniqueGiftTool, executor: telegramGetUniqueGiftExecutor },
-  { tool: telegramGetUniqueGiftValueTool, executor: telegramGetUniqueGiftValueExecutor },
-  { tool: telegramSendGiftOfferTool, executor: telegramSendGiftOfferExecutor, scope: "dm-only" },
+  {
+    tool: telegramGetResaleGiftsTool,
+    executor: telegramGetResaleGiftsExecutor,
+    requiredMode: "user",
+  },
+  {
+    tool: telegramBuyResaleGiftTool,
+    executor: telegramBuyResaleGiftExecutor,
+    scope: "dm-only",
+    requiredMode: "user",
+  },
+  {
+    tool: telegramSetGiftStatusTool,
+    executor: telegramSetGiftStatusExecutor,
+    scope: "dm-only",
+    requiredMode: "user",
+  },
+  {
+    tool: telegramGetCollectibleInfoTool,
+    executor: telegramGetCollectibleInfoExecutor,
+    requiredMode: "user",
+  },
+  {
+    tool: telegramGetUniqueGiftTool,
+    executor: telegramGetUniqueGiftExecutor,
+    requiredMode: "user",
+  },
+  {
+    tool: telegramGetUniqueGiftValueTool,
+    executor: telegramGetUniqueGiftValueExecutor,
+    requiredMode: "user",
+  },
+  {
+    tool: telegramSendGiftOfferTool,
+    executor: telegramSendGiftOfferExecutor,
+    scope: "dm-only",
+    requiredMode: "user",
+  },
   {
     tool: telegramResolveGiftOfferTool,
     executor: telegramResolveGiftOfferExecutor,
     scope: "dm-only",
+    requiredMode: "user",
   },
 ];

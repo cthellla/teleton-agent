@@ -15,8 +15,8 @@ export interface TelegramMessage {
 }
 
 export function pruneOldMessages(db: Database.Database, maxAgeDays = 90): number {
-  const cutoffMs = Date.now() - maxAgeDays * 86_400_000;
-  const result = db.prepare("DELETE FROM tg_messages WHERE timestamp < ?").run(cutoffMs);
+  const cutoffSec = Math.floor(Date.now() / 1000) - maxAgeDays * 86_400;
+  const result = db.prepare("DELETE FROM tg_messages WHERE timestamp < ?").run(cutoffSec);
   return result.changes;
 }
 
@@ -91,8 +91,8 @@ export class MessageStore {
   }
 
   pruneOldMessages(maxAgeDays = 90): number {
-    const cutoffMs = Date.now() - maxAgeDays * 86_400_000;
-    const result = this.db.prepare("DELETE FROM tg_messages WHERE timestamp < ?").run(cutoffMs);
+    const cutoffSec = Math.floor(Date.now() / 1000) - maxAgeDays * 86_400;
+    const result = this.db.prepare("DELETE FROM tg_messages WHERE timestamp < ?").run(cutoffSec);
     return result.changes;
   }
 

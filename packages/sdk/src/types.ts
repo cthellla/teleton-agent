@@ -1019,12 +1019,16 @@ export interface TonSDK {
    * @param opts — Optional body, bounce, stateInit, sendMode
    * @throws {PluginSDKError} WALLET_NOT_INITIALIZED, INVALID_ADDRESS, OPERATION_FAILED
    */
-  send(to: string, value: number, opts?: {
-    body?: Cell | string;
-    bounce?: boolean;
-    stateInit?: { code: Cell; data: Cell };
-    sendMode?: number;
-  }): Promise<TonTransferResult>;
+  send(
+    to: string,
+    value: number,
+    opts?: {
+      body?: Cell | string;
+      bounce?: boolean;
+      stateInit?: { code: Cell; data: Cell };
+      sendMode?: number;
+    }
+  ): Promise<TonTransferResult>;
 
   /**
    * Send multiple messages in a single wallet transfer.
@@ -1082,6 +1086,11 @@ export interface TonSDK {
  * before the bridge is ready (i.e., during plugin loading).
  */
 export interface TelegramSDK {
+  /**
+   * Returns the current Telegram mode: "user" (MTProto) or "bot" (Bot API).
+   */
+  getMode(): "user" | "bot";
+
   /**
    * Send a text message to a chat.
    *

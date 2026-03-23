@@ -1,6 +1,6 @@
 import type { TelegramConfig, Config } from "../config/schema.js";
 import type { AgentRuntime } from "../agent/runtime.js";
-import type { TelegramBridge } from "./bridge.js";
+import type { ITelegramBridge } from "./bridge-interface.js";
 import { type TelegramMessage } from "./bridge.js";
 import { MessageStore, ChatStore, UserStore } from "../memory/feed/index.js";
 import type Database from "better-sqlite3";
@@ -137,7 +137,7 @@ class ChatQueue {
 }
 
 export class MessageHandler {
-  private bridge: TelegramBridge;
+  private bridge: ITelegramBridge;
   private config: TelegramConfig;
   private fullConfig?: Config;
   private agent: AgentRuntime;
@@ -154,7 +154,7 @@ export class MessageHandler {
   private static readonly DEDUP_MAX_SIZE = 500;
 
   constructor(
-    bridge: TelegramBridge,
+    bridge: ITelegramBridge,
     config: TelegramConfig,
     agent: AgentRuntime,
     db: Database.Database,
@@ -182,6 +182,13 @@ export class MessageHandler {
     this.ownUserId = userId;
   }
 
+  setBridge(bridge: ITelegramBridge): void {
+    log.info(`Swapping bridge to ${bridge.getMode()}`);
+    this.bridge = bridge;
+    const uid = bridge.getOwnUserId();
+    this.ownUserId = uid !== undefined ? String(uid) : this.ownUserId;
+  }
+
   setPluginMessageHooks(hooks: Array<(e: PluginMessageEvent) => Promise<void>>): void {
     this.pluginMessageHooks = hooks;
   }
@@ -193,14 +200,17 @@ export class MessageHandler {
   analyzeMessage(message: TelegramMessage): MessageContext {
     const isAdmin = this.config.admin_ids.includes(message.senderId);
 
-    const chatOffset = readOffset(message.chatId) ?? 0;
-    if (message.id <= chatOffset) {
-      return {
-        message,
-        isAdmin,
-        shouldRespond: false,
-        reason: "Already processed",
-      };
+    // Skip offset dedup in bot mode — Grammy handles dedup via update_id internally
+    if (this.bridge.getMode() !== "bot") {
+      const chatOffset = readOffset(message.chatId) ?? 0;
+      if (message.id <= chatOffset) {
+        return {
+          message,
+          isAdmin,
+          shouldRespond: false,
+          reason: "Already processed",
+        };
+      }
     }
 
     if (message.isBot) {
@@ -381,10 +391,13 @@ export class MessageHandler {
       try {
         // Re-check offset after queue wait to prevent duplicate processing
         // (GramJS may fire duplicate NewMessage events during reconnection)
-        const postQueueOffset = readOffset(message.chatId) ?? 0;
-        if (message.id <= postQueueOffset) {
-          log.debug(`Skipping message ${message.id} (already processed after queue wait)`);
-          return;
+        // Skip in bot mode — Grammy handles dedup via update_id
+        if (this.bridge.getMode() !== "bot") {
+          const postQueueOffset = readOffset(message.chatId) ?? 0;
+          if (message.id <= postQueueOffset) {
+            log.debug(`Skipping message ${message.id} (already processed after queue wait)`);
+            return;
+          }
         }
 
         // 4. Persistent typing simulation if enabled
@@ -457,6 +470,16 @@ export class MessageHandler {
           const effectiveText = transcriptionText
             ? `🎤 (voice): ${transcriptionText}${message.text ? `\n${message.text}` : ""}`
             : message.text;
+          const streamMode = this.fullConfig?.telegram?.stream_mode ?? "all";
+          const streamToChat =
+            this.bridge.getMode() === "bot" && this.bridge.streamResponse && streamMode !== "off"
+              ? {
+                  chatId: message.chatId,
+                  bridge: this.bridge,
+                  mode: streamMode as "all" | "replace" | "off",
+                }
+              : undefined;
+
           const response = await this.agent.processMessage({
             chatId: message.chatId,
             userMessage: effectiveText,
@@ -471,6 +494,7 @@ export class MessageHandler {
             mediaType: message.mediaType,
             messageId: message.id,
             replyContext,
+            streamToChat,
           });
 
           // 8. Handle response based on whether tools were used
@@ -482,6 +506,8 @@ export class MessageHandler {
 
           if (isSilentReply(response.content)) {
             log.debug("Silent reply suppressed");
+          } else if (response.streamed) {
+            log.debug("Response already streamed to chat");
           } else if (
             !telegramSendCalled &&
             response.content &&
@@ -525,7 +551,10 @@ export class MessageHandler {
           }
 
           // Mark as processed AFTER successful handling (prevents message loss on crash)
-          writeOffset(message.id, message.chatId);
+          // Skip in bot mode — Grammy handles dedup via update_id
+          if (this.bridge.getMode() !== "bot") {
+            writeOffset(message.id, message.chatId);
+          }
         } finally {
           if (typingInterval) clearInterval(typingInterval);
         }

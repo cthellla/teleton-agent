@@ -16,7 +16,8 @@ describe("bot_inline_send", () => {
 
   const mockBridge = {
     isAvailable: () => true,
-    getClient: () => ({
+    getMode: () => "user",
+    getRawClient: () => ({
       getClient: () => mockGramJsClient,
     }),
   };
@@ -68,7 +69,7 @@ describe("bot_inline_send", () => {
   it("returns error when bridge not available", async () => {
     const result = await botInlineSendExecutor(
       { plugin: "cats", query: "random" },
-      { ...baseContext, bridge: { isAvailable: () => false } }
+      { ...baseContext, bridge: { isAvailable: () => false, getMode: () => "user" } }
     );
     expect(result.success).toBe(false);
     expect(result.error).toContain("not available");

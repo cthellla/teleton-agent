@@ -18,6 +18,7 @@ agent:
     idle_expiry_minutes: 1440        # 24 hours
 
 telegram:
+  mode: "user"                       # "user" (default) or "bot" — user requires phone auth, bot requires bot_token
   api_id: 0                          # From https://my.telegram.org/apps
   api_hash: "YOUR_API_HASH"
   phone: "+1234567890"               # Phone number linked to Telegram account

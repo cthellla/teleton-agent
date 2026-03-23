@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { Type } from "@sinclair/typebox";
 import type { Tool, ToolExecutor, ToolResult } from "../../types.js";
 import { Api, helpers } from "telegram";
@@ -79,7 +80,7 @@ export const telegramSendStoryExecutor: ToolExecutor<SendStoryParams> = async (
     }
 
     // Get underlying GramJS client
-    const gramJsClient = context.bridge.getClient().getClient();
+    const gramJsClient = (context.bridge.getRawClient() as any).getClient();
 
     // Read media file
     const filePath = validatedPath.absolutePath;

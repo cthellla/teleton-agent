@@ -18,7 +18,7 @@ export function TelegramStep({ data, onChange }: StepProps) {
               <li>Open <a href="https://my.telegram.org" target="_blank" rel="noopener noreferrer">my.telegram.org</a> in your browser</li>
               <li>Log in with your phone number (the one linked to your Telegram account)</li>
               <li>Click <strong>API development tools</strong></li>
-              <li>If prompted, create a new app — the name and platform don't matter (e.g. "MyApp", Desktop)</li>
+              <li>If prompted, create a new app - the name and platform don't matter (e.g. "MyApp", Desktop)</li>
               <li>Copy <strong>App api_id</strong> (a number) and <strong>App api_hash</strong> (a hex string)</li>
             </ol>
           </div>
@@ -72,7 +72,6 @@ export function TelegramStep({ data, onChange }: StepProps) {
               flex: 1,
               padding: '8px 16px',
               border: 'none',
-              borderRadius: '6px',
               cursor: 'pointer',
               background: data.authMode === 'qr' ? 'var(--accent, #6c5ce7)' : 'transparent',
               color: data.authMode === 'qr' ? '#fff' : 'var(--text-muted, #999)',
@@ -89,7 +88,6 @@ export function TelegramStep({ data, onChange }: StepProps) {
               flex: 1,
               padding: '8px 16px',
               border: 'none',
-              borderRadius: '6px',
               cursor: 'pointer',
               background: data.authMode === 'phone' ? 'var(--accent, #6c5ce7)' : 'transparent',
               color: data.authMode === 'phone' ? '#fff' : 'var(--text-muted, #999)',

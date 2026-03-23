@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { Type } from "@sinclair/typebox";
 import { Api } from "telegram";
 import type { Tool, ToolExecutor, ToolResult } from "../../types.js";
@@ -40,7 +41,7 @@ export const telegramTranscribeAudioExecutor: ToolExecutor<TranscribeAudioParams
   try {
     const { chatId, messageId } = params;
 
-    const gramJsClient = context.bridge.getClient().getClient();
+    const gramJsClient = (context.bridge.getRawClient() as any).getClient();
     const entity = await gramJsClient.getEntity(chatId);
 
     let result = await gramJsClient.invoke(

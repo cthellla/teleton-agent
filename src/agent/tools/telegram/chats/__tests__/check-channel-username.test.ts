@@ -7,7 +7,8 @@ const mockGetEntity = vi.fn();
 
 const mockContext = {
   bridge: {
-    getClient: () => ({
+    getMode: () => "user",
+    getRawClient: () => ({
       getClient: () => ({
         invoke: mockInvoke,
         getEntity: mockGetEntity,

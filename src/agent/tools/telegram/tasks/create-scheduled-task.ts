@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { Type } from "@sinclair/typebox";
 import type { Tool, ToolExecutor, ToolResult } from "../../types.js";
 import { Api } from "telegram";
@@ -250,7 +251,7 @@ export const telegramCreateScheduledTaskExecutor: ToolExecutor<CreateScheduledTa
       };
     } else if (scheduleTimestamp) {
       // Task has schedule date - schedule Telegram message
-      const gramJsClient = context.bridge.getClient().getClient();
+      const gramJsClient = (context.bridge.getRawClient() as any).getClient();
 
       // Get "me" entity for Saved Messages
       const me = await gramJsClient.getMe();

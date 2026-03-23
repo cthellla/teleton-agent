@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { Type } from "@sinclair/typebox";
 import type { Tool, ToolExecutor, ToolResult } from "../../types.js";
 import { Api } from "telegram";
@@ -48,7 +49,7 @@ export const telegramGetCommonChatsExecutor: ToolExecutor<GetCommonChatsParams> 
     const { userId, limit = 50 } = params;
 
     // Get underlying GramJS client
-    const gramJsClient = context.bridge.getClient().getClient();
+    const gramJsClient = (context.bridge.getRawClient() as any).getClient();
 
     // Get user entity
     const userEntity = await gramJsClient.getInputEntity(userId);
@@ -63,7 +64,7 @@ export const telegramGetCommonChatsExecutor: ToolExecutor<GetCommonChatsParams> 
     );
 
     // Parse common chats
-    const commonChats = result.chats.map((chat) => {
+    const commonChats = result.chats.map((chat: any) => {
       const isChannel = chat.className === "Channel";
       const chan = isChannel ? (chat as Api.Channel) : undefined;
       return {

@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import type { TelegramClient } from "telegram";
 import { randomLong } from "../../../utils/gramjs-bigint.js";
 import { Type } from "@sinclair/typebox";
@@ -144,7 +145,12 @@ export const dealProposeExecutor: ToolExecutor<DealProposeParams> = async (
 
     if (botUsername) {
       try {
-        inlineSent = await sendInlineBotResult(context.bridge, params.chatId, botUsername, dealId);
+        inlineSent = await sendInlineBotResult(
+          context.bridge as any,
+          params.chatId,
+          botUsername,
+          dealId
+        );
       } catch (inlineError) {
         log.warn({ err: inlineError }, "[Deal] Failed to send inline bot result");
       }

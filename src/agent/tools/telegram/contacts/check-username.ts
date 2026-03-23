@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { Type } from "@sinclair/typebox";
 import { Api } from "telegram";
 import type { Tool, ToolExecutor, ToolResult } from "../../types.js";
@@ -46,7 +47,7 @@ export const telegramCheckUsernameExecutor: ToolExecutor<CheckUsernameParams> = 
       };
     }
 
-    const gramJsClient = context.bridge.getClient().getClient();
+    const gramJsClient = (context.bridge.getRawClient() as any).getClient();
 
     try {
       // Try to resolve the username
@@ -58,7 +59,7 @@ export const telegramCheckUsernameExecutor: ToolExecutor<CheckUsernameParams> = 
 
       // Determine entity type and extract info
       let entityType: string | null = null;
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- GramJS API response is untyped
+
       let entityInfo: Record<string, any> = {};
 
       if (result.users && result.users.length > 0) {

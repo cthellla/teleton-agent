@@ -116,7 +116,7 @@ export function ProviderStep({ data, onChange }: StepProps) {
           >
             <h3>{p.displayName}</h3>
             <div className="provider-meta">{p.defaultModel}</div>
-            {p.toolLimit === null && (
+            {(p.toolLimit === null || p.id === 'zai') && (
               <span className="badge always" style={{ marginTop: '6px' }}>
                 Recommended
               </span>
@@ -125,9 +125,9 @@ export function ProviderStep({ data, onChange }: StepProps) {
         ))}
       </div>
 
-      {selected && selected.toolLimit !== null && (
+      {selected && selected.toolLimit !== null && selected.toolLimit < 50 && (
         <div className="info-box" style={{ marginTop: '16px' }}>
-          Teleton has ~116 tools. With a {selected.toolLimit}-tool limit, some tools may be truncated or unavailable.
+          This provider has a {selected.toolLimit}-tool limit, which may restrict some features.
         </div>
       )}
 
@@ -140,7 +140,7 @@ export function ProviderStep({ data, onChange }: StepProps) {
           )}
           {!ccDetecting && ccDetection?.found && (
             <div className="info-panel">
-              <div style={{ marginBottom: '4px', color: 'var(--green)' }}>
+              <div style={{ marginBottom: '4px', color: 'var(--accent)' }}>
                 <strong>Credentials auto-detected from Claude Code</strong>
               </div>
               <code style={{ fontSize: '0.85em', opacity: 0.8 }}>{ccDetection.maskedKey}</code>

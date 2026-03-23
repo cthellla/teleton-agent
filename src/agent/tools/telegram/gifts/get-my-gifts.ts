@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { Type } from "@sinclair/typebox";
 import { Api } from "telegram";
 import type { Tool, ToolExecutor, ToolResult } from "../../types.js";
@@ -154,7 +155,7 @@ export const telegramGetMyGiftsExecutor: ToolExecutor<GetMyGiftsParams> = async 
       excludeSaved,
       sortByValue = false,
     } = params;
-    const gramJsClient = context.bridge.getClient().getClient();
+    const gramJsClient = (context.bridge.getRawClient() as any).getClient();
 
     const targetUserId = viewSender ? context.senderId.toString() : userId;
 
@@ -213,7 +214,7 @@ export const telegramGetMyGiftsExecutor: ToolExecutor<GetMyGiftsParams> = async 
       })
     );
 
-    const gifts: CompactGift[] = (result.gifts || []).map((savedGift) => {
+    const gifts: CompactGift[] = (result.gifts || []).map((savedGift: any) => {
       const gift = savedGift.gift;
       const isCollectible = gift.className === "StarGiftUnique";
 
@@ -240,13 +241,14 @@ export const telegramGetMyGiftsExecutor: ToolExecutor<GetMyGiftsParams> = async 
         compactGift.slug = gift.slug;
         compactGift.nftLink = `t.me/nft/${gift.slug}`;
         const modelAttr = gift.attributes.find(
-          (a): a is Api.StarGiftAttributeModel => a.className === "StarGiftAttributeModel"
+          (a: any): a is Api.StarGiftAttributeModel => a.className === "StarGiftAttributeModel"
         );
         const patternAttr = gift.attributes.find(
-          (a): a is Api.StarGiftAttributePattern => a.className === "StarGiftAttributePattern"
+          (a: any): a is Api.StarGiftAttributePattern => a.className === "StarGiftAttributePattern"
         );
         const backdropAttr = gift.attributes.find(
-          (a): a is Api.StarGiftAttributeBackdrop => a.className === "StarGiftAttributeBackdrop"
+          (a: any): a is Api.StarGiftAttributeBackdrop =>
+            a.className === "StarGiftAttributeBackdrop"
         );
         compactGift.model = extractAttrSummary(modelAttr);
         compactGift.pattern = extractAttrSummary(patternAttr);

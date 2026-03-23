@@ -136,7 +136,6 @@ export function Tools() {
                 padding: '4px 24px 4px 12px',
                 fontSize: '13px',
                 border: '1px solid var(--border)',
-                borderRadius: '14px',
                 backgroundColor: 'transparent',
                 color: 'var(--text-primary)',
                 width: '180px',

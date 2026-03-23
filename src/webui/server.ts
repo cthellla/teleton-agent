@@ -35,6 +35,9 @@ import { createConfigRoutes } from "./routes/config.js";
 import { createMarketplaceRoutes } from "./routes/marketplace.js";
 import { createHooksRoutes } from "./routes/hooks.js";
 import { createTonProxyRoutes } from "./routes/ton-proxy.js";
+import { createConversationRoutes } from "./routes/conversations.js";
+import { createWalletRoutes } from "./routes/wallet.js";
+import { readRawConfig, writeRawConfig } from "../config/configurable-keys.js";
 
 function findWebDist(): string | null {
   // Try common locations relative to CWD (where teleton is launched from)
@@ -213,6 +216,8 @@ export class WebUIServer {
     this.app.route("/api/marketplace", createMarketplaceRoutes(this.deps));
     this.app.route("/api/hooks", createHooksRoutes(this.deps));
     this.app.route("/api/ton-proxy", createTonProxyRoutes(this.deps));
+    this.app.route("/api/conversations", createConversationRoutes(this.deps));
+    this.app.route("/api/wallet", createWalletRoutes(this.deps));
 
     // Agent lifecycle routes
     this.app.post("/api/agent/start", async (c) => {
@@ -263,6 +268,90 @@ export class WebUIServer {
         uptime: lifecycle.getUptime(),
         error: lifecycle.getError() ?? null,
       });
+    });
+
+    this.app.get("/api/agent/mode", (c) => {
+      const raw = readRawConfig(this.deps.configPath);
+      const telegram = raw?.telegram || {};
+
+      const currentMode = telegram.mode || "user";
+      const hasBotToken = !!telegram.bot_token;
+      const hasUserCredentials = !!(telegram.api_id && telegram.api_hash && telegram.phone);
+
+      return c.json({
+        mode: currentMode,
+        canSwitchToBot: hasBotToken,
+        canSwitchToUser: hasUserCredentials,
+      });
+    });
+
+    this.app.post("/api/agent/mode", async (c) => {
+      const lifecycle = this.deps.lifecycle;
+      if (!lifecycle) {
+        return c.json({ error: "Agent lifecycle not available" }, 503);
+      }
+
+      const body = await c.req.json<{
+        mode: "user" | "bot";
+        botToken?: string;
+        userCredentials?: { apiId: number; apiHash: string; phone: string };
+      }>();
+
+      if (body.mode !== "user" && body.mode !== "bot") {
+        return c.json({ error: "Invalid mode" }, 400);
+      }
+
+      const raw = readRawConfig(this.deps.configPath);
+      if (!raw?.telegram) {
+        return c.json({ error: "No telegram config found" }, 400);
+      }
+
+      if (body.mode === "bot") {
+        const token = body.botToken || raw.telegram.bot_token;
+        if (!token) {
+          return c.json({ error: "Bot token required" }, 400);
+        }
+
+        // Validate token via Telegram API
+        if (body.botToken) {
+          try {
+            const resp = await fetch(`https://api.telegram.org/bot${body.botToken}/getMe`);
+            const result = (await resp.json()) as { ok: boolean; description?: string };
+            if (!result.ok) {
+              return c.json(
+                { error: `Invalid bot token: ${result.description || "validation failed"}` },
+                400
+              );
+            }
+          } catch {
+            return c.json({ error: "Failed to validate bot token (network error)" }, 400);
+          }
+          raw.telegram.bot_token = body.botToken;
+        }
+      } else {
+        // Accept new user credentials or use existing ones
+        if (body.userCredentials) {
+          raw.telegram.api_id = body.userCredentials.apiId;
+          raw.telegram.api_hash = body.userCredentials.apiHash;
+          raw.telegram.phone = body.userCredentials.phone;
+        }
+        if (!raw.telegram.api_id || !raw.telegram.api_hash || !raw.telegram.phone) {
+          return c.json({ error: "User credentials (api_id, api_hash, phone) required" }, 400);
+        }
+      }
+
+      raw.telegram.mode = body.mode;
+      writeRawConfig(raw, this.deps.configPath);
+
+      // Fire-and-forget: restart to apply new mode
+      lifecycle
+        .stop()
+        .then(() => lifecycle.start())
+        .catch((err: Error) => {
+          log.error({ err }, "Mode switch restart failed");
+        });
+
+      return c.json({ success: true, mode: body.mode, restarting: true });
     });
 
     this.app.get("/api/agent/events", (c) => {

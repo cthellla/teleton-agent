@@ -40,7 +40,7 @@ function StatusBadge({ status }: { status: TaskStatus }) {
 }
 
 function formatDate(iso: string | null | undefined): string {
-  if (!iso) return '—';
+  if (!iso) return '-';
   const d = new Date(iso);
   return d.toLocaleDateString(undefined, {
     month: 'short',
@@ -51,7 +51,7 @@ function formatDate(iso: string | null | undefined): string {
 }
 
 function PriorityDots({ priority }: { priority: number }) {
-  if (priority === 0) return <span style={{ color: 'var(--text-secondary)', fontSize: '11px' }}>—</span>;
+  if (priority === 0) return <span style={{ color: 'var(--text-secondary)', fontSize: '11px' }}>-</span>;
   const filled = Math.min(priority, 10);
   return (
     <span title={`Priority: ${priority}/10`} style={{ fontSize: '11px', letterSpacing: '1px' }}>
@@ -228,7 +228,6 @@ export function Tasks() {
                 padding: '4px 24px 4px 12px',
                 fontSize: '13px',
                 border: '1px solid var(--border)',
-                borderRadius: '14px',
                 backgroundColor: 'transparent',
                 color: 'var(--text-primary)',
                 width: '180px',

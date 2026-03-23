@@ -34,11 +34,18 @@ export class ToolRegistry {
   private pluginToolNames: Map<string, string[]> = new Map();
   private toolIndex: ToolIndex | null = null;
   private onToolsChangedCallbacks: Array<(removed: string[], added: PiAiTool[]) => void> = [];
+  private mode: "user" | "bot";
+  private requiredModes: Map<string, "user" | "bot"> = new Map();
+
+  constructor(mode: "user" | "bot" = "user") {
+    this.mode = mode;
+  }
 
   register<TParams = unknown>(
     tool: Tool,
     executor: ToolExecutor<TParams>,
-    scope?: ToolScope
+    scope?: ToolScope,
+    requiredMode?: "user" | "bot"
   ): void {
     if (this.tools.has(tool.name)) {
       throw new Error(`Tool "${tool.name}" is already registered`);
@@ -47,12 +54,25 @@ export class ToolRegistry {
     if (scope && scope !== "always") {
       this.scopes.set(tool.name, scope);
     }
+    if (requiredMode) {
+      this.requiredModes.set(tool.name, requiredMode);
+    }
     this.toolModules.set(tool.name, tool.name.split("_")[0]);
     this.toolArrayCache = null;
   }
 
   setPermissions(mp: ModulePermissions): void {
     this.permissions = mp;
+  }
+
+  setMode(mode: "user" | "bot"): void {
+    this.mode = mode;
+    this.toolArrayCache = null;
+    const count = Array.from(this.tools.values()).filter((rt) => {
+      const reqMode = this.requiredModes.get(rt.tool.name);
+      return !reqMode || reqMode === mode;
+    }).length;
+    log.info(`Mode switched to ${mode}, ${count} tools available`);
   }
 
   getAvailableModules(): string[] {
@@ -92,6 +112,15 @@ export class ToolRegistry {
       return {
         success: false,
         error: `Unknown tool: ${toolCall.name}`,
+      };
+    }
+
+    // Check mode restriction (defense-in-depth: tools are also filtered from LLM tool list)
+    const reqMode = this.requiredModes.get(toolCall.name);
+    if (reqMode && reqMode !== this.mode) {
+      return {
+        success: false,
+        error: `Tool "${toolCall.name}" requires ${reqMode} mode (current: ${this.mode})`,
       };
     }
 
@@ -197,6 +226,10 @@ export class ToolRegistry {
     const excluded = isGroup ? "dm-only" : "group-only";
     const filtered = Array.from(this.tools.values())
       .filter((rt) => {
+        // Filter out mode-restricted tools (takes priority over DB overrides)
+        const reqMode = this.requiredModes.get(rt.tool.name);
+        if (reqMode && reqMode !== this.mode) return false;
+
         // Filter out disabled tools
         if (!this.isToolEnabled(rt.tool.name)) return false;
 

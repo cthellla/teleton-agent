@@ -12,6 +12,8 @@ import { Tasks } from './pages/Tasks';
 import { Mcp } from './pages/Mcp';
 import { Config } from './pages/Config';
 import { Hooks } from './pages/Hooks';
+import { Conversations } from './pages/Conversations';
+import { Wallet } from './pages/Wallet';
 import { Setup } from './pages/Setup';
 import { SetupLayout } from './components/setup/SetupLayout';
 import { checkAuth, login } from './lib/api';
@@ -134,6 +136,8 @@ function AuthenticatedApp() {
             <Route path="plugins" element={<Plugins />} />
             <Route path="soul" element={<Soul />} />
             <Route path="memory" element={<Memory />} />
+            <Route path="conversations" element={<Conversations />} />
+            <Route path="wallet" element={<Wallet />} />
             <Route path="workspace" element={<Workspace />} />
             <Route path="tasks" element={<Tasks />} />
             <Route path="mcp" element={<Mcp />} />

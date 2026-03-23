@@ -1,0 +1,228 @@
+import React, { useState, useEffect, useCallback } from 'react';
+import { api, ConversationChat, ConversationMessage } from '../lib/api';
+
+function formatDate(epoch: number): string {
+  return new Date(epoch).toLocaleDateString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+export function Conversations() {
+  const [filter, setFilter] = useState('');
+  const [chats, setChats] = useState<ConversationChat[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  // Expanded chat state
+  const [expandedChat, setExpandedChat] = useState<string | null>(null);
+  const [messages, setMessages] = useState<ConversationMessage[]>([]);
+  const [messagesLoading, setMessagesLoading] = useState(false);
+
+  const loadChats = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await api.getConversations();
+      setChats(res.data ?? []);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadChats();
+  }, [loadChats]);
+
+  const toggleChat = async (chatId: string) => {
+    if (expandedChat === chatId) {
+      setExpandedChat(null);
+      setMessages([]);
+      return;
+    }
+
+    setExpandedChat(chatId);
+    setMessagesLoading(true);
+    try {
+      const res = await api.getConversationMessages(chatId);
+      setMessages(res.data ?? []);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setMessagesLoading(false);
+    }
+  };
+
+  const lowerFilter = filter.toLowerCase();
+  const filtered = lowerFilter
+    ? chats.filter(
+        (c) =>
+          (c.title ?? '').toLowerCase().includes(lowerFilter) ||
+          (c.username ?? '').toLowerCase().includes(lowerFilter) ||
+          c.id.toLowerCase().includes(lowerFilter)
+      )
+    : chats;
+
+  return (
+    <div>
+      <div className="header">
+        <h1>Conversations</h1>
+        <p>Browse chat history</p>
+      </div>
+
+      <div className="card" style={{ padding: 0 }}>
+        {/* Search + refresh bar */}
+        <div style={{ display: 'flex', gap: '8px', alignItems: 'center', padding: '12px 14px', borderBottom: '1px solid var(--border)' }}>
+          <input
+            type="text"
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            placeholder="Filter chats..."
+            style={{ flex: 1, padding: '6px 10px', fontSize: '13px' }}
+          />
+          <button
+            onClick={loadChats}
+            disabled={loading}
+            className="btn-ghost btn-sm"
+          >
+            {loading ? 'Loading...' : 'Refresh'}
+          </button>
+        </div>
+
+        {error && (
+          <div className="alert error" style={{ margin: '12px 14px' }}>
+            {error}
+            <button onClick={() => setError(null)} style={{ marginLeft: '10px', padding: '2px 8px', fontSize: '12px' }}>Dismiss</button>
+          </div>
+        )}
+
+        {/* Chats table */}
+        {loading ? (
+          <div style={{ padding: '20px', textAlign: 'center' }}>Loading...</div>
+        ) : filtered.length === 0 ? (
+          <div style={{ padding: '20px', textAlign: 'center', color: 'var(--text-secondary)', fontSize: '13px' }}>
+            {filter ? 'No matching chats' : 'No conversations yet'}
+          </div>
+        ) : (
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
+            <thead>
+              <tr style={{ borderBottom: '1px solid var(--border)', color: 'var(--text-secondary)', fontSize: '11px', textTransform: 'uppercase' }}>
+                <th style={{ textAlign: 'left', padding: '8px 14px' }}>Chat</th>
+                <th style={{ textAlign: 'left', padding: '8px 14px', width: '80px' }}>Type</th>
+                <th style={{ textAlign: 'right', padding: '8px 14px', width: '80px' }}>Messages</th>
+                <th style={{ textAlign: 'right', padding: '8px 14px', width: '140px' }}>Last Active</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map((chat) => {
+                const isExpanded = expandedChat === chat.id;
+                return (
+                  <React.Fragment key={chat.id}>
+                    <tr
+                      onClick={() => toggleChat(chat.id)}
+                      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleChat(chat.id); } }}
+                      tabIndex={0}
+                      role="button"
+                      style={{
+                        cursor: 'pointer',
+                        borderBottom: isExpanded ? 'none' : '1px solid var(--border)',
+                        backgroundColor: isExpanded ? 'rgba(255,255,255,0.03)' : undefined,
+                      }}
+                      className="file-row"
+                    >
+                      <td style={{ padding: '6px 14px' }}>
+                        <span style={{ display: 'inline-block', width: '14px', fontSize: '10px', color: 'var(--text-secondary)', marginRight: '8px' }}>
+                          {isExpanded ? '\u25BC' : '\u25B6'}
+                        </span>
+                        {chat.title || chat.username || chat.id}
+                      </td>
+                      <td style={{ padding: '6px 14px' }}>
+                        <span style={{
+                          display: 'inline-block',
+                          padding: '1px 6px',
+                          fontSize: '11px',
+                          borderRadius: '3px',
+                          backgroundColor: chat.type === 'dm' ? 'rgba(59,130,246,0.15)' : 'rgba(168,85,247,0.15)',
+                          color: chat.type === 'dm' ? 'rgb(96,165,250)' : 'rgb(192,132,252)',
+                        }}>
+                          {chat.type}
+                        </span>
+                      </td>
+                      <td style={{ textAlign: 'right', padding: '6px 14px', color: 'var(--text-secondary)' }}>
+                        {chat.message_count}
+                      </td>
+                      <td style={{ textAlign: 'right', padding: '6px 14px', color: 'var(--text-secondary)' }}>
+                        {chat.last_message_at ? formatDate(chat.last_message_at) : '\u2014'}
+                      </td>
+                    </tr>
+                    {isExpanded && (
+                      <tr style={{ backgroundColor: 'rgba(255,255,255,0.03)', borderBottom: '1px solid var(--border)' }}>
+                        <td colSpan={4} style={{ padding: '0 14px 14px 14px' }}>
+                          {messagesLoading ? (
+                            <div style={{ padding: '12px 0', textAlign: 'center', color: 'var(--text-secondary)', fontSize: '12px' }}>Loading messages...</div>
+                          ) : messages.length === 0 ? (
+                            <div style={{ padding: '12px 0', textAlign: 'center', color: 'var(--text-secondary)', fontSize: '12px' }}>No messages</div>
+                          ) : (
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', paddingTop: '8px' }}>
+                              {messages.map((msg) => (
+                                <div
+                                  key={msg.id}
+                                  style={{
+                                    padding: '10px 12px',
+                                    border: '1px solid var(--border)',
+                                    borderRadius: '4px',
+                                    backgroundColor: 'var(--bg-glass)',
+                                  }}
+                                >
+                                  <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginBottom: '6px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                    <span>{msg.sender_id || 'Unknown'}</span>
+                                    {msg.is_from_agent === 1 && (
+                                      <span style={{
+                                        display: 'inline-block',
+                                        padding: '0px 5px',
+                                        fontSize: '10px',
+                                        borderRadius: '3px',
+                                        backgroundColor: 'rgba(34,197,94,0.15)',
+                                        color: 'rgb(74,222,128)',
+                                      }}>
+                                        Agent
+                                      </span>
+                                    )}
+                                    <span style={{ marginLeft: 'auto' }}>{formatDate(msg.timestamp)}</span>
+                                  </div>
+                                  <pre style={{
+                                    margin: 0,
+                                    whiteSpace: 'pre-wrap',
+                                    wordBreak: 'break-word',
+                                    fontSize: '12px',
+                                    fontFamily: 'monospace',
+                                    lineHeight: '1.5',
+                                    maxHeight: '300px',
+                                    minHeight: '20px',
+                                    overflow: 'auto',
+                                    resize: 'vertical',
+                                    color: 'var(--text-primary)',
+                                  }}>
+                                    {msg.text || (msg.has_media ? `[${msg.media_type || 'media'}]` : '[empty]')}
+                                  </pre>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  );
+}

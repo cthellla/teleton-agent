@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { Type } from "@sinclair/typebox";
 import { Api } from "telegram";
 import type { Tool, ToolExecutor, ToolResult } from "../../types.js";
@@ -42,7 +43,7 @@ export const telegramResolveGiftOfferExecutor: ToolExecutor<ResolveGiftOfferPara
 ): Promise<ToolResult> => {
   try {
     const { offerMsgId, decline } = params;
-    const gramJsClient = context.bridge.getClient().getClient();
+    const gramJsClient = (context.bridge.getRawClient() as any).getClient();
 
     await gramJsClient.invoke(
       new Api.payments.ResolveStarGiftOffer({ offerMsgId, decline: decline || undefined })

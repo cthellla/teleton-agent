@@ -4,7 +4,7 @@
  */
 
 import type Database from "better-sqlite3";
-import type { TelegramBridge } from "../telegram/bridge.js";
+import type { ITelegramBridge } from "../telegram/bridge-interface.js";
 import type { Deal } from "./types.js";
 import { sendTon } from "../ton/transfer.js";
 import { formatAsset } from "./utils.js";
@@ -28,7 +28,7 @@ export interface ExecutionResult {
 export async function executeDeal(
   dealId: string,
   db: Database.Database,
-  bridge: TelegramBridge
+  bridge: ITelegramBridge
 ): Promise<ExecutionResult> {
   try {
     // Load deal
@@ -144,7 +144,8 @@ Thank you for trading! 🎉`,
       );
 
       // Transfer collectible gift using Telegram API
-      const gramJsClient = bridge.getClient().getClient();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- user-only MTProto path
+      const gramJsClient = bridge.getRawClient() as any;
       const Api = (await import("telegram")).Api;
 
       try {
@@ -315,7 +316,7 @@ function logDealToJournal(deal: Deal, db: Database.Database, txHash?: string): v
 export async function autoExecuteAfterVerification(
   dealId: string,
   db: Database.Database,
-  bridge: TelegramBridge
+  bridge: ITelegramBridge
 ): Promise<void> {
   log.info(`Auto-executing deal #${dealId} after verification...`);
 

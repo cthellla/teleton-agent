@@ -1,5 +1,5 @@
 import { randomLong, toLong } from "../utils/gramjs-bigint.js";
-import type { TelegramBridge } from "../telegram/bridge.js";
+import type { ITelegramBridge } from "../telegram/bridge-interface.js";
 import type { Api } from "telegram";
 import type { PluginLogger, SimpleMessage, MediaSendOptions } from "@teleton-agent/sdk";
 import { PluginSDKError } from "@teleton-agent/sdk";
@@ -14,9 +14,24 @@ import {
  * Creates the Telegram messages, media, and advanced SDK methods.
  * These extend the core TelegramSDK with additional capabilities.
  */
-export function createTelegramMessagesSDK(bridge: TelegramBridge, log: PluginLogger) {
+export function createTelegramMessagesSDK(
+  bridge: ITelegramBridge,
+  log: PluginLogger,
+  mode?: "user" | "bot"
+) {
+  const telegramMode = mode ?? bridge.getMode();
+
   function requireBridge(): void {
     requireBridgeUtil(bridge);
+  }
+
+  function requireUserMode(methodName: string): void {
+    if (telegramMode === "bot") {
+      throw new PluginSDKError(
+        `sdk.telegram.${methodName}() requires user mode`,
+        "OPERATION_FAILED"
+      );
+    }
   }
 
   function getClient() {
@@ -27,6 +42,7 @@ export function createTelegramMessagesSDK(bridge: TelegramBridge, log: PluginLog
     // ─── Messages ──────────────────────────────────────────────
 
     async deleteMessage(chatId: string, messageId: number, revoke = true): Promise<void> {
+      requireUserMode("deleteMessage");
       requireBridge();
       try {
         const gramJsClient = getClient();
@@ -63,6 +79,7 @@ export function createTelegramMessagesSDK(bridge: TelegramBridge, log: PluginLog
       toChatId: string,
       messageId: number
     ): Promise<number | null> {
+      requireUserMode("forwardMessage");
       requireBridge();
       try {
         const gramJsClient = getClient();
@@ -103,6 +120,7 @@ export function createTelegramMessagesSDK(bridge: TelegramBridge, log: PluginLog
       messageId: number,
       opts?: { silent?: boolean; unpin?: boolean }
     ): Promise<void> {
+      requireUserMode("pinMessage");
       requireBridge();
       try {
         const gramJsClient = getClient();
@@ -126,6 +144,7 @@ export function createTelegramMessagesSDK(bridge: TelegramBridge, log: PluginLog
     },
 
     async searchMessages(chatId: string, query: string, limit = 20): Promise<SimpleMessage[]> {
+      requireUserMode("searchMessages");
       requireBridge();
       try {
         const gramJsClient = getClient();
@@ -161,6 +180,7 @@ export function createTelegramMessagesSDK(bridge: TelegramBridge, log: PluginLog
       text: string,
       scheduleDate: number
     ): Promise<number | null> {
+      requireUserMode("scheduleMessage");
       requireBridge();
       try {
         const gramJsClient = getClient();
@@ -181,6 +201,7 @@ export function createTelegramMessagesSDK(bridge: TelegramBridge, log: PluginLog
     },
 
     async getReplies(chatId: string, messageId: number, limit = 50): Promise<SimpleMessage[]> {
+      requireUserMode("getReplies");
       requireBridge();
       try {
         const gramJsClient = getClient();
@@ -229,6 +250,7 @@ export function createTelegramMessagesSDK(bridge: TelegramBridge, log: PluginLog
       photo: string | Buffer,
       opts?: MediaSendOptions
     ): Promise<number> {
+      requireUserMode("sendPhoto");
       requireBridge();
       try {
         const gramJsClient = getClient();
@@ -254,6 +276,7 @@ export function createTelegramMessagesSDK(bridge: TelegramBridge, log: PluginLog
       video: string | Buffer,
       opts?: MediaSendOptions
     ): Promise<number> {
+      requireUserMode("sendVideo");
       requireBridge();
       try {
         const gramJsClient = getClient();
@@ -290,6 +313,7 @@ export function createTelegramMessagesSDK(bridge: TelegramBridge, log: PluginLog
       voice: string | Buffer,
       opts?: MediaSendOptions
     ): Promise<number> {
+      requireUserMode("sendVoice");
       requireBridge();
       try {
         const gramJsClient = getClient();
@@ -319,6 +343,7 @@ export function createTelegramMessagesSDK(bridge: TelegramBridge, log: PluginLog
       file: string | Buffer,
       opts?: MediaSendOptions & { fileName?: string }
     ): Promise<number> {
+      requireUserMode("sendFile");
       requireBridge();
       try {
         const gramJsClient = getClient();
@@ -348,6 +373,7 @@ export function createTelegramMessagesSDK(bridge: TelegramBridge, log: PluginLog
     },
 
     async sendGif(chatId: string, gif: string | Buffer, opts?: MediaSendOptions): Promise<number> {
+      requireUserMode("sendGif");
       requireBridge();
       try {
         const gramJsClient = getClient();
@@ -371,6 +397,7 @@ export function createTelegramMessagesSDK(bridge: TelegramBridge, log: PluginLog
     },
 
     async sendSticker(chatId: string, sticker: string | Buffer): Promise<number> {
+      requireUserMode("sendSticker");
       requireBridge();
       try {
         const gramJsClient = getClient();
@@ -390,6 +417,7 @@ export function createTelegramMessagesSDK(bridge: TelegramBridge, log: PluginLog
     },
 
     async downloadMedia(chatId: string, messageId: number): Promise<Buffer | null> {
+      requireUserMode("downloadMedia");
       requireBridge();
       const MAX_DOWNLOAD_SIZE = 50 * 1024 * 1024; // 50 MB
       try {
@@ -428,6 +456,7 @@ export function createTelegramMessagesSDK(bridge: TelegramBridge, log: PluginLog
     // ─── Scheduled Messages ────────────────────────────────────
 
     async getScheduledMessages(chatId: string): Promise<SimpleMessage[]> {
+      requireUserMode("getScheduledMessages");
       requireBridge();
       try {
         const gramJsClient = getClient();
@@ -458,6 +487,7 @@ export function createTelegramMessagesSDK(bridge: TelegramBridge, log: PluginLog
     },
 
     async deleteScheduledMessage(chatId: string, messageId: number): Promise<void> {
+      requireUserMode("deleteScheduledMessage");
       requireBridge();
       try {
         const gramJsClient = getClient();
@@ -480,6 +510,7 @@ export function createTelegramMessagesSDK(bridge: TelegramBridge, log: PluginLog
     },
 
     async sendScheduledNow(chatId: string, messageId: number): Promise<void> {
+      requireUserMode("sendScheduledNow");
       requireBridge();
       try {
         const gramJsClient = getClient();

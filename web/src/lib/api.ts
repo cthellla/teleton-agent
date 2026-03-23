@@ -76,6 +76,7 @@ export interface AuthVerifyResult {
 export interface SetupConfig {
   agent: { provider: string; api_key?: string; base_url?: string; model?: string; max_agentic_iterations?: number };
   telegram: {
+    mode?: 'user' | 'bot';
     api_id: number;
     api_hash: string;
     phone: string;
@@ -136,6 +137,47 @@ export interface MemoryChunk {
   startLine: number | null;
   endLine: number | null;
   updatedAt: number;
+}
+
+export interface ConversationChat {
+  id: string;
+  type: string;
+  title: string | null;
+  username: string | null;
+  message_count: number;
+  last_message_at: number | null;
+  last_message: string | null;
+}
+
+export interface ConversationMessage {
+  id: string;
+  chat_id: string;
+  sender_id: string | null;
+  text: string | null;
+  is_from_agent: number;
+  has_media: number;
+  media_type: string | null;
+  timestamp: number;
+}
+
+export interface WalletInfo {
+  address: string | null;
+  balance: string;
+}
+
+export interface WalletTransaction {
+  type: string;
+  hash: string;
+  amount?: string;
+  from?: string;
+  to?: string;
+  comment?: string | null;
+  date: string;
+  secondsAgo: number;
+  explorer: string;
+  jettonAmount?: string;
+  jettonWallet?: string;
+  nftAddress?: string;
 }
 
 export interface ToolInfo {
@@ -375,6 +417,22 @@ export const api = {
 
   async getSourceChunks(sourceKey: string) {
     return fetchAPI<APIResponse<MemoryChunk[]>>(`/memory/sources/${encodeURIComponent(sourceKey)}`);
+  },
+
+  async getWallet() {
+    return fetchAPI<APIResponse<WalletInfo>>('/wallet');
+  },
+
+  async getWalletTransactions() {
+    return fetchAPI<APIResponse<WalletTransaction[]>>('/wallet/transactions');
+  },
+
+  async getConversations() {
+    return fetchAPI<APIResponse<ConversationChat[]>>('/conversations');
+  },
+
+  async getConversationMessages(chatId: string, limit = 50, offset = 0) {
+    return fetchAPI<APIResponse<ConversationMessage[]>>(`/conversations/${encodeURIComponent(chatId)}/messages?limit=${limit}&offset=${offset}`);
   },
 
   async getSoulFile(filename: string) {

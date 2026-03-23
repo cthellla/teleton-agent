@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { Type } from "@sinclair/typebox";
 import type { Tool, ToolExecutor, ToolResult } from "../../types.js";
 import { Api } from "telegram";
@@ -43,7 +44,7 @@ export const telegramGetBlockedExecutor: ToolExecutor<GetBlockedParams> = async 
     const { limit = 50 } = params;
 
     // Get underlying GramJS client
-    const gramJsClient = context.bridge.getClient().getClient();
+    const gramJsClient = (context.bridge.getRawClient() as any).getClient();
 
     // Get blocked users using GramJS
     const result = await gramJsClient.invoke(
@@ -54,7 +55,7 @@ export const telegramGetBlockedExecutor: ToolExecutor<GetBlockedParams> = async 
     );
 
     // Parse blocked users
-    const blockedUsers = result.users.map((user) => {
+    const blockedUsers = result.users.map((user: any) => {
       const isUser = user.className === "User";
       const u = isUser ? (user as Api.User) : undefined;
       return {

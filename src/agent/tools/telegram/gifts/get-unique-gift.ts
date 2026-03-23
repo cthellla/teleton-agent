@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { Type } from "@sinclair/typebox";
 import { Api } from "telegram";
 import type { Tool, ToolExecutor, ToolResult } from "../../types.js";
@@ -28,7 +29,7 @@ export const telegramGetUniqueGiftExecutor: ToolExecutor<GetUniqueGiftParams> = 
 ): Promise<ToolResult> => {
   try {
     const { slug } = params;
-    const gramJsClient = context.bridge.getClient().getClient();
+    const gramJsClient = (context.bridge.getRawClient() as any).getClient();
 
     const result = await gramJsClient.invoke(new Api.payments.GetUniqueStarGift({ slug }));
 
@@ -39,7 +40,9 @@ export const telegramGetUniqueGiftExecutor: ToolExecutor<GetUniqueGiftParams> = 
       gift.className === "StarGiftUnique" && gift.ownerId && "userId" in gift.ownerId
         ? gift.ownerId.userId?.toString()
         : undefined;
-    const ownerUser = users.find((u) => u.className === "User" && u.id?.toString() === ownerUserId);
+    const ownerUser = users.find(
+      (u: any) => u.className === "User" && u.id?.toString() === ownerUserId
+    );
 
     if (gift.className !== "StarGiftUnique") {
       return { success: false, error: "Gift is not a unique collectible" };
@@ -73,7 +76,7 @@ export const telegramGetUniqueGiftExecutor: ToolExecutor<GetUniqueGiftParams> = 
               : undefined,
         },
         giftAddress: gift.giftAddress || undefined,
-        attributes: (gift.attributes || []).map((attr) => ({
+        attributes: (gift.attributes || []).map((attr: any) => ({
           type: attr.className?.replace("StarGiftAttribute", "").toLowerCase(),
           name: "name" in attr ? attr.name : undefined,
           rarityPercent:
@@ -81,7 +84,7 @@ export const telegramGetUniqueGiftExecutor: ToolExecutor<GetUniqueGiftParams> = 
               ? Number((attr.rarity as Api.StarGiftAttributeRarity).permille) / 10
               : undefined,
         })),
-        resellPrices: (gift.resellAmount || []).map((a) => ({
+        resellPrices: (gift.resellAmount || []).map((a: any) => ({
           amount: a.amount?.toString(),
           isTon: "ton" in a,
         })),

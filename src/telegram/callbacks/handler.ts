@@ -1,4 +1,4 @@
-import type { TelegramBridge } from "../bridge.js";
+import type { ITelegramBridge } from "../bridge-interface.js";
 import { createLogger } from "../../utils/logger.js";
 
 const log = createLogger("Telegram");
@@ -15,7 +15,7 @@ export type CallbackHandler = (data: {
 export class CallbackQueryHandler {
   private handlers: Map<string, CallbackHandler> = new Map();
 
-  constructor(private bridge: TelegramBridge) {}
+  constructor(private bridge: ITelegramBridge) {}
 
   register(actionPrefix: string, handler: CallbackHandler): void {
     this.handlers.set(actionPrefix, handler);
@@ -62,7 +62,8 @@ export class CallbackQueryHandler {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- GramJS BigInteger queryId
   private async answerCallback(queryId: any, message?: string, alert = false): Promise<void> {
     try {
-      await this.bridge.getClient().answerCallbackQuery(queryId, { message, alert });
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- user-only MTProto callback answer
+      await (this.bridge.getRawClient() as any)?.answerCallbackQuery?.(queryId, { message, alert });
     } catch (error) {
       log.error({ err: error }, "Error answering callback");
     }

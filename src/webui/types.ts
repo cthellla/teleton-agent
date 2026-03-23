@@ -1,5 +1,5 @@
 import type { AgentRuntime } from "../agent/runtime.js";
-import type { TelegramBridge } from "../telegram/bridge.js";
+import type { ITelegramBridge } from "../telegram/bridge-interface.js";
 import type { MemorySystem } from "../memory/index.js";
 import type { ToolRegistry } from "../agent/tools/registry.js";
 import type { WebUIConfig, Config } from "../config/schema.js";
@@ -28,7 +28,7 @@ export interface McpServerInfo {
 
 export interface WebUIServerDeps {
   agent: AgentRuntime;
-  bridge: TelegramBridge;
+  bridge: ITelegramBridge;
   memory: {
     db: Database;
     embedder: MemorySystem["embedder"];

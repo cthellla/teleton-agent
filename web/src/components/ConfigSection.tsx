@@ -85,7 +85,6 @@ export function ConfigSection({
                   padding: '6px 10px',
                   fontSize: 14,
                   border: '1px solid var(--border)',
-                  borderRadius: 4,
                   background: 'var(--bg-glass)',
                   color: 'var(--text-primary)',
                 }}

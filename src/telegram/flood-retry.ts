@@ -127,7 +127,17 @@ export async function withFloodRetry<T>(
       }
       return result;
     } catch (error) {
-      const waitSeconds = (error as Record<string, unknown>).seconds;
+      // GramJS FloodWaitError has a .seconds property
+      let waitSeconds = (error as Record<string, unknown>).seconds;
+
+      // Grammy GrammyError 429: parse retry delay from description
+      if (typeof waitSeconds !== "number") {
+        const errAny = error as Record<string, unknown>;
+        if (errAny.error_code === 429 && typeof errAny.description === "string") {
+          const match = (errAny.description as string).match(/retry after (\d+)/i);
+          if (match) waitSeconds = parseInt(match[1], 10);
+        }
+      }
 
       if (typeof waitSeconds !== "number") {
         throw error;

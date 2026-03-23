@@ -1,11 +1,12 @@
-import { STEPS, useSetup } from './SetupContext';
+import { getSteps, useSetup } from './SetupContext';
 
 export function SetupNav() {
-  const { step } = useSetup();
+  const { step, data } = useSetup();
+  const steps = getSteps(data.telegramMode);
 
   return (
     <div className="step-indicator">
-      {STEPS.map((s, idx) => {
+      {steps.map((s, idx) => {
         const completed = idx < step;
         const active = idx === step;
 
@@ -21,7 +22,7 @@ export function SetupNav() {
                   <span>{idx + 1}</span>
                 )}
               </div>
-              {idx < STEPS.length - 1 && (
+              {idx < steps.length - 1 && (
                 <div className={`step-line${completed ? ' completed' : ''}`} />
               )}
             </div>
