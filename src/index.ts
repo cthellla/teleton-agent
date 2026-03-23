@@ -7,6 +7,7 @@ import type { TelegramMessage } from "./telegram/bridge.js";
 import type { ITelegramBridge } from "./telegram/bridge-interface.js";
 import { isBotBridge, isUserBridge } from "./telegram/bridge-guards.js";
 import { createBridge } from "./telegram/factory.js";
+import { eventBus } from "./events/bus.js";
 import { MessageHandler } from "./telegram/handlers.js";
 import { AdminHandler } from "./telegram/admin.js";
 import { MessageDebouncer } from "./telegram/debounce.js";
@@ -391,6 +392,7 @@ ${blue}  ┌──────────────────────�
     if (!this.bridge.isAvailable()) {
       throw new Error("Failed to connect to Telegram");
     }
+    eventBus.emit("bridge:connected", { mode: this.config.telegram.mode });
     await this.resolveOwnerInfo();
     const ownUserId = this.bridge.getOwnUserId();
     if (ownUserId) {
