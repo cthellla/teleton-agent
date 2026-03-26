@@ -27,7 +27,9 @@ export function Shell({ sidebar, children }: ShellProps) {
           margin: `${SIDEBAR_MARGIN}px 0 ${SIDEBAR_MARGIN}px ${SIDEBAR_MARGIN}px`,
           borderRadius: 'var(--radius-card)',
           background: 'var(--bg-secondary)',
-          border: '1px solid var(--border)',
+          backdropFilter: 'blur(40px) saturate(1.4)',
+          WebkitBackdropFilter: 'blur(40px) saturate(1.4)',
+          border: '1px solid var(--border-glass)',
           // Reset styles that come from .sidebar CSS class
           borderRight: 'none',
           padding: '20px 12px',

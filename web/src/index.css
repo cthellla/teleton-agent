@@ -10,10 +10,10 @@
 :root {
   color-scheme: dark;
 
-  /* ── Surfaces (dark gray, not black — easier on eyes) ── */
-  --bg-primary: #000000;
-  --bg-secondary: #1c1c22;
-  --bg-tertiary: #26262e;
+  /* ── Surfaces (midnight blue) ── */
+  --bg-primary: #0b1120;
+  --bg-secondary: rgba(255, 255, 255, 0.06);
+  --bg-tertiary: rgba(255, 255, 255, 0.08);
   --bg-muted: rgba(255, 255, 255, 0.06);
   --bg-glass: rgba(255, 255, 255, 0.05);
   --bg-glass-hover: rgba(255, 255, 255, 0.10);
@@ -245,7 +245,9 @@ body {
 
 .card {
   background: var(--bg-secondary);
-  border: 1px solid var(--border);
+  backdrop-filter: blur(40px) saturate(1.4);
+  -webkit-backdrop-filter: blur(40px) saturate(1.4);
+  border: 1px solid var(--border-glass);
   border-radius: var(--radius-card);
   padding: var(--space-xl);
   margin-bottom: 16px;
@@ -417,7 +419,7 @@ button:disabled {
 
 input, textarea, select {
   font-family: var(--font-sans);
-  background: var(--bg-secondary);
+  background: rgba(0, 0, 0, 0.25);
   border: 1px solid var(--border-glass);
   color: var(--text-primary);
   height: 44px;
@@ -881,7 +883,9 @@ button.btn-sm {
 
 .login-card {
   background: var(--bg-secondary);
-  border: 1px solid var(--border);
+  backdrop-filter: blur(40px) saturate(1.4);
+  -webkit-backdrop-filter: blur(40px) saturate(1.4);
+  border: 1px solid var(--border-glass);
   border-radius: var(--radius-card);
   padding: 32px;
   max-width: 380px;
