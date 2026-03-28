@@ -3,7 +3,7 @@ FROM node:20-slim AS build
 
 WORKDIR /app
 
-# Install build tools for native modules (better-sqlite3)
+# Install build tools for native modules (better-sqlite3, bufferutil, etc.)
 RUN apt-get update && apt-get install -y \
     python3 \
     make \
@@ -34,14 +34,24 @@ FROM node:20-slim
 
 WORKDIR /app
 
-# Copy package files and install production deps only
+# Install build tools, compile native modules, then remove build tools
 COPY package.json package-lock.json ./
-RUN npm pkg delete scripts.prepare \
+RUN apt-get update && apt-get install -y python3 make g++ \
+    && npm pkg delete scripts.prepare \
     && npm ci --omit=dev \
+    && npm install onnxruntime-node@1.22.0 --save \
+    && apt-get purge -y python3 make g++ && apt-get autoremove -y \
+    && rm -rf /var/lib/apt/lists/* \
     && npm cache clean --force
 
-# Copy pre-built native module from build stage
-COPY --from=build /app/node_modules/better-sqlite3/build/Release/better_sqlite3.node /app/node_modules/better-sqlite3/build/Release/better_sqlite3.node
+# Copy ALL pre-built native modules from build stage (ARM-compatible)
+COPY --from=build /app/node_modules/better-sqlite3/build/ /app/node_modules/better-sqlite3/build/
+COPY --from=build /app/node_modules/bufferutil/build/ /app/node_modules/bufferutil/build/
+COPY --from=build /app/node_modules/utf-8-validate/build/ /app/node_modules/utf-8-validate/build/
+
+# Replace @huggingface/transformers' old onnxruntime with the updated one
+RUN rm -rf /app/node_modules/@huggingface/transformers/node_modules/onnxruntime-node \
+    && ln -s /app/node_modules/onnxruntime-node /app/node_modules/@huggingface/transformers/node_modules/onnxruntime-node
 
 # Copy compiled code, bin wrapper, and templates
 COPY --from=build /app/dist/ dist/
