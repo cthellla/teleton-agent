@@ -381,6 +381,40 @@ export class ApiServer {
     });
 
     // New API-only routes under /v1/
+    // Inject a message into the agent (used by plugin cron to wake agent)
+    this.app.post("/api/message", async (c) => {
+      const agent = this.deps.agent;
+      if (!agent) {
+        return c.json({ error: "Agent not running" }, 503);
+      }
+      const body = await c.req.json().catch(() => null);
+      const message = body?.message;
+      if (!message || typeof message !== "string") {
+        return c.json({ error: "message (string) required" }, 400);
+      }
+      try {
+        const adminId = String(this.config.allowed_ips?.[0] || "system");
+        const result = await agent.processMessage({
+          chatId: adminId,
+          userMessage: message,
+          userName: "system-cron",
+          timestamp: new Date(),
+          isGroup: false,
+          isHeartbeat: true, // skip user hooks, treat as system message
+          toolContext: {
+            bridge: this.deps.bridge!,
+            db: (this.deps.memory?.db ?? null) as any,
+            senderId: adminId,
+            config: {} as any,
+          },
+        });
+        return c.json({ success: true, response: result.content?.slice(0, 200) });
+      } catch (err: any) {
+        log.error({ err }, "POST /api/message failed");
+        return c.json({ error: err.message }, 500);
+      }
+    });
+
     this.app.route("/v1/agent", createAgentRoutes(this.deps.lifecycle));
     this.app.route("/v1/system", createSystemRoutes());
     this.app.route("/v1/auth", createAuthRoutes());
