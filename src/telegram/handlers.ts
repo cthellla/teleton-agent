@@ -153,6 +153,10 @@ export class MessageHandler {
   private pluginMessageHooks: Array<(e: PluginMessageEvent) => Promise<void>> = [];
   private recentMessageIds: Set<string> = new Set();
   private static readonly DEDUP_MAX_SIZE = 500;
+  // Per-user DM rate limit: max N messages per minute (prevents free users from burning LLM tokens)
+  private userDmTimestamps: Map<string, number[]> = new Map();
+  private static readonly USER_DM_MAX_PER_MINUTE = 2;
+  private static readonly USER_DM_STUB_MESSAGE = "⏳ Пожалуйста, подождите минуту. Бесплатный лимит: 2 сообщения/мин.\n\nPlease wait a minute. Free limit: 2 messages/min.";
 
   constructor(
     bridge: ITelegramBridge,
@@ -385,6 +389,32 @@ export class MessageHandler {
     if (message.isGroup && !this.rateLimiter.canSendToGroup(message.chatId)) {
       log.debug(`Group rate limit reached for ${message.chatId}`);
       return;
+    }
+
+    // 3b. Per-user DM rate limit (skip for admins)
+    if (!message.isGroup && !this.config.admin_ids.includes(Number(message.senderId))) {
+      const now = Date.now();
+      const userId = message.senderId;
+      let timestamps = this.userDmTimestamps.get(userId) || [];
+      timestamps = timestamps.filter((t) => t > now - 60_000);
+      if (timestamps.length >= MessageHandler.USER_DM_MAX_PER_MINUTE) {
+        log.info(`User DM rate limit: ${userId} (${timestamps.length} msgs/min)`);
+        try {
+          await this.bridge.sendMessage({
+            chatId: message.chatId,
+            text: MessageHandler.USER_DM_STUB_MESSAGE,
+          });
+        } catch { /* best-effort */ }
+        return;
+      }
+      timestamps.push(now);
+      this.userDmTimestamps.set(userId, timestamps);
+      // Cleanup old users periodically
+      if (this.userDmTimestamps.size > 1000) {
+        for (const [uid, ts] of this.userDmTimestamps) {
+          if (ts.every((t) => t < now - 60_000)) this.userDmTimestamps.delete(uid);
+        }
+      }
     }
 
     // Enqueue for serial processing — messages wait their turn per chat
