@@ -102,6 +102,10 @@ export type {
   SecretDeclaration,
   // Storage
   StorageSDK,
+  // Cron
+  CronSDK,
+  CronJob,
+  CronJobOptions,
   // Plugin definitions
   SimpleToolDef,
   PluginManifest,

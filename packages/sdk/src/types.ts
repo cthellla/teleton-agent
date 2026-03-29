@@ -1729,6 +1729,34 @@ export interface StorageSDK {
   clear(): void;
 }
 
+// ─── Cron Types ─────────────────────────────────────────────────
+
+/** Options for registering a cron job */
+export interface CronJobOptions {
+  /** Interval in milliseconds (minimum 1000ms) */
+  every: number;
+  /** Fire immediately on start if a run was missed while offline (default: false) */
+  runMissed?: boolean;
+}
+
+/** Cron job state (read-only snapshot) */
+export interface CronJob {
+  id: string;
+  intervalMs: number;
+  runMissed: boolean;
+  lastRunAt: number | null;
+  nextRunAt: number | null;
+  running: boolean;
+}
+
+/** Interval-based job scheduler for plugins. Persists lastRunAt in SQLite. */
+export interface CronSDK {
+  register(id: string, opts: CronJobOptions, callback: () => Promise<void>): void;
+  unregister(id: string): boolean;
+  list(): CronJob[];
+  get(id: string): CronJob | undefined;
+}
+
 // ─── Hook Event Types ────────────────────────────────────────────
 
 /** Event for tool:before hook — mutable params, block, blockReason */
@@ -2231,6 +2259,9 @@ export interface PluginSDK {
 
   /** Simple key-value storage (null if no DB — use migrate() or storage auto-creates _kv table) */
   readonly storage: StorageSDK | null;
+
+  /** Interval-based job scheduler (null if no DB) */
+  readonly cron: CronSDK | null;
 
   /** Prefixed logger */
   readonly log: PluginLogger;

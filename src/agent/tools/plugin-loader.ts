@@ -34,6 +34,7 @@ import {
 } from "./plugin-validator.js";
 import {
   createPluginSDK,
+  CronManager,
   SDK_VERSION,
   semverSatisfies,
   type SDKDependencies,
@@ -177,6 +178,7 @@ export function adaptPlugin(
 
   const hasMigrate = typeof raw.migrate === "function";
   let pluginDb: Database.Database | null = null;
+  let cronManager: CronManager | null = null;
   const getDb = () => pluginDb;
   const withPluginDb = createDbWrapper(getDb, pluginName);
 
@@ -210,7 +212,7 @@ export function adaptPlugin(
               .all() as { name: string }[]
           )
             .map((t) => t.name)
-            .filter((n) => n !== "_kv"); // Exclude storage table
+            .filter((n) => n !== "_kv" && n !== "_cron_jobs"); // Exclude SDK tables
           if (pluginTables.length > 0) {
             migrateFromMainDb(pluginDb, pluginTables);
           }
@@ -232,7 +234,7 @@ export function adaptPlugin(
       try {
         let toolDefs: SimpleToolDef[];
         if (typeof raw.tools === "function") {
-          const sdk = createPluginSDK(sdkDeps, {
+          const { sdk, cronManager: cm } = createPluginSDK(sdkDeps, {
             pluginName,
             db: pluginDb,
             sanitizedConfig,
@@ -242,6 +244,7 @@ export function adaptPlugin(
             declaredHooks: manifest?.hooks,
             globalPriority,
           });
+          cronManager = cm;
           toolDefs = raw.tools(sdk);
         } else if (Array.isArray(raw.tools)) {
           toolDefs = raw.tools;
@@ -282,17 +285,19 @@ export function adaptPlugin(
     },
 
     async start(context) {
-      if (!raw.start) return;
-
       try {
-        const enhancedContext: EnhancedPluginContext = {
-          bridge: context.bridge,
-          db: pluginDb ?? null,
-          config: sanitizedConfig,
-          pluginConfig,
-          log: logFn,
-        };
-        await raw.start(enhancedContext);
+        if (raw.start) {
+          const enhancedContext: EnhancedPluginContext = {
+            bridge: context.bridge,
+            db: pluginDb ?? null,
+            config: sanitizedConfig,
+            pluginConfig,
+            log: logFn,
+          };
+          await raw.start(enhancedContext);
+        }
+        // Activate cron timers AFTER plugin start (plugin may register jobs in start())
+        cronManager?._start();
       } catch (error: unknown) {
         pluginLog.error(`start() failed: ${getErrorMessage(error)}`);
       }
@@ -300,6 +305,7 @@ export function adaptPlugin(
 
     async stop() {
       try {
+        cronManager?._stopAll();
         await raw.stop?.();
       } catch (error: unknown) {
         pluginLog.error(`stop() failed: ${getErrorMessage(error)}`);

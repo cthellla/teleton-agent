@@ -13,6 +13,7 @@ import { createTonSDK } from "./ton.js";
 import { createTelegramSDK } from "./telegram.js";
 import { createSecretsSDK } from "./secrets.js";
 import { createStorageSDK } from "./storage.js";
+import { createCronSDK, CronManager } from "./cron.js";
 import { createBotSDK } from "./bot.js";
 import type { InlineRouter } from "../bot/inline-router.js";
 import type { GramJSBotClient } from "../bot/gramjs-bot.js";
@@ -30,6 +31,9 @@ export type {
   SecretsSDK,
   SecretDeclaration,
   StorageSDK,
+  CronSDK,
+  CronJob,
+  CronJobOptions,
   PluginLogger,
   TonBalance,
   TonPrice,
@@ -178,7 +182,14 @@ function createSafeDb(db: Database.Database): Database.Database {
   });
 }
 
-export function createPluginSDK(deps: SDKDependencies, opts: CreatePluginSDKOptions): PluginSDK {
+export { CronManager } from "./cron.js";
+
+export interface CreatePluginSDKResult {
+  sdk: PluginSDK;
+  cronManager: CronManager | null;
+}
+
+export function createPluginSDK(deps: SDKDependencies, opts: CreatePluginSDKOptions): CreatePluginSDKResult {
   const log = createLogger(opts.pluginName);
 
   const safeDb = opts.db ? createSafeDb(opts.db) : null;
@@ -186,6 +197,14 @@ export function createPluginSDK(deps: SDKDependencies, opts: CreatePluginSDKOpti
   const telegram = Object.freeze(createTelegramSDK(deps.bridge, log));
   const secrets = Object.freeze(createSecretsSDK(opts.pluginName, opts.pluginConfig, log));
   const storage = safeDb ? Object.freeze(createStorageSDK(safeDb)) : null;
+
+  let cronSdk: import("@teleton-agent/sdk").CronSDK | null = null;
+  let cronManager: CronManager | null = null;
+  if (safeDb) {
+    const cron = createCronSDK(safeDb, log);
+    cronSdk = cron.sdk;
+    cronManager = cron.manager;
+  }
   const frozenLog = Object.freeze(log);
   const frozenConfig = Object.freeze(JSON.parse(JSON.stringify(opts.sanitizedConfig ?? {})));
   const frozenPluginConfig = Object.freeze(JSON.parse(JSON.stringify(opts.pluginConfig ?? {})));
@@ -203,6 +222,7 @@ export function createPluginSDK(deps: SDKDependencies, opts: CreatePluginSDKOpti
     telegram,
     secrets,
     storage,
+    cron: cronSdk,
     db: safeDb,
     config: frozenConfig,
     pluginConfig: frozenPluginConfig,
@@ -259,7 +279,7 @@ export function createPluginSDK(deps: SDKDependencies, opts: CreatePluginSDKOpti
     },
   };
 
-  return Object.freeze(sdk);
+  return { sdk: Object.freeze(sdk), cronManager };
 }
 
 function createLogger(pluginName: string): PluginLogger {
