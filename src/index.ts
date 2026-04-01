@@ -909,7 +909,8 @@ ${blue}  ┌──────────────────────�
           const withHooks = mod as PluginModuleWithHooks;
           if (withHooks.onMessage) {
             try {
-              await withHooks.onMessage(event);
+              const result = await withHooks.onMessage(event);
+              if (typeof result === "string") return result;
             } catch (error: unknown) {
               log.error(`❌ [${mod.name}] onMessage error: ${getErrorMessage(error)}`);
             }
