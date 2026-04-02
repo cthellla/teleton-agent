@@ -120,7 +120,7 @@ const PROVIDER_REGISTRY: Record<SupportedProvider, ProviderMetadata> = {
     keyPrefix: "sk-or-",
     keyHint: "sk-or-v1-...",
     consoleUrl: "https://openrouter.ai/keys",
-    defaultModel: "anthropic/claude-opus-4.5",
+    defaultModel: "deepseek/deepseek-v3.2",
     utilityModel: "google/gemini-2.5-flash-lite",
     toolLimit: 128,
     piAiProvider: "openrouter",

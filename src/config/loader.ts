@@ -67,6 +67,12 @@ export function loadConfig(configPath: string = DEFAULT_CONFIG_PATH): Config {
   config.storage.sessions_file = expandPath(config.storage.sessions_file);
   config.storage.memory_file = expandPath(config.storage.memory_file);
 
+  if (env.TELETON_PROVIDER) {
+    config.agent.provider = env.TELETON_PROVIDER;
+  }
+  if (env.TELETON_MODEL) {
+    config.agent.model = env.TELETON_MODEL;
+  }
   if (env.TELETON_API_KEY) {
     config.agent.api_key = env.TELETON_API_KEY;
   }
