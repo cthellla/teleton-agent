@@ -34,10 +34,9 @@ FROM node:20-slim
 
 WORKDIR /app
 
-# Install build tools, compile native modules, then remove build tools
-# Note: package.json has "overrides": {"onnxruntime-node": "1.22.0"}
-# which forces all deps (including @huggingface/transformers) to use
-# onnxruntime-node 1.22.0+ (fixes SIGILL on ARM64 Cortex-A72)
+# Install build tools for native modules (bufferutil, utf-8-validate lack
+# linux-arm64 prebuilds), compile, then remove build tools.
+# package.json overrides onnxruntime-node to 1.22.0-rev (fixes SIGILL on ARM64 Cortex-A72)
 COPY package.json package-lock.json ./
 RUN apt-get update && apt-get install -y python3 make g++ \
     && npm pkg delete scripts.prepare \
@@ -45,11 +44,6 @@ RUN apt-get update && apt-get install -y python3 make g++ \
     && apt-get purge -y python3 make g++ && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/* \
     && npm cache clean --force
-
-# Copy pre-built native modules from build stage (ARM-compatible)
-COPY --from=build /app/node_modules/better-sqlite3/build/ /app/node_modules/better-sqlite3/build/
-COPY --from=build /app/node_modules/bufferutil/build/ /app/node_modules/bufferutil/build/
-COPY --from=build /app/node_modules/utf-8-validate/build/ /app/node_modules/utf-8-validate/build/
 
 # Copy compiled code, bin wrapper, and templates
 COPY --from=build /app/dist/ dist/
