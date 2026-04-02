@@ -265,11 +265,10 @@ export async function chatWithContext(
     sessionId: options.sessionId,
     cacheRetention: "long",
   };
-  // Enable reasoning for reasoning models (e.g. Step 3.5 Flash, DeepSeek R1)
-  // pi-ai stream() passes options directly to buildParams which checks reasoningEffort
-  // (only streamSimple maps options.reasoning → reasoningEffort)
-  if (model.reasoning) {
-    completeOptions.reasoningEffort = "low";
+  // Apply user's reasoning effort preference (pi-ai stream() requires reasoningEffort, not reasoning)
+  const reasoningEffort = config.reasoning_effort ?? "low";
+  if (model.reasoning && reasoningEffort !== "off") {
+    completeOptions.reasoningEffort = reasoningEffort;
   }
   if (isCocoon) {
     const { stripCocoonPayload } = await import("../cocoon/tool-adapter.js");
@@ -368,9 +367,9 @@ export function streamWithContext(config: AgentConfig, options: ChatOptions): St
     sessionId: options.sessionId,
     cacheRetention: "long",
   };
-  // Enable reasoning for reasoning models (e.g. Step 3.5 Flash, DeepSeek R1)
-  if (model.reasoning) {
-    streamOptions.reasoningEffort = "low";
+  const reasoningEffort = config.reasoning_effort ?? "low";
+  if (model.reasoning && reasoningEffort !== "off") {
+    streamOptions.reasoningEffort = reasoningEffort;
   }
 
   const eventStream = stream(model, context, streamOptions as ProviderStreamOptions);
