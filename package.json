@@ -81,6 +81,7 @@
     "chalk": "^5.6.2",
     "chokidar": "^5.0.0",
     "commander": "^14.0.3",
+    "fast-xml-parser": "^5.5.10",
     "grammy": "^1.41.1",
     "hono": "^4.12.9",
     "hono-rate-limiter": "^0.5.3",
