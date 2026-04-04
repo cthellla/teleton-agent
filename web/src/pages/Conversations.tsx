@@ -148,7 +148,7 @@ export function Conversations() {
                         {chat.message_count}
                       </td>
                       <td style={{ textAlign: 'right', padding: '6px 14px', color: 'var(--text-secondary)' }}>
-                        {chat.last_message_at ? formatDate(chat.last_message_at) : '\u2014'}
+                        {chat.last_message_at ? formatDate(chat.last_message_at, 1000) : '\u2014'}
                       </td>
                     </tr>
                     {isExpanded && (
@@ -184,7 +184,7 @@ export function Conversations() {
                                         Agent
                                       </span>
                                     )}
-                                    <span style={{ marginLeft: 'auto' }}>{formatDate(msg.timestamp)}</span>
+                                    <span style={{ marginLeft: 'auto' }}>{formatDate(msg.timestamp, 1000)}</span>
                                   </div>
                                   <pre style={{
                                     margin: 0,
