@@ -135,6 +135,8 @@ export const MODEL_OPTIONS: Record<string, ModelOption[]> = {
       name: "DeepSeek V3",
       description: "General, 64K ctx, $0.30/M",
     },
+    { value: "qwen/qwen3.6-plus:free", name: "Qwen3.6 Plus (free)", description: "Latest Qwen flagship, 1M ctx, free" },
+    { value: "qwen/qwen3.6-plus", name: "Qwen3.6 Plus", description: "Latest Qwen flagship, 1M ctx" },
     { value: "qwen/qwen3-coder", name: "Qwen3 Coder", description: "Coding specialist" },
     { value: "qwen/qwen3-max", name: "Qwen3 Max", description: "Most capable Qwen" },
     { value: "qwen/qwen3-235b-a22b", name: "Qwen3 235B", description: "235B params, MoE" },
