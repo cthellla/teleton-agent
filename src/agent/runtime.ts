@@ -13,6 +13,7 @@ import {
   RATE_LIMIT_MAX_BACKOFF_MS,
   SERVER_ERROR_MAX_RETRIES,
   NETWORK_ERROR_MAX_RETRIES,
+  EMPTY_RESPONSE_MAX_RETRIES,
   TOOL_CONCURRENCY_LIMIT,
   EMBEDDING_QUERY_MAX_CHARS,
 } from "../constants/limits.js";
@@ -606,6 +607,7 @@ export class AgentRuntime {
       let rateLimitRetries = 0;
       let serverErrorRetries = 0;
       let networkErrorRetries = 0;
+      let emptyResponseRetries = 0;
       let finalResponse: ChatResponse | null = null;
       const totalToolCalls: Array<{ name: string; input: Record<string, unknown> }> = [];
       const allToolExecResults: Array<{
@@ -888,6 +890,20 @@ export class AgentRuntime {
         const toolCalls = response.message.content.filter((block) => block.type === "toolCall");
 
         if (toolCalls.length === 0) {
+          // Retry if model returned empty response (0 output tokens) — likely API glitch
+          const iterOutput = response.message.usage?.output ?? 0;
+          if (!response.text && iterOutput === 0 && iteration < maxIterations) {
+            emptyResponseRetries++;
+            if (emptyResponseRetries <= EMPTY_RESPONSE_MAX_RETRIES) {
+              const delay = 2000 * emptyResponseRetries;
+              log.warn(
+                `Empty response with 0 output tokens, retrying in ${delay}ms (attempt ${emptyResponseRetries}/${EMPTY_RESPONSE_MAX_RETRIES})...`
+              );
+              await new Promise((r) => setTimeout(r, delay));
+              continue;
+            }
+            log.warn(`Empty response persists after ${EMPTY_RESPONSE_MAX_RETRIES} retries, accepting`);
+          }
           log.info(`${iteration}/${maxIterations} → done`);
           finalResponse = response;
           wasStreamed = streamed;
