@@ -175,7 +175,17 @@ export function getProviderModel(provider: SupportedProvider, modelId: string): 
 
   try {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- getModel requires literal provider+model types; dynamic strings need casts
-    const model = getModel(meta.piAiProvider as any, modelId as any);
+    let model = getModel(meta.piAiProvider as any, modelId as any);
+
+    // OpenRouter: SDK may only know the :free variant — clone it with the paid model ID
+    if (!model && provider === "openrouter" && !modelId.endsWith(":free")) {
+      const freeVariant = getModel(meta.piAiProvider as any, `${modelId}:free` as any);
+      if (freeVariant) {
+        model = { ...freeVariant, id: modelId } as typeof freeVariant;
+        log.info(`Model ${modelId} resolved via :free variant in SDK`);
+      }
+    }
+
     if (!model) {
       throw new Error(`getModel returned undefined for ${provider}/${modelId}`);
     }
