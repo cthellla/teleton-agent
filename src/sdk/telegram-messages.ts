@@ -417,6 +417,29 @@ export function createTelegramMessagesSDK(
       }
     },
 
+    async getMessageById(chatId: string, messageId: number): Promise<import("@teleton-agent/sdk").SimpleMessage | null> {
+      requireUserMode("getMessageById");
+      requireBridge();
+      try {
+        const gramJsClient = getClient();
+
+        const messages = await gramJsClient.getMessages(chatId, {
+          ids: [messageId],
+        });
+
+        if (!messages || messages.length === 0) return null;
+        const msg = messages[0];
+        if (!msg || msg.className === "MessageEmpty") return null;
+        return toSimpleMessage(msg);
+      } catch (error) {
+        if (error instanceof PluginSDKError) throw error;
+        throw new PluginSDKError(
+          `Failed to get message: ${getErrorMessage(error)}`,
+          "OPERATION_FAILED"
+        );
+      }
+    },
+
     async downloadMedia(chatId: string, messageId: number): Promise<Buffer | null> {
       requireUserMode("downloadMedia");
       requireBridge();

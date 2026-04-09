@@ -1162,6 +1162,16 @@ export interface TelegramSDK {
   getMessages(chatId: string, limit?: number): Promise<SimpleMessage[]>;
 
   /**
+   * Get a specific message by its ID.
+   * Requires user mode.
+   *
+   * @param chatId — Chat/channel ID or username (e.g. "@channel" or "-100xxx")
+   * @param messageId — Numeric message ID
+   * @returns The message, or null if not found.
+   */
+  getMessageById(chatId: string, messageId: number): Promise<SimpleMessage | null>;
+
+  /**
    * Get bot's own user info.
    * @returns Own user info, or null if not connected.
    */
