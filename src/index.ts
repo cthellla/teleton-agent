@@ -809,7 +809,8 @@ ${blue}  ┌──────────────────────�
         "• Echo is an AI research assistant. Responses are AI-generated and may contain errors.\n" +
         "• Subscription payments are processed via Telegram Stars. Refunds are handled on a case-by-case basis.\n" +
         "• TON payment channels use on-chain smart contracts. Unused funds are refundable via cooperative close.\n" +
-        "• We do not store personal data beyond what is needed for billing and rate limiting.\n" +
+        "• Data we store: user ID, usage counters, payment records, and language preference. Data is used solely for billing, rate limiting, and service delivery. No personal data is shared with third parties.\n" +
+        "• By making a purchase, you agree to these terms.\n" +
         "• For payment issues, use /paysupport.",
       );
     });
@@ -819,7 +820,8 @@ ${blue}  ┌──────────────────────�
         "For payment issues:\n\n" +
         "• Stars subscription: Use /cancel to cancel, or contact @cthellla\n" +
         "• TON payment channel: Open the Mini App to manage your channel\n" +
-        "• Refund requests: Contact @cthellla with your Telegram user ID",
+        "• Refund requests: Contact @cthellla with your Telegram user ID\n\n" +
+        "⚠️ Telegram support cannot help with purchases made via this bot. All payment issues are handled directly by the bot developer.",
       );
     });
 
