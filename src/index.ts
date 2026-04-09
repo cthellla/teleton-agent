@@ -709,12 +709,17 @@ ${blue}  ┌──────────────────────�
           log.info(`[stars] Single answer credit for user ${userId}`);
         }
 
-        // Delete paywall message
+        // Delete paywall + invoice messages
         const pending = db.prepare("SELECT * FROM pending_messages WHERE user_id = ?").get(String(userId)) as {
           chat_id: string; message_text: string; deep_link_param: string | null; paywall_message_id: number | null;
         } | undefined;
         if (pending?.paywall_message_id) {
           try { await bot.api.deleteMessage(Number(pending.chat_id), pending.paywall_message_id); } catch { /* */ }
+        }
+        const invoice = pendingInvoices.get(userId);
+        if (invoice) {
+          try { await bot.api.deleteMessage(invoice.chatId, invoice.messageId); } catch { /* */ }
+          pendingInvoices.delete(userId);
         }
 
         // Replay pending message
@@ -751,16 +756,18 @@ ${blue}  ┌──────────────────────�
 
     // Buy one answer callback handler
     const TEST_USER_IDS = new Set([130552640, 5435055002]);
+    const pendingInvoices = new Map<number, { chatId: number; messageId: number }>();
     bridge.setPaymentCallbackHandler(async (ctx) => {
       const chatId = ctx.callbackQuery?.message?.chat.id;
       const userId = ctx.from?.id;
-      if (!chatId) return;
+      if (!chatId || !userId) return;
       const amount = userId && TEST_USER_IDS.has(userId) ? 1 : 5;
       try {
-        await bot.api.sendInvoice(
+        const sent = await bot.api.sendInvoice(
           chatId, "One Answer", "Get an answer to your last question", "single_answer", "XTR",
           [{ label: "1 Answer", amount }],
         );
+        pendingInvoices.set(userId, { chatId, messageId: sent.message_id });
       } catch (err) {
         log.error({ err }, "[stars] Failed to send invoice");
       }
