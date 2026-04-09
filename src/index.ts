@@ -608,11 +608,167 @@ ${blue}  ┌──────────────────────�
         // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- debouncer initialized before wireBotMode
         void this.debouncer!.enqueue(msg);
       });
+
+      // Stars payment handlers
+      this.wireStarsPayments(this.bridge);
+
       if (firstStart) {
         this.bridge.startPolling();
       }
       void this.bridge.syncCommands();
     }
+  }
+
+  /**
+   * Wire Stars payment handlers — successful_payment and buy_one_answer callback.
+   * Accesses plugin DB directly at /data/plugins/data/hackernews.db.
+   */
+  private wireStarsPayments(bridge: import("./telegram/bridges/bot.js").GrammyBotBridge): void {
+    const PLUGIN_DB_PATH = `${process.env.TELETON_HOME || "/data"}/plugins/data/hackernews.db`;
+    const bot = bridge.getBot();
+
+    // Generate invoice links on first call (lazy)
+    let invoiceLinks: { basic?: string; pro?: string } = {};
+    const getInvoiceLinks = async () => {
+      if (invoiceLinks.basic) return invoiceLinks;
+      try {
+        invoiceLinks.basic = await bot.api.createInvoiceLink(
+          "Echo Basic", "5 requests per day", "sub_basic", "", "XTR",
+          [{ label: "Monthly", amount: 75 }],
+          { subscription_period: 2592000 },
+        );
+        invoiceLinks.pro = await bot.api.createInvoiceLink(
+          "Echo Pro", "20 requests per day", "sub_pro", "", "XTR",
+          [{ label: "Monthly", amount: 150 }],
+          { subscription_period: 2592000 },
+        );
+        log.info(`[stars] Invoice links generated: basic=${invoiceLinks.basic?.slice(0, 40)}...`);
+      } catch (err) {
+        log.error({ err }, "[stars] Failed to generate invoice links");
+      }
+      return invoiceLinks;
+    };
+
+    // Successful payment handler
+    bridge.setPaymentHandler(async (userId, payment) => {
+      let db;
+      try {
+        const Database = (await import("better-sqlite3")).default;
+        db = new Database(PLUGIN_DB_PATH);
+      } catch (err) {
+        log.error({ err }, "[stars] Cannot open plugin DB");
+        return;
+      }
+
+      try {
+        const payload = payment.invoice_payload;
+        const chargeId = payment.telegram_payment_charge_id;
+
+        if (payment.is_first_recurring) {
+          // New subscription
+          const tier = payload === "sub_pro" ? "pro" : "basic";
+          const dailyLimit = tier === "pro" ? 20 : 5;
+          const expiresAt = payment.subscription_expiration_date || (Math.floor(Date.now() / 1000) + 2592000);
+
+          // Cancel other active subscriptions for this user
+          const existing = db.prepare(
+            "SELECT telegram_charge_id FROM stars_subscriptions WHERE user_id = ? AND expires_at > ?",
+          ).all(String(userId), Math.floor(Date.now() / 1000));
+          for (const sub of existing) {
+            try {
+              await bot.api.editUserStarSubscription(userId, (sub as { telegram_charge_id: string }).telegram_charge_id, true);
+              log.info(`[stars] Cancelled old subscription for user ${userId}`);
+            } catch { /* may already be cancelled */ }
+          }
+
+          db.prepare(
+            `INSERT INTO stars_subscriptions (user_id, tier, daily_limit, expires_at, telegram_charge_id, invoice_payload)
+             VALUES (?, ?, ?, ?, ?, ?)`,
+          ).run(String(userId), tier, dailyLimit, expiresAt, chargeId, payload);
+
+          // Reset usage counter so user gets full daily limit
+          db.prepare("DELETE FROM usage_tracking WHERE user_id = ?").run(String(userId));
+
+          log.info(`[stars] New ${tier} subscription for user ${userId}, expires ${expiresAt}`);
+
+        } else if (payment.is_recurring) {
+          // Renewal
+          const expiresAt = payment.subscription_expiration_date || (Math.floor(Date.now() / 1000) + 2592000);
+          db.prepare(
+            "UPDATE stars_subscriptions SET expires_at = ?, telegram_charge_id = ? WHERE user_id = ? AND invoice_payload = ?",
+          ).run(expiresAt, chargeId, String(userId), payload);
+          log.info(`[stars] Renewed subscription for user ${userId}, new expires ${expiresAt}`);
+
+        } else {
+          // One-off purchase (single answer)
+          db.prepare(
+            `INSERT INTO stars_credits (user_id, credits, last_purchase_at)
+             VALUES (?, 1, ?)
+             ON CONFLICT(user_id) DO UPDATE SET credits = credits + 1, last_purchase_at = ?`,
+          ).run(String(userId), Math.floor(Date.now() / 1000), Math.floor(Date.now() / 1000));
+          log.info(`[stars] Single answer credit for user ${userId}`);
+        }
+
+        // Delete paywall message
+        const pending = db.prepare("SELECT * FROM pending_messages WHERE user_id = ?").get(String(userId)) as {
+          chat_id: string; message_text: string; deep_link_param: string | null; paywall_message_id: number | null;
+        } | undefined;
+        if (pending?.paywall_message_id) {
+          try { await bot.api.deleteMessage(Number(pending.chat_id), pending.paywall_message_id); } catch { /* */ }
+        }
+
+        // Replay pending message
+        if (pending) {
+          db.prepare("DELETE FROM pending_messages WHERE user_id = ?").run(String(userId));
+          const replayText = pending.deep_link_param
+            ? `/start ${pending.deep_link_param}`
+            : pending.message_text;
+
+          // Inject as synthetic message into debouncer
+          if (this.debouncer) {
+            const syntheticMsg: TelegramMessage = {
+              id: 0,
+              text: replayText,
+              senderId: userId,
+              chatId: pending.chat_id,
+              isGroup: false,
+              isChannel: false,
+              isBot: false,
+              mentionsMe: true,
+              timestamp: new Date(),
+              hasMedia: false,
+            };
+            void this.debouncer.enqueue(syntheticMsg);
+            log.info(`[stars] Replaying pending message for user ${userId}: "${replayText.slice(0, 50)}"`);
+          }
+        }
+      } catch (err) {
+        log.error({ err }, `[stars] Payment handler error for user ${userId}`);
+      } finally {
+        try { db.close(); } catch { /* */ }
+      }
+    });
+
+    // Buy one answer callback handler
+    bridge.setPaymentCallbackHandler(async (ctx) => {
+      const chatId = ctx.callbackQuery?.message?.chat.id;
+      if (!chatId) return;
+      try {
+        await bot.api.sendInvoice(
+          chatId, "One Answer", "Get an answer to your last question", "single_answer", "XTR",
+          [{ label: "1 Answer", amount: 5 }],
+        );
+      } catch (err) {
+        log.error({ err }, "[stars] Failed to send invoice");
+      }
+    });
+
+    // Cache invoice links (async, non-blocking)
+    void getInvoiceLinks().then((links) => {
+      // Store in env for plugin to use in paywall buttons
+      if (links.basic) process.env.STARS_BASIC_LINK = links.basic;
+      if (links.pro) process.env.STARS_PRO_LINK = links.pro;
+    });
   }
 
   /**
