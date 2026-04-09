@@ -20,6 +20,21 @@ export type { TelegramMessage, InlineButton, SendMessageOptions } from "../bridg
 
 const log = createLogger("Telegram");
 
+function toGramJSMarkup(keyboard: InlineButton[][]): Api.ReplyInlineMarkup {
+  return new Api.ReplyInlineMarkup({
+    rows: keyboard.map(
+      (row) =>
+        new Api.KeyboardButtonRow({
+          buttons: row.map((btn) => {
+            if (btn.url) return new Api.KeyboardButtonUrl({ text: btn.text, url: btn.url });
+            if (btn.web_app) return new Api.KeyboardButtonWebView({ text: btn.text, url: btn.web_app.url });
+            return new Api.KeyboardButtonCallback({ text: btn.text, data: Buffer.from(btn.callback_data || "") });
+          }),
+        })
+    ),
+  });
+}
+
 export class GramJSUserBridge implements ITelegramBridge {
   private client: TelegramUserClient;
   private ownUserId?: bigint;
@@ -100,18 +115,7 @@ export class GramJSUserBridge implements ITelegramBridge {
       let msg: Api.Message;
 
       if (options.inlineKeyboard && options.inlineKeyboard.length > 0) {
-        const buttons = new Api.ReplyInlineMarkup({
-          rows: options.inlineKeyboard.map(
-            (row) =>
-              new Api.KeyboardButtonRow({
-                buttons: row.map((btn) => {
-                  if (btn.url) return new Api.KeyboardButtonUrl({ text: btn.text, url: btn.url });
-                  if (btn.web_app) return new Api.KeyboardButtonWebView({ text: btn.text, url: btn.web_app.url });
-                  return new Api.KeyboardButtonCallback({ text: btn.text, data: Buffer.from(btn.callback_data || "") });
-                }),
-              })
-          ),
-        });
+        const buttons = toGramJSMarkup(options.inlineKeyboard);
 
         const gramJsClient = this.client.getClient();
         msg = await withFloodRetry(

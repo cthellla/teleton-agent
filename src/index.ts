@@ -651,7 +651,7 @@ ${blue}  ┌──────────────────────�
 
     // Successful payment handler
     bridge.setPaymentHandler(async (userId, payment) => {
-      let db;
+      let db: import("better-sqlite3").Database | null = null;
       try {
         const Database = (await import("better-sqlite3")).default;
         db = new Database(PLUGIN_DB_PATH);
@@ -745,7 +745,7 @@ ${blue}  ┌──────────────────────�
       } catch (err) {
         log.error({ err }, `[stars] Payment handler error for user ${userId}`);
       } finally {
-        try { db.close(); } catch { /* */ }
+        try { db?.close(); } catch (err) { log.warn({ err }, "[stars] DB close failed"); }
       }
     });
 
