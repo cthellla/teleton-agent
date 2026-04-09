@@ -763,6 +763,61 @@ ${blue}  ┌──────────────────────�
       }
     });
 
+    // Service commands — handled directly via Grammy, before message reaches agent
+    bot.command("cancel", async (ctx) => {
+      const userId = ctx.from?.id;
+      if (!userId) return;
+      let db: import("better-sqlite3").Database | null = null;
+      try {
+        const Database = (await import("better-sqlite3")).default;
+        db = new Database(PLUGIN_DB_PATH);
+        const now = Math.floor(Date.now() / 1000);
+        const activeSub = db.prepare(
+          "SELECT tier, telegram_charge_id, expires_at FROM stars_subscriptions WHERE user_id = ? AND expires_at > ? ORDER BY created_at DESC LIMIT 1",
+        ).get(String(userId), now) as { tier: string; telegram_charge_id: string; expires_at: number } | undefined;
+
+        if (!activeSub) {
+          await ctx.reply("You don't have an active subscription.");
+          return;
+        }
+
+        await bot.api.editUserStarSubscription(userId, activeSub.telegram_charge_id, true);
+        const expiresDate = new Date(activeSub.expires_at * 1000).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
+        await ctx.reply(`Your ${activeSub.tier.charAt(0).toUpperCase() + activeSub.tier.slice(1)} subscription has been cancelled. It stays active until ${expiresDate}. You can re-subscribe anytime.`);
+        log.info(`[stars] User ${userId} cancelled ${activeSub.tier} subscription`);
+      } catch (err) {
+        log.error({ err }, `[stars] /cancel error for user ${userId}`);
+        await ctx.reply("Failed to cancel subscription. Please try again or contact /paysupport.").catch(() => {});
+      } finally {
+        try { db?.close(); } catch { /* */ }
+      }
+    });
+
+    bot.command("terms", async (ctx) => {
+      await ctx.reply(
+        "Echo Bot — Terms of Service\n\n" +
+        "• Echo is an AI research assistant. Responses are AI-generated and may contain errors.\n" +
+        "• Subscription payments are processed via Telegram Stars. Refunds are handled on a case-by-case basis.\n" +
+        "• TON payment channels use on-chain smart contracts. Unused funds are refundable via cooperative close.\n" +
+        "• We do not store personal data beyond what is needed for billing and rate limiting.\n" +
+        "• For payment issues, use /paysupport.",
+      );
+    });
+
+    bot.command("paysupport", async (ctx) => {
+      await ctx.reply(
+        "For payment issues:\n\n" +
+        "• Stars subscription: Use /cancel to cancel, or contact @cthellla\n" +
+        "• TON payment channel: Open the Mini App to manage your channel\n" +
+        "• Refund requests: Contact @cthellla with your Telegram user ID",
+      );
+    });
+
+    // Expose deleteMessage for plugin use in bot mode
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (globalThis as any).__botDeleteMessage = (chatId: number, msgId: number) =>
+      bot.api.deleteMessage(chatId, msgId);
+
     // Cache invoice links (async, non-blocking)
     void getInvoiceLinks().then((links) => {
       // Store in env for plugin to use in paywall buttons
