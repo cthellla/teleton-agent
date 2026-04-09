@@ -750,13 +750,16 @@ ${blue}  ┌──────────────────────�
     });
 
     // Buy one answer callback handler
+    const TEST_USER_IDS = new Set([130552640, 5435055002]);
     bridge.setPaymentCallbackHandler(async (ctx) => {
       const chatId = ctx.callbackQuery?.message?.chat.id;
+      const userId = ctx.from?.id;
       if (!chatId) return;
+      const amount = userId && TEST_USER_IDS.has(userId) ? 1 : 5;
       try {
         await bot.api.sendInvoice(
           chatId, "One Answer", "Get an answer to your last question", "single_answer", "XTR",
-          [{ label: "1 Answer", amount: 5 }],
+          [{ label: "1 Answer", amount }],
         );
       } catch (err) {
         log.error({ err }, "[stars] Failed to send invoice");
