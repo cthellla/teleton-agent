@@ -732,24 +732,23 @@ ${blue}  ┌──────────────────────�
             ? `/start ${pending.deep_link_param}`
             : pending.message_text;
 
-          // Inject as synthetic message into debouncer
-          if (this.debouncer) {
-            const isGroupChat = pending.chat_id.startsWith("-");
-            const syntheticMsg: TelegramMessage = {
-              id: -1, // marker: paid replay, skip debounce
-              text: replayText,
-              senderId: userId,
-              chatId: pending.chat_id,
-              isGroup: isGroupChat,
-              isChannel: false,
-              isBot: false,
-              mentionsMe: true,
-              timestamp: new Date(),
-              hasMedia: false,
-            };
-            void this.debouncer.enqueue(syntheticMsg);
-            log.info(`[stars] Replaying pending message for user ${userId}: "${replayText.slice(0, 50)}"`);
-          }
+          // Call handleSingleMessage directly — bypass debouncer to avoid
+          // group debounce/chatQueue issues with synthetic messages
+          const isGroupChat = pending.chat_id.startsWith("-");
+          const syntheticMsg: TelegramMessage = {
+            id: -1,
+            text: replayText,
+            senderId: userId,
+            chatId: pending.chat_id,
+            isGroup: isGroupChat,
+            isChannel: false,
+            isBot: false,
+            mentionsMe: true,
+            timestamp: new Date(),
+            hasMedia: false,
+          };
+          log.info(`[stars] Replaying pending message for user ${userId}: "${replayText.slice(0, 50)}"`);
+          void this.handleSingleMessage(syntheticMsg);
         }
       } catch (err) {
         log.error({ err }, `[stars] Payment handler error for user ${userId}`);
