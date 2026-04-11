@@ -1222,6 +1222,9 @@ ${blue}  ┌──────────────────────�
    * Handle a single message (extracted for debouncer callback)
    */
   private async handleSingleMessage(message: TelegramMessage): Promise<void> {
+    if (message.id === -1) {
+      log.info(`[Replay] handleSingleMessage entered for ${message.senderId} in ${message.chatId}`);
+    }
     this.messagesProcessed++;
     try {
       // Check if this is a scheduled task (from self)
