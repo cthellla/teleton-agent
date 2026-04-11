@@ -860,7 +860,7 @@ ${blue}  ┌──────────────────────�
       }
     }
 
-    bridge.setPreMessageFilter(async (userId, chatId, text) => {
+    bridge.setPreMessageFilter(async (userId, chatId, text, _ctx, isGroup) => {
       // Service deep links — don't rate-limit
       if (text?.startsWith("/start pay")) return true; // miniapp deep link, silently drop
 
@@ -893,7 +893,13 @@ ${blue}  ┌──────────────────────�
         const credits = (db.prepare("SELECT credits FROM stars_credits WHERE user_id = ?").get(uid) as { credits: number } | undefined)?.credits || 0;
         if (credits > 0) return false; // has credits, plugin will decrement
 
-        // Priority 4: Free tier
+        // Groups: only premium users can interact (no free tier, no paywall spam)
+        if (isGroup) {
+          log.info(`[PaymentGate] Blocked non-premium user ${userId} in group ${chatId}`);
+          return true;
+        }
+
+        // Priority 4: Free tier (DM only)
         const cutoff = now - FREE_WINDOW_SEC;
         const freeUsed = (db.prepare("SELECT COUNT(*) as cnt FROM usage_tracking WHERE user_id = ? AND created_at > ?").get(uid, cutoff) as { cnt: number }).cnt;
         if (freeUsed < FREE_LIMIT) return false; // within free tier

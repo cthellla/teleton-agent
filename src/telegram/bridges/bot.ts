@@ -31,7 +31,7 @@ export class GrammyBotBridge implements ITelegramBridge {
   private callbackHandler: ((msg: TelegramMessage) => void) | undefined;
   private paymentHandler: ((userId: number, payment: import("@grammyjs/types").SuccessfulPayment) => void | Promise<void>) | undefined;
   private paymentCallbackHandler: ((ctx: Context) => void | Promise<void>) | undefined;
-  private preMessageFilter: ((userId: number, chatId: string, text: string, ctx: Context) => Promise<boolean>) | undefined;
+  private preMessageFilter: ((userId: number, chatId: string, text: string, ctx: Context, isGroup: boolean) => Promise<boolean>) | undefined;
   private activeDraftIds: Map<string, number> = new Map();
 
   constructor(config: GrammyBotBridgeConfig) {
@@ -486,9 +486,9 @@ export class GrammyBotBridge implements ITelegramBridge {
         // PaymentGate: block message before it reaches the debouncer/agent
         if (this.preMessageFilter) {
           try {
-            const blocked = await this.preMessageFilter(msg.senderId, msg.chatId, msg.text, ctx);
+            const blocked = await this.preMessageFilter(msg.senderId, msg.chatId, msg.text, ctx, msg.isGroup);
             if (blocked) {
-              log.info(`[PaymentGate] Blocked message from ${msg.senderId}`);
+              log.info(`[PaymentGate] Blocked message from ${msg.senderId}${msg.isGroup ? " (group)" : ""}`);
               return;
             }
           } catch (err) {
@@ -606,7 +606,7 @@ export class GrammyBotBridge implements ITelegramBridge {
    * Set a pre-message filter (PaymentGate). Runs BEFORE the message enters the
    * debouncer/agent. Return true to block the message (e.g. paywall sent).
    */
-  setPreMessageFilter(filter: (userId: number, chatId: string, text: string, ctx: Context) => Promise<boolean>): void {
+  setPreMessageFilter(filter: (userId: number, chatId: string, text: string, ctx: Context, isGroup: boolean) => Promise<boolean>): void {
     this.preMessageFilter = filter;
   }
 
