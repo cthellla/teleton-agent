@@ -895,6 +895,12 @@ ${blue}  ┌──────────────────────�
 
         // Groups: only premium users can interact
         if (isGroup) {
+          // Save pending message for replay after payment
+          const deepLinkParam = (text || "").match(/^\/start\s+(\S+)/)?.[1] || null;
+          db.prepare(
+            "INSERT OR REPLACE INTO pending_messages (user_id, chat_id, message_text, deep_link_param, paywall_message_id, created_at) VALUES (?, ?, ?, ?, NULL, ?)",
+          ).run(uid, chatId, text || "", deepLinkParam, now);
+
           // Notify once per user per 24h, then silently ignore
           const groupNotifyKey = `group_notify_${uid}`;
           const lastNotify = db.prepare("SELECT created_at FROM pending_messages WHERE user_id = ? AND chat_id = ?").get(groupNotifyKey, chatId) as { created_at: number } | undefined;
@@ -915,6 +921,7 @@ ${blue}  ┌──────────────────────�
                     ],
                     [
                       { text: "💎 Pay with TON", url: miniAppUrl },
+                      { text: "⭐ Buy one answer (5 ★)", callback_data: "buy_one_answer" },
                     ],
                   ],
                 },
