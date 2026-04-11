@@ -558,6 +558,7 @@ ${blue}  ┌──────────────────────�
       { debounceMs: this.config.telegram.debounce_ms },
       (msg) => {
         if (!msg.isGroup) return false;
+        if (msg.id === -1) return false; // paid replay — process immediately
         if (msg.text.startsWith("/")) {
           const adminCmd = this.adminHandler.parseCommand(msg.text);
           if (adminCmd && this.adminHandler.isAdmin(msg.senderId)) return false;
@@ -735,7 +736,7 @@ ${blue}  ┌──────────────────────�
           if (this.debouncer) {
             const isGroupChat = pending.chat_id.startsWith("-");
             const syntheticMsg: TelegramMessage = {
-              id: 0,
+              id: -1, // marker: paid replay, skip debounce
               text: replayText,
               senderId: userId,
               chatId: pending.chat_id,
