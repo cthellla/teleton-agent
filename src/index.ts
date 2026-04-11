@@ -701,19 +701,32 @@ ${blue}  ┌──────────────────────�
           log.info(`[stars] Renewed subscription for user ${userId}, new expires ${expiresAt}`);
 
         } else {
-          // One-off purchase (single answer)
-          db.prepare(
-            `INSERT INTO stars_credits (user_id, credits, last_purchase_at)
-             VALUES (?, 1, ?)
-             ON CONFLICT(user_id) DO UPDATE SET credits = credits + 1, last_purchase_at = ?`,
-          ).run(String(userId), Math.floor(Date.now() / 1000), Math.floor(Date.now() / 1000));
+          // One-off purchase (single answer) — credit goes to the chat where pending is
           log.info(`[stars] Single answer credit for user ${userId}`);
         }
 
-        // Delete paywall + invoice messages
-        const pending = db.prepare("SELECT * FROM pending_messages WHERE user_id = ?").get(String(userId)) as {
+        // Find pending message (may have multiple — DM + group). Use most recent.
+        const pending = db.prepare("SELECT * FROM pending_messages WHERE user_id = ? ORDER BY created_at DESC LIMIT 1").get(String(userId)) as {
           chat_id: string; message_text: string; deep_link_param: string | null; paywall_message_id: number | null;
         } | undefined;
+
+        // For one-off purchase: credit the specific chat where pending lives
+        if (!payment.is_first_recurring && !payment.is_recurring && pending) {
+          const now = Math.floor(Date.now() / 1000);
+          db.prepare(
+            `INSERT INTO stars_credits (user_id, chat_id, credits, last_purchase_at)
+             VALUES (?, ?, 1, ?)
+             ON CONFLICT(user_id, chat_id) DO UPDATE SET credits = credits + 1, last_purchase_at = ?`,
+          ).run(String(userId), pending.chat_id, now, now);
+        } else if (!payment.is_first_recurring && !payment.is_recurring) {
+          // No pending — credit to DM (empty chat_id)
+          const now = Math.floor(Date.now() / 1000);
+          db.prepare(
+            `INSERT INTO stars_credits (user_id, chat_id, credits, last_purchase_at)
+             VALUES (?, '', 1, ?)
+             ON CONFLICT(user_id, chat_id) DO UPDATE SET credits = credits + 1, last_purchase_at = ?`,
+          ).run(String(userId), now, now);
+        }
         if (pending?.paywall_message_id) {
           try { await bot.api.deleteMessage(Number(pending.chat_id), pending.paywall_message_id); } catch { /* */ }
         }
@@ -725,7 +738,7 @@ ${blue}  ┌──────────────────────�
 
         // Replay pending message
         if (pending) {
-          db.prepare("DELETE FROM pending_messages WHERE user_id = ?").run(String(userId));
+          db.prepare("DELETE FROM pending_messages WHERE user_id = ? AND chat_id = ?").run(String(userId), pending.chat_id);
           // Reset group notify throttle so next group message shows paywall again
           db.prepare("DELETE FROM pending_messages WHERE user_id = ?").run(`group_notify_${userId}`);
           const replayText = pending.deep_link_param
@@ -892,8 +905,8 @@ ${blue}  ┌──────────────────────�
         const tonBal = await checkTonBalance(userId);
         if (tonBal.hasChannel && tonBal.canAfford) return false; // premium, plugin bills in response:after
 
-        // Priority 3: Stars credits
-        const credits = (db.prepare("SELECT credits FROM stars_credits WHERE user_id = ?").get(uid) as { credits: number } | undefined)?.credits || 0;
+        // Priority 3: Stars credits (per-chat)
+        const credits = (db.prepare("SELECT credits FROM stars_credits WHERE user_id = ? AND chat_id = ?").get(uid, chatId) as { credits: number } | undefined)?.credits || 0;
         if (credits > 0) return false; // has credits, plugin will decrement
 
         // Groups: only premium users can interact
