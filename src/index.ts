@@ -719,13 +719,13 @@ ${blue}  ┌──────────────────────�
              ON CONFLICT(user_id, chat_id) DO UPDATE SET credits = credits + 1, last_purchase_at = ?`,
           ).run(String(userId), pending.chat_id, now, now);
         } else if (!payment.is_first_recurring && !payment.is_recurring) {
-          // No pending — credit to DM (empty chat_id)
+          // No pending — credit to DM (chat_id = userId in Telegram DMs)
           const now = Math.floor(Date.now() / 1000);
           db.prepare(
             `INSERT INTO stars_credits (user_id, chat_id, credits, last_purchase_at)
-             VALUES (?, '', 1, ?)
+             VALUES (?, ?, 1, ?)
              ON CONFLICT(user_id, chat_id) DO UPDATE SET credits = credits + 1, last_purchase_at = ?`,
-          ).run(String(userId), now, now);
+          ).run(String(userId), String(userId), now, now);
         }
         if (pending?.paywall_message_id) {
           try { await bot.api.deleteMessage(Number(pending.chat_id), pending.paywall_message_id); } catch { /* */ }
@@ -943,7 +943,7 @@ ${blue}  ┌──────────────────────�
                 },
               });
               // Save paywall message ID so it gets deleted after payment
-              db.prepare("UPDATE pending_messages SET paywall_message_id = ? WHERE user_id = ?").run(groupPaywall.message_id, uid);
+              db.prepare("UPDATE pending_messages SET paywall_message_id = ? WHERE user_id = ? AND chat_id = ?").run(groupPaywall.message_id, uid, chatId);
             } catch { /* best-effort */ }
           }
           log.info(`[PaymentGate] Blocked non-premium user ${userId} in group ${chatId}`);
@@ -957,7 +957,7 @@ ${blue}  ┌──────────────────────�
 
         // Over all limits — send paywall and BLOCK
         // Delete old paywall (anti-spam)
-        const pending = db.prepare("SELECT paywall_message_id FROM pending_messages WHERE user_id = ?").get(uid) as { paywall_message_id: number | null } | undefined;
+        const pending = db.prepare("SELECT paywall_message_id FROM pending_messages WHERE user_id = ? AND chat_id = ?").get(uid, chatId) as { paywall_message_id: number | null } | undefined;
         if (pending?.paywall_message_id) {
           try { await bot.api.deleteMessage(Number(chatId), pending.paywall_message_id); } catch { /* may be deleted */ }
         }
@@ -995,7 +995,7 @@ ${blue}  ┌──────────────────────�
         });
 
         // Save paywall message ID for delete+send pattern
-        db.prepare("UPDATE pending_messages SET paywall_message_id = ? WHERE user_id = ?").run(sent.message_id, uid);
+        db.prepare("UPDATE pending_messages SET paywall_message_id = ? WHERE user_id = ? AND chat_id = ?").run(sent.message_id, uid, chatId);
 
         log.info(`[PaymentGate] Paywall sent to ${userId}, message blocked`);
         return true; // BLOCK
