@@ -1254,9 +1254,16 @@ export class AgentRuntime {
         }
       }
 
-      // Hook: response:after — runs AFTER finalizeDraft
+      // Hook: response:after — runs AFTER finalizeDraft (with timeout to prevent chatQueue deadlock)
       if (this.hookRunner && responseAfterEvent) {
-        await this.hookRunner.runObservingHook("response:after", responseAfterEvent);
+        try {
+          await Promise.race([
+            this.hookRunner.runObservingHook("response:after", responseAfterEvent),
+            new Promise((_, reject) => setTimeout(() => reject(new Error("response:after timeout")), 15000)),
+          ]);
+        } catch (hookErr) {
+          log.warn(`response:after hook failed or timed out: ${hookErr instanceof Error ? hookErr.message : hookErr}`);
+        }
       }
 
       return {
