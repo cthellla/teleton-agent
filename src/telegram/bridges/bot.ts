@@ -412,9 +412,11 @@ export class GrammyBotBridge implements ITelegramBridge {
             break;
           }
         } else if (entity.type === "bot_command") {
-          // In groups, only match /command@our_bot or /command (without @)
           const cmdText = (msg.text || "").slice(entity.offset, entity.offset + entity.length);
-          if (!cmdText.includes("@") || cmdText.toLowerCase().includes(`@${botUsername}`)) {
+          const isGroup = msg.chat.type === "group" || msg.chat.type === "supergroup";
+          // In groups, only match /command@our_bot (explicit mention required)
+          // In DMs, match any command
+          if (isGroup ? cmdText.toLowerCase().includes(`@${botUsername}`) : true) {
             mentionsMe = true;
             break;
           }
