@@ -496,7 +496,7 @@ export class MessageHandler {
           const streamMode = this.fullConfig?.telegram?.stream_mode ?? "all";
           const isReplay = message.id < 0;
           const streamToChat =
-            !isReplay && this.bridge.getMode() === "bot" && this.bridge.streamResponse && streamMode !== "off"
+            this.bridge.getMode() === "bot" && this.bridge.streamResponse && streamMode !== "off"
               ? {
                   chatId: message.chatId,
                   bridge: this.bridge,
