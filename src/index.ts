@@ -776,15 +776,12 @@ ${blue}  ┌──────────────────────�
             hasMedia: false,
           };
           log.info(`[stars] Replaying pending message for user ${userId}: "${replayText.slice(0, 50)}"`);
-          // Delay group replays to let chatQueue drain from previous replay
-          if (isGroupReplay) {
-            const self = this;
-            setTimeout(() => {
-              log.info(`[stars] Deferred group replay for user ${userId}`);
-              void self.handleSingleMessage(syntheticMsg);
-            }, 3000);
-          } else {
-            void this.handleSingleMessage(syntheticMsg);
+          // Use await for replay so chatQueue can serialize properly
+          // (void caused fire-and-forget which deadlocked chatQueue)
+          try {
+            await this.handleSingleMessage(syntheticMsg);
+          } catch (replayErr) {
+            log.error({ err: replayErr }, `[stars] Replay failed for user ${userId}`);
           }
         }
       } catch (err) {
