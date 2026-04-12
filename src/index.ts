@@ -900,7 +900,7 @@ ${blue}  ┌──────────────────────�
       }
     }
 
-    bridge.setPreMessageFilter(async (userId, chatId, text, _ctx, isGroup) => {
+    bridge.setPreMessageFilter(async (userId, chatId, text, _ctx, isGroup, mentionsMe) => {
       // Service deep links — don't rate-limit
       if (text?.startsWith("/start pay")) return true; // miniapp deep link, silently drop
 
@@ -935,9 +935,8 @@ ${blue}  ┌──────────────────────�
         const credits = (db.prepare("SELECT credits FROM stars_credits WHERE user_id = ? AND chat_id = ?").get(uid, chatId) as { credits: number } | undefined)?.credits || 0;
         if (credits > 0) return false; // has credits, plugin will decrement
 
-        // Groups: only process if bot is mentioned (otherwise analyzeMessage will filter out)
-        const botUsername = process.env.SUBSCRIPTION_BOT_USERNAME || "hn_premium_bot";
-        if (isGroup && !text?.toLowerCase().includes(`@${botUsername.toLowerCase()}`)) {
+        // Groups: only process if bot is mentioned/replied to (otherwise analyzeMessage will filter out)
+        if (isGroup && !mentionsMe) {
           return false; // not mentioned, skip PaymentGate
         }
 
