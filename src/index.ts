@@ -762,26 +762,28 @@ ${blue}  ┌──────────────────────�
           // Call handleSingleMessage directly — bypass debouncer to avoid
           // group debounce/chatQueue issues with synthetic messages
           const isGroupChat = pending.chat_id.startsWith("-");
-          if (isGroupChat) {
-            // Groups: don't replay — credit is saved, user writes again
-            db.prepare("DELETE FROM pending_messages WHERE user_id = ? AND chat_id = ?").run(String(userId), pending.chat_id);
-            db.prepare("DELETE FROM pending_messages WHERE user_id = ?").run(`group_notify_${userId}`);
-            log.info(`[stars] Group credit saved for user ${userId} in ${pending.chat_id}, awaiting next message`);
+          const isGroupReplay = isGroupChat;
+          const syntheticMsg: TelegramMessage = {
+            id: -1,
+            text: replayText,
+            senderId: userId,
+            chatId: pending.chat_id,
+            isGroup: isGroupChat,
+            isChannel: false,
+            isBot: false,
+            mentionsMe: true,
+            timestamp: new Date(),
+            hasMedia: false,
+          };
+          log.info(`[stars] Replaying pending message for user ${userId}: "${replayText.slice(0, 50)}"`);
+          // Delay group replays to let chatQueue drain from previous replay
+          if (isGroupReplay) {
+            const self = this;
+            setTimeout(() => {
+              log.info(`[stars] Deferred group replay for user ${userId}`);
+              void self.handleSingleMessage(syntheticMsg);
+            }, 3000);
           } else {
-            // DM: replay immediately
-            const syntheticMsg: TelegramMessage = {
-              id: -1,
-              text: replayText,
-              senderId: userId,
-              chatId: pending.chat_id,
-              isGroup: false,
-              isChannel: false,
-              isBot: false,
-              mentionsMe: true,
-              timestamp: new Date(),
-              hasMedia: false,
-            };
-            log.info(`[stars] Replaying pending message for user ${userId}: "${replayText.slice(0, 50)}"`);
             void this.handleSingleMessage(syntheticMsg);
           }
         }
