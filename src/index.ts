@@ -1023,7 +1023,11 @@ ${blue}  ┌──────────────────────�
             parse_mode: "HTML",
             reply_markup: opts?.inlineKeyboard?.length
               ? { inline_keyboard: opts.inlineKeyboard.map(row =>
-                  row.map(btn => btn.url ? { text: btn.text, url: btn.url } : { text: btn.text, callback_data: btn.callback_data || "noop" })
+                  row.map(btn => {
+                    if (btn.url) return { text: btn.text, url: btn.url };
+                    if (btn.web_app) return { text: btn.text, web_app: btn.web_app };
+                    return { text: btn.text, callback_data: btn.callback_data || btn.text };
+                  })
                 ) }
               : undefined,
           });
@@ -1033,8 +1037,7 @@ ${blue}  ┌──────────────────────�
         try {
           await this.handleSingleMessage(msg);
         } finally {
-          // Clear after response (allow small delay for streaming/multi-message responses)
-          setTimeout(() => clearBotReply(chatId), 30000);
+          clearBotReply(chatId);
         }
       });
 

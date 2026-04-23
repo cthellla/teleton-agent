@@ -279,6 +279,8 @@ export class DealBot {
         chatId: String(ctx.chat.id),
         senderId: ctx.from.id,
         senderUsername: ctx.from.username,
+        senderFirstName: ctx.from.first_name,
+        senderLangCode: ctx.from.language_code,
         text: ctx.message.text,
         isGroup: ctx.chat.type !== "private",
         isChannel: ctx.chat.type === "channel",
