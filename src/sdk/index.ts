@@ -126,6 +126,8 @@ export interface SDKDependencies {
   grammyBot?: Bot | null;
   /** Rate limiter for bot actions */
   rateLimiter?: PluginRateLimiter | null;
+  /** Mutable reference to runtime config (for model switching) */
+  configRef?: { agent: { model: string; [k: string]: unknown }; [k: string]: unknown };
 }
 
 export interface CreatePluginSDKOptions {
@@ -241,6 +243,16 @@ export function createPluginSDK(deps: SDKDependencies, opts: CreatePluginSDKOpti
       // Only cache non-null — retry on next access if deps aren't ready yet
       if (result) cachedBot = result;
       return result;
+    },
+    setModel(modelId: string) {
+      if (!modelId || typeof modelId !== "string") return;
+      if (deps.configRef) {
+        const old = deps.configRef.agent.model;
+        deps.configRef.agent.model = modelId;
+        if (old !== modelId) log.info(`[SDK] Model switched: ${old} → ${modelId}`);
+      } else {
+        log.warn("[SDK] setModel: configRef not available");
+      }
     },
     on<K extends HookName>(
       hookName: K,

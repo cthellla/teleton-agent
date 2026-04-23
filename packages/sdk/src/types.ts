@@ -2285,6 +2285,9 @@ export interface PluginSDK {
   /** Bot inline mode SDK (null if bot not available or plugin has no bot manifest) */
   readonly bot: BotSDK | null;
 
+  /** Switch the LLM model at runtime (takes effect on next processMessage). */
+  setModel(modelId: string): void;
+
   /** Register a typed hook handler for agent lifecycle events. */
   on<K extends HookName>(
     hookName: K,

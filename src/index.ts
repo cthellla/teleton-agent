@@ -184,7 +184,7 @@ export class TeletonApp {
     this.userHookEvaluator = new UserHookEvaluator(db);
     this.agent.setUserHookEvaluator(this.userHookEvaluator);
 
-    this.sdkDeps = { bridge: this.bridge };
+    this.sdkDeps = { bridge: this.bridge, configRef: this.config };
 
     this.modules = loadModules(this.toolRegistry, this.config, db);
     this.builtinModuleCount = this.modules.length;
