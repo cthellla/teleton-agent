@@ -152,8 +152,11 @@ export class MessageHandler {
   private pendingHistory: PendingHistory;
   private db: Database.Database;
   private chatQueue: ChatQueue = new ChatQueue();
-  private pluginMessageHooks: Array<(e: PluginMessageEvent) => Promise<string | { context: string } | void>> = [];
+  private pluginMessageHooks: Array<
+    (e: PluginMessageEvent) => Promise<string | { context: string } | void>
+  > = [];
   private recentMessageIds: Set<string> = new Set();
+  private botReplyTimestamps: Map<string, number> = new Map();
   private static readonly DEDUP_MAX_SIZE = 500;
 
   constructor(
@@ -192,7 +195,9 @@ export class MessageHandler {
     this.ownUserId = uid !== undefined ? String(uid) : this.ownUserId;
   }
 
-  setPluginMessageHooks(hooks: Array<(e: PluginMessageEvent) => Promise<string | { context: string } | void>>): void {
+  setPluginMessageHooks(
+    hooks: Array<(e: PluginMessageEvent) => Promise<string | { context: string } | void>>
+  ): void {
     this.pluginMessageHooks = hooks;
   }
 
@@ -217,12 +222,21 @@ export class MessageHandler {
     }
 
     if (message.isBot) {
-      return {
-        message,
-        isAdmin,
-        shouldRespond: false,
-        reason: "Sender is a bot",
-      };
+      if (!this.config.bot_to_bot) {
+        return {
+          message,
+          isAdmin,
+          shouldRespond: false,
+          reason: "Sender is a bot",
+        };
+      }
+      // Anti-loop: rate limit bot senders (5s cooldown)
+      const botKey = `bot_${message.senderId}`;
+      const lastReply = this.botReplyTimestamps.get(botKey) || 0;
+      if (Date.now() - lastReply < 5000) {
+        return { message, isAdmin, shouldRespond: false, reason: "Bot rate limited" };
+      }
+      this.botReplyTimestamps.set(botKey, Date.now());
     }
 
     if (!message.isGroup && !message.isChannel) {
@@ -356,8 +370,15 @@ export class MessageHandler {
             return;
           }
           // Plugin can silently block a message (e.g. paywall already sent via sdk.telegram)
-          if (hookResult && typeof hookResult === "object" && "block" in hookResult && (hookResult as { block: boolean }).block) {
-            log.info(`Plugin hook blocked message from ${message.senderId}: ${(hookResult as { reason?: string }).reason || "no reason"}`);
+          if (
+            hookResult &&
+            typeof hookResult === "object" &&
+            "block" in hookResult &&
+            (hookResult as { block: boolean }).block
+          ) {
+            log.info(
+              `Plugin hook blocked message from ${message.senderId}: ${(hookResult as { reason?: string }).reason || "no reason"}`
+            );
             return;
           }
           // Plugin can inject context into the message by returning { context: "..." }
@@ -494,7 +515,7 @@ export class MessageHandler {
             ? `🎤 (voice): ${transcriptionText}${message.text ? `\n${message.text}` : ""}`
             : message.text;
           const streamMode = this.fullConfig?.telegram?.stream_mode ?? "all";
-          const isReplay = message.id < 0;
+          const _isReplay = message.id < 0;
           const streamToChat =
             this.bridge.getMode() === "bot" && this.bridge.streamResponse && streamMode !== "off"
               ? {
@@ -557,7 +578,8 @@ export class MessageHandler {
               const part = parts[i];
               const replyToId = i === 0 ? message.id : undefined;
 
-              if (isReplayMsg) log.info(`[Replay] sendMessage part ${i+1}/${parts.length} to ${message.chatId}`);
+              if (isReplayMsg)
+                log.info(`[Replay] sendMessage part ${i + 1}/${parts.length} to ${message.chatId}`);
               const sentMessage = await this.bridge.sendMessage({
                 chatId: message.chatId,
                 text: part,
@@ -622,7 +644,8 @@ export class MessageHandler {
         if (isReplayMsg) log.info(`[Replay] chatQueue task completed for ${message.chatId}`);
         log.debug(`Processed message ${message.id} in chat ${message.chatId}`);
       } catch (error) {
-        if (isReplayMsg) log.error({ err: error }, `[Replay] chatQueue task ERROR for ${message.chatId}`);
+        if (isReplayMsg)
+          log.error({ err: error }, `[Replay] chatQueue task ERROR for ${message.chatId}`);
         log.error({ err: error }, "Error handling message");
         // Notify the user when the agent hits persistent API rate limits so they
         // aren't left waiting in silence.

@@ -55,7 +55,9 @@ export const AgentConfigSchema = z.object({
   reasoning_effort: z
     .enum(["off", "low", "medium", "high"])
     .default("low")
-    .describe("Reasoning effort for thinking models (off may not work with reasoning-only models like DeepSeek R1)"),
+    .describe(
+      "Reasoning effort for thinking models (off may not work with reasoning-only models like DeepSeek R1)"
+    ),
   system_prompt: z.string().nullable().default(null),
   max_agentic_iterations: z
     .number()
@@ -116,6 +118,12 @@ export const TelegramConfigSchema = z
       .default("replace")
       .describe(
         "Bot streaming mode: replace=each iteration replaces draft (default), all=concatenate all iterations, off=no streaming"
+      ),
+    bot_to_bot: z
+      .boolean()
+      .default(false)
+      .describe(
+        "Allow receiving and responding to messages from other bots (requires BotFather bot-to-bot mode)"
       ),
   })
   .superRefine((data, ctx) => {

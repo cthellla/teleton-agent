@@ -1369,18 +1369,31 @@ ${blue}  ┌──────────────────────�
     // Message hooks: single dynamic dispatcher that iterates this.modules
     this.messageHandler.setPluginMessageHooks([
       async (event: PluginMessageEvent) => {
+        let mergedContext = "";
         for (const mod of this.modules) {
           const withHooks = mod as PluginModuleWithHooks;
           if (withHooks.onMessage) {
             try {
               const result = await withHooks.onMessage(event);
-              if (typeof result === "string") return result;
-              if (result && typeof result === "object" && "context" in result) return result;
+              if (typeof result === "string") return result; // string reply = immediate intercept
+              if (
+                result &&
+                typeof result === "object" &&
+                "block" in result &&
+                (result as { block: boolean }).block
+              ) {
+                return result; // block = stop processing
+              }
+              if (result && typeof result === "object" && "context" in result) {
+                const ctx = (result as { context: string }).context;
+                if (ctx) mergedContext += (mergedContext ? "\n" : "") + ctx;
+              }
             } catch (error: unknown) {
               log.error(`❌ [${mod.name}] onMessage error: ${getErrorMessage(error)}`);
             }
           }
         }
+        if (mergedContext) return { context: mergedContext };
       },
     ]);
 
