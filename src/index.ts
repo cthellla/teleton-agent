@@ -6,7 +6,6 @@ import { AgentRuntime } from "./agent/runtime.js";
 import type { TelegramMessage } from "./telegram/bridge.js";
 import type { ITelegramBridge } from "./telegram/bridge-interface.js";
 import { isBotBridge, isUserBridge } from "./telegram/bridge-guards.js";
-import { setBotReply, clearBotReply } from "./telegram/bridges/user.js";
 import type { GrammyBotBridge } from "./telegram/bridges/bot.js";
 import { createBridge } from "./telegram/factory.js";
 import { eventBus } from "./events/bus.js";
@@ -44,7 +43,7 @@ import { createLogger, initLoggerFromConfig } from "./utils/logger.js";
 import { AgentLifecycle } from "./agent/lifecycle.js";
 import { InlineRouter } from "./bot/inline-router.js";
 import { PluginRateLimiter } from "./bot/rate-limiter.js";
-import { setBotPreMiddleware, getDealBot } from "./deals/module.js";
+
 import type { WebUIServer } from "./webui/server.js";
 import type { ApiServer } from "./api/server.js";
 import { HeartbeatRunner } from "./heartbeat.js";
@@ -452,21 +451,12 @@ ${blue}  ┌──────────────────────�
     const inlineRouter = new InlineRouter();
     const rateLimiter = new PluginRateLimiter();
 
-    // User mode: install DealBot middleware before modules start
-    if (isUserBridge(this.bridge)) {
-      setBotPreMiddleware(inlineRouter.middleware());
-    }
-
     // Start module background jobs (after bridge connect)
     const pluginContext = await this.startModules();
 
     // Wire mode-specific SDK deps, handlers, and polling
     const firstStart = !this.messageHandlersRegistered;
-    if (isBotBridge(this.bridge)) {
-      this.wireBotMode(inlineRouter, rateLimiter, firstStart);
-    } else {
-      this.wireUserMode(inlineRouter, rateLimiter, firstStart);
-    }
+    this.wireBotMode(inlineRouter, rateLimiter, firstStart);
 
     // Create hook runner if any plugins registered hooks
     if (hookRegistry.hasAnyHooks()) {
@@ -580,22 +570,8 @@ ${blue}  ┌──────────────────────�
 
     // Register common message handler ONCE (survive agent restart via WebUI)
     if (!this.messageHandlersRegistered) {
-      // In user mode, restrict direct MTProto DMs to admin + allowlist.
-      // Bot proxy (DealBot) bypasses this — it calls handleSingleMessage directly.
-      const dmAllowFrom = new Set(this.config.telegram.allow_from.map(String));
-      const adminSet = new Set(this.config.telegram.admin_ids.map(String));
-      const isUserMode = this.bridge.getMode() === "user";
-
       this.bridge.onNewMessage(async (message) => {
         try {
-          // Filter MTProto DMs: only admin + allowlist in user mode
-          if (isUserMode && !message.isGroup && !message.isChannel) {
-            const sid = String(message.senderId);
-            if (!adminSet.has(sid) && !dmAllowFrom.has(sid)) {
-              log.debug(`MTProto DM from ${message.senderId} blocked (not in allowlist)`);
-              return;
-            }
-          }
           // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- debouncer always initialized before handlers register
           await this.debouncer!.enqueue(message);
         } catch (error) {
@@ -1128,75 +1104,6 @@ ${blue}  ┌──────────────────────�
         }
       }
     });
-  }
-
-  /**
-   * Wire user-mode SDK deps from DealBot and register service message handler.
-   */
-  private wireUserMode(
-    inlineRouter: InlineRouter,
-    rateLimiter: PluginRateLimiter,
-    firstStart: boolean
-  ): void {
-    const activeDealBot = getDealBot();
-    if (activeDealBot) {
-      this.sdkDeps.inlineRouter = inlineRouter;
-      this.sdkDeps.gramjsBot = activeDealBot.getGramJSBot();
-      this.sdkDeps.grammyBot = activeDealBot.getBot();
-      this.sdkDeps.rateLimiter = rateLimiter;
-      inlineRouter.setGramJSBot(activeDealBot.getGramJSBot());
-      log.info("Bot SDK: inline router installed");
-
-      // Proxy: bot receives text messages → agent processes → bot replies
-      activeDealBot.setTextMessageHandler(async (msg, bot) => {
-        const chatId = msg.chatId;
-
-        // Route agent responses through bot for this chatId
-        setBotReply(chatId, async (text, opts) => {
-          const sent = await bot.api.sendMessage(Number(chatId), text, {
-            parse_mode: "HTML",
-            reply_markup: opts?.inlineKeyboard?.length
-              ? {
-                  inline_keyboard: opts.inlineKeyboard.map((row) =>
-                    row.map((btn) => {
-                      if (btn.url) return { text: btn.text, url: btn.url };
-                      if (btn.web_app) return { text: btn.text, web_app: btn.web_app };
-                      return { text: btn.text, callback_data: btn.callback_data || btn.text };
-                    })
-                  ),
-                }
-              : undefined,
-          });
-          return sent.message_id;
-        });
-
-        // Send typing indicator while agent processes
-        const typingInterval = setInterval(() => {
-          bot.api.sendChatAction(Number(chatId), "typing").catch(() => {});
-        }, 4000);
-        bot.api.sendChatAction(Number(chatId), "typing").catch(() => {});
-
-        try {
-          await this.handleSingleMessage(msg);
-        } finally {
-          clearInterval(typingInterval);
-          clearBotReply(chatId);
-        }
-      });
-
-      log.info("Bot proxy: text messages routed through DealBot → agent");
-    }
-
-    if (firstStart && isUserBridge(this.bridge)) {
-      this.bridge.onServiceMessage(async (message) => {
-        try {
-          // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- debouncer always initialized before handlers register
-          await this.debouncer!.enqueue(message);
-        } catch (error) {
-          log.error({ err: error }, "Error enqueueing service message");
-        }
-      });
-    }
   }
 
   /**

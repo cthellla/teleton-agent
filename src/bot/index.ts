@@ -6,7 +6,7 @@
 import { Bot, type MiddlewareFn, type Context } from "grammy";
 import { Api } from "telegram";
 import type Database from "better-sqlite3";
-import type { TelegramMessage } from "../telegram/bridge-interface.js";
+
 import type { BotConfig, DealContext } from "./types.js";
 import { DEAL_VERIFICATION_WINDOW_SECONDS } from "../constants/limits.js";
 import { decodeCallback } from "./types.js";
@@ -46,8 +46,6 @@ export class DealBot {
   private config: BotConfig;
   private gramjsBot: GramJSBotClient | null = null;
 
-  private onTextMessage: ((msg: TelegramMessage, botApi: Bot) => Promise<void>) | null = null;
-
   constructor(config: BotConfig, db: Database.Database, preMiddleware?: MiddlewareFn<Context>) {
     this.config = config;
     this.db = db;
@@ -63,11 +61,6 @@ export class DealBot {
     }
 
     this.setupHandlers();
-  }
-
-  /** Set handler for proxying text messages to the agent */
-  setTextMessageHandler(handler: (msg: TelegramMessage, botApi: Bot) => Promise<void>): void {
-    this.onTextMessage = handler;
   }
 
   private setupHandlers(): void {
@@ -267,70 +260,6 @@ export class DealBot {
         case "refresh":
           await this.handleRefresh(ctx, deal);
           break;
-      }
-    });
-
-    // Handle /start with deep link payload (Grammy filters commands from message:text)
-    this.bot.command("start", async (ctx) => {
-      if (!this.onTextMessage || !ctx.message || !ctx.from) return;
-      const payload = ctx.match; // deep link param after /start
-      const text = payload ? `/start ${payload}` : "/start";
-
-      const msg: TelegramMessage = {
-        id: ctx.message.message_id,
-        chatId: String(ctx.chat.id),
-        senderId: ctx.from.id,
-        senderUsername: ctx.from.username,
-        senderFirstName: ctx.from.first_name,
-        senderLangCode: ctx.from.language_code,
-        text,
-        isGroup: false,
-        isChannel: false,
-        isBot: false,
-        mentionsMe: true,
-        timestamp: new Date(ctx.message.date * 1000),
-        hasMedia: false,
-      };
-
-      try {
-        await this.onTextMessage(msg, this.bot);
-      } catch (err) {
-        log.error({ err }, `[Bot] /start proxy failed for user ${ctx.from.id}`);
-      }
-    });
-
-    // Proxy text messages to the agent (user mode: bot receives, agent processes)
-    this.bot.on("message:text", async (ctx) => {
-      if (!this.onTextMessage) return;
-
-      const isGroup = ctx.chat.type !== "private";
-      const botUsername = this.config.username;
-      const isMentioned = botUsername ? ctx.message.text.includes(`@${botUsername}`) : false;
-      const isReply =
-        !!ctx.message.reply_to_message?.from?.is_bot &&
-        ctx.message.reply_to_message?.from?.username === botUsername;
-
-      const msg: TelegramMessage = {
-        id: ctx.message.message_id,
-        chatId: String(ctx.chat.id),
-        senderId: ctx.from.id,
-        senderUsername: ctx.from.username,
-        senderFirstName: ctx.from.first_name,
-        senderLangCode: ctx.from.language_code,
-        text: ctx.message.text,
-        isGroup,
-        isChannel: false, // bots don't receive messages in channels
-        isBot: false,
-        mentionsMe: !isGroup || isMentioned || isReply,
-        timestamp: new Date(ctx.message.date * 1000),
-        hasMedia: false,
-        replyToId: ctx.message.reply_to_message?.message_id,
-      };
-
-      try {
-        await this.onTextMessage(msg, this.bot);
-      } catch (err) {
-        log.error({ err }, `[Bot] Text message proxy failed for user ${ctx.from.id}`);
       }
     });
 
