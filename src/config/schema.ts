@@ -119,12 +119,6 @@ export const TelegramConfigSchema = z
       .describe(
         "Bot streaming mode: replace=each iteration replaces draft (default), all=concatenate all iterations, off=no streaming"
       ),
-    bot_to_bot: z
-      .boolean()
-      .default(false)
-      .describe(
-        "Allow receiving and responding to messages from other bots (requires BotFather bot-to-bot mode)"
-      ),
   })
   .superRefine((data, ctx) => {
     if (data.mode === "user") {
