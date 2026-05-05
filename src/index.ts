@@ -852,7 +852,7 @@ ${blue}  ┌──────────────────────�
       const chatId = ctx.callbackQuery?.message?.chat.id;
       const userId = ctx.from?.id;
       if (!chatId || !userId) return;
-      const amount = userId && TEST_USER_IDS.has(userId) ? 1 : 15;
+      const amount = userId && TEST_USER_IDS.has(userId) ? 1 : 10;
       try {
         const sent = await bot.api.sendInvoice(
           chatId,
@@ -950,7 +950,7 @@ ${blue}  ┌──────────────────────�
 
     // ── PaymentGate: pre-message filter ────────────────────────────
     // Runs BEFORE debouncer/agent. Returns true to block the message.
-    const FREE_LIMIT = parseInt(process.env.HN_FREE_LIMIT || "3");
+    const FREE_LIMIT = parseInt(process.env.HN_FREE_LIMIT || "1");
     const FREE_WINDOW_SEC = parseInt(process.env.HN_FREE_WINDOW_SEC || "86400");
     const adminIds = (process.env.ADMIN_IDS || "").split(",").map(Number).filter(Boolean);
     const miniAppUrl =
@@ -1072,19 +1072,40 @@ ${blue}  ┌──────────────────────�
             | undefined
         )?.lang;
         const paywallText =
-          userLang === "ru" ? "Для этой функции нужен премиум:" : "This feature requires premium:";
+          userLang === "ru"
+            ? "Бесплатный запрос на сегодня использован.\nОплатите ⭐ за ответ ниже, или откройте TON-канал для безлимита:"
+            : "Your free request for today is used.\nPay ⭐ for an answer below, or open a TON channel for unlimited use:";
 
-        // Send paywall via bot.api (guaranteed delivery, no hook issues)
+        // Send paywall text with TON alternative
         const sent = await bot.api.sendMessage(Number(chatId), paywallText, {
           reply_markup: {
-            inline_keyboard: [
-              [
-                { text: "⭐ Buy one answer (15 ★)", callback_data: "buy_one_answer" },
-                { text: "💎 Pay with TON", url: miniAppUrl },
-              ],
-            ],
+            inline_keyboard: [[{ text: "💎 Unlimited with TON", url: miniAppUrl }]],
           },
         });
+
+        // Send Stars invoice directly (no intermediate button click)
+        const invoiceAmount = TEST_USER_IDS.has(userId) ? 1 : 10;
+        const invoiceTitle = userLang === "ru" ? "Один ответ" : "One Answer";
+        const invoiceDesc =
+          userLang === "ru"
+            ? "Ответ на ваш последний вопрос"
+            : "Get an answer to your last question";
+        try {
+          const invoiceSent = await bot.api.sendInvoice(
+            Number(chatId),
+            invoiceTitle,
+            invoiceDesc,
+            "single_answer",
+            "XTR",
+            [{ label: "1 Answer", amount: invoiceAmount }]
+          );
+          pendingInvoices.set(userId, {
+            chatId: Number(chatId),
+            messageId: invoiceSent.message_id,
+          });
+        } catch (invoiceErr) {
+          log.error({ err: invoiceErr }, "[PaymentGate] Failed to send Stars invoice");
+        }
 
         // Save paywall message ID for delete+send pattern
         db.prepare(
