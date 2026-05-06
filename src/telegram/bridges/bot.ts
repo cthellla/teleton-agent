@@ -12,6 +12,7 @@ import type {
   ReplyContext,
 } from "../bridge-interface.js";
 import type { TelegramMessage, InlineButton } from "../bridge.js";
+import type { SuccessfulPayment } from "@grammyjs/types";
 import { createLogger } from "../../utils/logger.js";
 import { callbackRouter } from "../../bot/callback-router.js";
 
@@ -29,9 +30,20 @@ export class GrammyBotBridge implements ITelegramBridge {
   private connected = false;
   private botPromise: Promise<void> | undefined;
   private callbackHandler: ((msg: TelegramMessage) => void) | undefined;
-  private paymentHandler: ((userId: number, payment: import("@grammyjs/types").SuccessfulPayment) => void | Promise<void>) | undefined;
+  private paymentHandler:
+    | ((userId: number, payment: SuccessfulPayment) => void | Promise<void>)
+    | undefined;
   private paymentCallbackHandler: ((ctx: Context) => void | Promise<void>) | undefined;
-  private preMessageFilter: ((userId: number, chatId: string, text: string, ctx: Context, isGroup: boolean, mentionsMe: boolean) => Promise<boolean>) | undefined;
+  private preMessageFilter:
+    | ((
+        userId: number,
+        chatId: string,
+        text: string,
+        ctx: Context,
+        isGroup: boolean,
+        mentionsMe: boolean
+      ) => Promise<boolean>)
+    | undefined;
   private activeDraftIds: Map<string, number> = new Map();
 
   constructor(config: GrammyBotBridgeConfig) {
@@ -492,9 +504,18 @@ export class GrammyBotBridge implements ITelegramBridge {
         // PaymentGate: block message before it reaches the debouncer/agent
         if (this.preMessageFilter) {
           try {
-            const blocked = await this.preMessageFilter(msg.senderId, msg.chatId, msg.text, ctx, msg.isGroup, msg.mentionsMe);
+            const blocked = await this.preMessageFilter(
+              msg.senderId,
+              msg.chatId,
+              msg.text,
+              ctx,
+              msg.isGroup,
+              msg.mentionsMe
+            );
             if (blocked) {
-              log.info(`[PaymentGate] Blocked message from ${msg.senderId}${msg.isGroup ? " (group)" : ""}`);
+              log.info(
+                `[PaymentGate] Blocked message from ${msg.senderId}${msg.isGroup ? " (group)" : ""}`
+              );
               return;
             }
           } catch (err) {
@@ -534,12 +555,16 @@ export class GrammyBotBridge implements ITelegramBridge {
 
     // Callback handler — resolves nonces from telegram_send_buttons, reinjects as synthetic messages
     this.bot.on("callback_query:data", async (ctx) => {
-      try { await ctx.answerCallbackQuery(); } catch { /* query may be expired */ }
+      try {
+        await ctx.answerCallbackQuery();
+      } catch {
+        /* query may be expired */
+      }
 
       const data = ctx.callbackQuery.data;
 
-      // Payment callback — buy one answer
-      if (data === "buy_one_answer" && this.paymentCallbackHandler) {
+      // Payment callback — credit pack purchase
+      if ((data === "buy_one_answer" || data?.startsWith("pack_")) && this.paymentCallbackHandler) {
         try {
           await this.paymentCallbackHandler(ctx);
         } catch (err) {
@@ -599,7 +624,9 @@ export class GrammyBotBridge implements ITelegramBridge {
   }
 
   /** Set handler for successful Star payments */
-  setPaymentHandler(handler: (userId: number, payment: import("@grammyjs/types").SuccessfulPayment) => void | Promise<void>): void {
+  setPaymentHandler(
+    handler: (userId: number, payment: SuccessfulPayment) => void | Promise<void>
+  ): void {
     this.paymentHandler = handler;
   }
 
@@ -612,7 +639,16 @@ export class GrammyBotBridge implements ITelegramBridge {
    * Set a pre-message filter (PaymentGate). Runs BEFORE the message enters the
    * debouncer/agent. Return true to block the message (e.g. paywall sent).
    */
-  setPreMessageFilter(filter: (userId: number, chatId: string, text: string, ctx: Context, isGroup: boolean, mentionsMe: boolean) => Promise<boolean>): void {
+  setPreMessageFilter(
+    filter: (
+      userId: number,
+      chatId: string,
+      text: string,
+      ctx: Context,
+      isGroup: boolean,
+      mentionsMe: boolean
+    ) => Promise<boolean>
+  ): void {
     this.preMessageFilter = filter;
   }
 
