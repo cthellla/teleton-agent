@@ -749,8 +749,17 @@ ${blue}  ┌──────────────────────�
           ).run(expiresAt, chargeId, String(userId), payload);
           log.info(`[stars] Renewed subscription for user ${userId}, new expires ${expiresAt}`);
         } else {
-          // One-off purchase (single answer) — credit goes to the chat where pending is
-          log.info(`[stars] Single answer credit for user ${userId}`);
+          // One-off purchase (credit pack) — determine credits from payload
+          const packCredits: Record<string, number> = {
+            pack_1: 1,
+            pack_3: 3,
+            pack_5: 5,
+            single_answer: 1, // backward compat
+          };
+          const creditsToAdd = packCredits[payload] || 1;
+          log.info(
+            `[stars] Credit pack "${payload}" for user ${userId}: +${creditsToAdd} credits (${payment.total_amount}★)`
+          );
           try {
             db.prepare(
               "INSERT INTO invoice_events (user_id, chat_id, event, amount, created_at) VALUES (?, ?, 'paid', ?, ?)"
@@ -780,21 +789,30 @@ ${blue}  ┌──────────────────────�
           | undefined;
 
         // For one-off purchase: credit the specific chat where pending lives
-        if (!payment.is_first_recurring && !payment.is_recurring && pending) {
+        const packCreditsMap: Record<string, number> = {
+          pack_1: 1,
+          pack_3: 3,
+          pack_5: 5,
+          single_answer: 1,
+          buy_one_answer: 1,
+        };
+        const creditsN =
+          !payment.is_first_recurring && !payment.is_recurring ? packCreditsMap[payload] || 1 : 0;
+        if (creditsN > 0 && pending) {
           const now = Math.floor(Date.now() / 1000);
           db.prepare(
             `INSERT INTO stars_credits (user_id, chat_id, credits, last_purchase_at)
-             VALUES (?, ?, 1, ?)
-             ON CONFLICT(user_id, chat_id) DO UPDATE SET credits = credits + 1, last_purchase_at = ?`
-          ).run(String(userId), pending.chat_id, now, now);
-        } else if (!payment.is_first_recurring && !payment.is_recurring) {
+             VALUES (?, ?, ?, ?)
+             ON CONFLICT(user_id, chat_id) DO UPDATE SET credits = credits + ?, last_purchase_at = ?`
+          ).run(String(userId), pending.chat_id, creditsN, now, creditsN, now);
+        } else if (creditsN > 0) {
           // No pending — credit to DM (chat_id = userId in Telegram DMs)
           const now = Math.floor(Date.now() / 1000);
           db.prepare(
             `INSERT INTO stars_credits (user_id, chat_id, credits, last_purchase_at)
-             VALUES (?, ?, 1, ?)
-             ON CONFLICT(user_id, chat_id) DO UPDATE SET credits = credits + 1, last_purchase_at = ?`
-          ).run(String(userId), String(userId), now, now);
+             VALUES (?, ?, ?, ?)
+             ON CONFLICT(user_id, chat_id) DO UPDATE SET credits = credits + ?, last_purchase_at = ?`
+          ).run(String(userId), String(userId), creditsN, now, creditsN, now);
         }
         if (pending?.paywall_message_id) {
           try {
@@ -865,24 +883,53 @@ ${blue}  ┌──────────────────────�
       }
     });
 
-    // Buy one answer callback handler
+    // Credit pack callback handler
     const TEST_USER_IDS = new Set([130552640, 5435055002]);
     const pendingInvoices = new Map<number, { chatId: number; messageId: number }>();
+
+    // Pack definitions: { payload, credits, stars, testStars }
+    const CREDIT_PACKS: Record<string, { credits: number; stars: number; testStars: number }> = {
+      pack_1: { credits: 1, stars: 10, testStars: 1 },
+      pack_3: { credits: 3, stars: 20, testStars: 2 },
+      pack_5: { credits: 5, stars: 30, testStars: 3 },
+      buy_one_answer: { credits: 1, stars: 10, testStars: 1 }, // backward compat
+    };
+
     bridge.setPaymentCallbackHandler(async (ctx) => {
       const chatId = ctx.callbackQuery?.message?.chat.id;
       const userId = ctx.from?.id;
-      if (!chatId || !userId) return;
-      const amount = userId && TEST_USER_IDS.has(userId) ? 1 : 10;
+      const data = ctx.callbackQuery?.data;
+      if (!chatId || !userId || !data) return;
+
+      const pack = CREDIT_PACKS[data];
+      if (!pack) return;
+
+      const isTest = TEST_USER_IDS.has(userId);
+      const amount = isTest ? pack.testStars : pack.stars;
+      const label = pack.credits === 1 ? "1 Answer" : `${pack.credits} Answers`;
+
       try {
         const sent = await bot.api.sendInvoice(
           chatId,
-          "One Answer",
-          "Get an answer to your last question",
-          "single_answer",
+          label,
+          `Get ${pack.credits} answer${pack.credits > 1 ? "s" : ""} to your questions`,
+          data, // payload = pack_1, pack_3, pack_5
           "XTR",
-          [{ label: "1 Answer", amount }]
+          [{ label, amount }]
         );
         pendingInvoices.set(userId, { chatId, messageId: sent.message_id });
+
+        // Track invoice sent
+        try {
+          const Database = (await import("better-sqlite3")).default;
+          const db = new Database(PLUGIN_DB_PATH);
+          db.prepare(
+            "INSERT INTO invoice_events (user_id, chat_id, event, amount, created_at) VALUES (?, ?, 'sent', ?, ?)"
+          ).run(String(userId), String(chatId), amount, Math.floor(Date.now() / 1000));
+          db.close();
+        } catch {
+          /* */
+        }
       } catch (err) {
         log.error({ err }, "[stars] Failed to send invoice");
       }
@@ -1128,39 +1175,51 @@ ${blue}  ┌──────────────────────�
         };
         const i18n = (userLang && paywallI18n[userLang]) || defaultI18n;
 
-        // Send paywall text with TON alternative
+        // Credit packs: answers / stars (test users get 1/2/3★)
+        const isTest = TEST_USER_IDS.has(userId);
+        const packs = isTest
+          ? [
+              { id: "pack_1", n: 1, stars: 1 },
+              { id: "pack_3", n: 3, stars: 2 },
+              { id: "pack_5", n: 5, stars: 3 },
+            ]
+          : [
+              { id: "pack_1", n: 1, stars: 10 },
+              { id: "pack_3", n: 3, stars: 20 },
+              { id: "pack_5", n: 5, stars: 30 },
+            ];
+
+        // Send paywall with credit pack buttons + TON alternative
         const sent = await bot.api.sendMessage(Number(chatId), i18n.text, {
           reply_markup: {
-            inline_keyboard: [[{ text: i18n.btn, url: miniAppUrl }]],
+            inline_keyboard: [
+              [
+                {
+                  text: `⭐ ${packs[0].n} answer — ${packs[0].stars}★`,
+                  callback_data: packs[0].id,
+                },
+                {
+                  text: `⭐ ${packs[1].n} answers — ${packs[1].stars}★ (-33%)`,
+                  callback_data: packs[1].id,
+                },
+              ],
+              [
+                {
+                  text: `⭐ ${packs[2].n} answers — ${packs[2].stars}★ (-40%)`,
+                  callback_data: packs[2].id,
+                },
+                { text: i18n.btn, url: miniAppUrl },
+              ],
+            ],
           },
         });
 
-        // Send Stars invoice directly (no intermediate button click)
-        const invoiceAmount = TEST_USER_IDS.has(userId) ? 1 : 10;
-        const invoiceTitle = i18n.title;
-        const invoiceDesc = i18n.desc;
         try {
-          const invoiceSent = await bot.api.sendInvoice(
-            Number(chatId),
-            invoiceTitle,
-            invoiceDesc,
-            "single_answer",
-            "XTR",
-            [{ label: "1 Answer", amount: invoiceAmount }]
-          );
-          pendingInvoices.set(userId, {
-            chatId: Number(chatId),
-            messageId: invoiceSent.message_id,
-          });
-          try {
-            db.prepare(
-              "INSERT INTO invoice_events (user_id, chat_id, event, amount, created_at) VALUES (?, ?, 'sent', ?, ?)"
-            ).run(uid, chatId, invoiceAmount, now);
-          } catch {
-            /* */
-          }
-        } catch (invoiceErr) {
-          log.error({ err: invoiceErr }, "[PaymentGate] Failed to send Stars invoice");
+          db.prepare(
+            "INSERT INTO invoice_events (user_id, chat_id, event, amount, created_at) VALUES (?, ?, 'shown', 0, ?)"
+          ).run(uid, chatId, now);
+        } catch {
+          /* */
         }
 
         // Save paywall message ID for delete+send pattern
