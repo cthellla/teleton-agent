@@ -1,6 +1,7 @@
 export type SupportedProvider =
   | "anthropic"
   | "claude-code"
+  | "codex"
   | "openai"
   | "google"
   | "xai"
@@ -36,10 +37,22 @@ const PROVIDER_REGISTRY: Record<SupportedProvider, ProviderMetadata> = {
     keyPrefix: "sk-ant-",
     keyHint: "Auto-detected from Claude Code",
     consoleUrl: "https://console.anthropic.com/",
-    defaultModel: "claude-opus-4-6",
+    defaultModel: "claude-haiku-4-5-20251001",
     utilityModel: "claude-haiku-4-5-20251001",
     toolLimit: null,
     piAiProvider: "anthropic",
+  },
+  codex: {
+    id: "codex",
+    displayName: "Codex (Auto)",
+    envVar: "OPENAI_API_KEY",
+    keyPrefix: null,
+    keyHint: "Auto-detected from Codex CLI",
+    consoleUrl: "https://platform.openai.com/",
+    defaultModel: "gpt-5.5",
+    utilityModel: "gpt-5.1-codex-mini",
+    toolLimit: 128,
+    piAiProvider: "openai-codex",
   },
   zai: {
     id: "zai",
@@ -60,19 +73,19 @@ const PROVIDER_REGISTRY: Record<SupportedProvider, ProviderMetadata> = {
     keyPrefix: "sk-ant-",
     keyHint: "sk-ant-api03-...",
     consoleUrl: "https://console.anthropic.com/",
-    defaultModel: "claude-opus-4-6",
+    defaultModel: "claude-haiku-4-5-20251001",
     utilityModel: "claude-haiku-4-5-20251001",
     toolLimit: null,
     piAiProvider: "anthropic",
   },
   openai: {
     id: "openai",
-    displayName: "OpenAI (GPT-5.4)",
+    displayName: "OpenAI (GPT-5.5)",
     envVar: "OPENAI_API_KEY",
     keyPrefix: "sk-",
     keyHint: "sk-proj-...",
     consoleUrl: "https://platform.openai.com/api-keys",
-    defaultModel: "gpt-5.4",
+    defaultModel: "gpt-5.5",
     utilityModel: "gpt-4o-mini",
     toolLimit: 128,
     piAiProvider: "openai",
@@ -127,13 +140,13 @@ const PROVIDER_REGISTRY: Record<SupportedProvider, ProviderMetadata> = {
   },
   moonshot: {
     id: "moonshot",
-    displayName: "Moonshot (Kimi K2.5)",
+    displayName: "Moonshot (Kimi K2.6)",
     envVar: "MOONSHOT_API_KEY",
     keyPrefix: "sk-",
     keyHint: "sk-...",
     consoleUrl: "https://platform.moonshot.ai/",
-    defaultModel: "k2p5",
-    utilityModel: "k2p5",
+    defaultModel: "k2p6",
+    utilityModel: "k2p6",
     toolLimit: 128,
     piAiProvider: "kimi-coding",
   },
@@ -168,8 +181,8 @@ const PROVIDER_REGISTRY: Record<SupportedProvider, ProviderMetadata> = {
     keyPrefix: null,
     keyHint: "Save your key — shown only once!",
     consoleUrl: "https://platform.minimax.io/",
-    defaultModel: "MiniMax-M2.5",
-    utilityModel: "MiniMax-M2",
+    defaultModel: "MiniMax-M2.7",
+    utilityModel: "MiniMax-M2.7",
     toolLimit: 128,
     piAiProvider: "minimax",
   },
@@ -226,7 +239,13 @@ export function getSupportedProviders(): ProviderMetadata[] {
 export function validateApiKeyFormat(provider: SupportedProvider, key: string): string | undefined {
   const meta = PROVIDER_REGISTRY[provider];
   if (!meta) return `Unknown provider: ${provider}`;
-  if (provider === "cocoon" || provider === "local" || provider === "claude-code") return undefined; // No API key needed (claude-code auto-detects)
+  if (
+    provider === "cocoon" ||
+    provider === "local" ||
+    provider === "claude-code" ||
+    provider === "codex"
+  )
+    return undefined;
   if (!key || key.trim().length === 0) return "API key is required";
   if (meta.keyPrefix && !key.startsWith(meta.keyPrefix)) {
     return `Invalid format (should start with ${meta.keyPrefix})`;

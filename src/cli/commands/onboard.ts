@@ -58,6 +58,7 @@ import {
   getClaudeCodeApiKey,
   isClaudeCodeTokenValid,
 } from "../../providers/claude-code-credentials.js";
+import { getCodexApiKey, isCodexTokenValid } from "../../providers/codex-credentials.js";
 
 export interface OnboardOptions {
   workspace?: string;
@@ -413,6 +414,58 @@ async function runInteractiveOnboarding(
       if (useFallback) {
         apiKey = await password({
           message: `Anthropic API Key (fallback)`,
+          theme,
+          validate: (value = "") => {
+            if (!value || value.trim().length === 0) return "API key is required";
+            return true;
+          },
+        });
+      } else {
+        throw new CancelledError();
+      }
+    }
+
+    if (detected) {
+      STEPS[1].value = `${providerMeta.displayName}  ${DIM("auto-detected ✓")}`;
+    } else {
+      const maskedKey = apiKey.length > 10 ? apiKey.slice(0, 6) + "..." + apiKey.slice(-4) : "***";
+      STEPS[1].value = `${providerMeta.displayName}  ${DIM(maskedKey)}`;
+    }
+  } else if (selectedProvider === "codex") {
+    // Codex — auto-detect credentials from ~/.codex/auth.json
+    let detected = false;
+    try {
+      const key = getCodexApiKey();
+      const valid = isCodexTokenValid();
+      apiKey = ""; // Don't store in config — auto-detected at runtime
+      detected = true;
+      const masked = key.length > 16 ? key.slice(0, 12) + "..." + key.slice(-4) : "***";
+      noteBox(
+        `Credentials auto-detected from Codex CLI\n` +
+          `Key: ${masked}\n` +
+          `Status: ${valid ? GREEN("valid ✓") : "expired (run codex to re-authenticate)"}\n` +
+          `Token read from ~/.codex/auth.json`,
+        "Codex",
+        TON
+      );
+      await confirm({
+        message: "Continue with auto-detected credentials?",
+        default: true,
+        theme,
+      });
+    } catch (error) {
+      if (error instanceof CancelledError) throw error;
+      prompter.warn(
+        "Codex credentials not found. Make sure Codex CLI is installed and authenticated."
+      );
+      const useFallback = await confirm({
+        message: "Enter an OpenAI API key manually instead?",
+        default: true,
+        theme,
+      });
+      if (useFallback) {
+        apiKey = await password({
+          message: `OpenAI API Key (fallback)`,
           theme,
           validate: (value = "") => {
             if (!value || value.trim().length === 0) return "API key is required";

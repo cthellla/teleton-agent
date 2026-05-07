@@ -24,6 +24,7 @@ export const AgentConfigSchema = z.object({
     .enum([
       "anthropic",
       "claude-code",
+      "codex",
       "openai",
       "google",
       "xai",
@@ -45,7 +46,7 @@ export const AgentConfigSchema = z.object({
     .url()
     .optional()
     .describe("Base URL for local LLM server (e.g. http://localhost:11434/v1)"),
-  model: z.string().default("claude-opus-4-6"),
+  model: z.string().default("claude-haiku-4-5-20251001"),
   utility_model: z
     .string()
     .optional()

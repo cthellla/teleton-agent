@@ -34,12 +34,11 @@ import {
 } from "./plugin-validator.js";
 import {
   createPluginSDK,
-  CronManager,
   SDK_VERSION,
   semverSatisfies,
   type SDKDependencies,
 } from "../../sdk/index.js";
-import type { PluginSDK } from "../../sdk/index.js";
+import type { PluginSDK, CronManager } from "../../sdk/index.js";
 import { HookRegistry } from "../../sdk/hooks/registry.js";
 import { createSecretsSDK } from "../../sdk/secrets.js";
 import type {
@@ -274,7 +273,7 @@ export function adaptPlugin(
               },
               ...(def.category ? { category: def.category } : {}),
             } as Tool,
-            executor: pluginDb ? withPluginDb(sandboxedExecutor) : sandboxedExecutor,
+            executor: pluginDb && hasMigrate ? withPluginDb(sandboxedExecutor) : sandboxedExecutor,
             scope: def.scope as ToolScope | undefined,
           };
         });

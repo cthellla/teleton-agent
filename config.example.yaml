@@ -5,7 +5,7 @@
 agent:
   provider: "anthropic"              # anthropic | openai | google | xai | groq | openrouter
   api_key: "YOUR_API_KEY"
-  model: "claude-opus-4-6"           # Model ID (varies by provider)
+  model: "claude-haiku-4-5-20251001" # Model ID (varies by provider)
   # utility_model: "claude-3-5-haiku-20241022"  # Optional: cheap model for summarization
   max_tokens: 4096
   temperature: 0.7

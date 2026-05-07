@@ -21,6 +21,7 @@ import {
   refreshClaudeCodeApiKey,
 } from "../providers/claude-code-credentials.js";
 import { LLM_REQUEST_TIMEOUT_MS, LLM_STREAM_TIMEOUT_MS } from "../constants/timeouts.js";
+import { getCodexApiKey, refreshCodexApiKey } from "../providers/codex-credentials.js";
 
 const log = createLogger("LLM");
 
@@ -34,6 +35,7 @@ export function getEffectiveApiKey(provider: string, rawKey: string): string {
   if (provider === "local") return "local";
   if (provider === "cocoon") return "";
   if (provider === "claude-code") return getClaudeCodeApiKey(rawKey);
+  if (provider === "codex") return getCodexApiKey(rawKey);
   return rawKey;
 }
 
@@ -132,7 +134,7 @@ export async function registerLocalModels(baseUrl: string): Promise<string[]> {
 
 /** Moonshot backward-compat: old model IDs → kimi-coding IDs */
 const MOONSHOT_MODEL_ALIASES: Record<string, string> = {
-  "kimi-k2.5": "k2p5",
+  "kimi-k2.5": "k2p6",
 };
 
 export function getProviderModel(provider: SupportedProvider, modelId: string): Model<Api> {
@@ -187,10 +189,12 @@ export function getProviderModel(provider: SupportedProvider, modelId: string): 
           log.info(`Model ${modelId} resolved via :free variant in SDK`);
         }
       } else {
+        /* eslint-disable @typescript-eslint/no-explicit-any -- pi-ai dynamic provider/model string typing */
         const paidVariant = getModel(
           meta.piAiProvider as any,
           modelId.replace(/:free$/, "") as any
-        ); // eslint-disable-line @typescript-eslint/no-explicit-any
+        );
+        /* eslint-enable @typescript-eslint/no-explicit-any */
         if (paidVariant) {
           model = { ...paidVariant, id: modelId } as typeof paidVariant;
           log.info(`Model ${modelId} resolved via paid variant in SDK`);
@@ -298,7 +302,7 @@ export async function chatWithContext(
   const completeOptions: Record<string, unknown> = {
     apiKey: getEffectiveApiKey(provider, config.api_key),
     maxTokens: options.maxTokens ?? config.max_tokens,
-    temperature,
+    ...(provider !== "codex" && { temperature }),
     sessionId: options.sessionId,
     cacheRetention: "long",
     signal: AbortSignal.timeout(LLM_REQUEST_TIMEOUT_MS),
@@ -325,6 +329,22 @@ export async function chatWithContext(
   ) {
     log.warn("Claude Code token rejected (401), refreshing credentials and retrying...");
     const refreshedKey = await refreshClaudeCodeApiKey();
+    if (refreshedKey) {
+      completeOptions.apiKey = refreshedKey;
+      response = await complete(model, context, completeOptions as ProviderStreamOptions);
+    }
+  }
+
+  // Codex provider: retry once on 401/Unauthorized by re-reading credentials
+  if (
+    provider === "codex" &&
+    response.stopReason === "error" &&
+    response.errorMessage &&
+    (response.errorMessage.includes("401") ||
+      response.errorMessage.toLowerCase().includes("unauthorized"))
+  ) {
+    log.warn("Codex token rejected (401), re-reading credentials and retrying...");
+    const refreshedKey = await refreshCodexApiKey();
     if (refreshedKey) {
       completeOptions.apiKey = refreshedKey;
       response = await complete(model, context, completeOptions as ProviderStreamOptions);
@@ -405,7 +425,7 @@ export function streamWithContext(config: AgentConfig, options: ChatOptions): St
   const streamOptions: Record<string, unknown> = {
     apiKey: getEffectiveApiKey(provider, config.api_key),
     maxTokens: options.maxTokens ?? config.max_tokens,
-    temperature,
+    ...(provider !== "codex" && { temperature }),
     sessionId: options.sessionId,
     cacheRetention: "long",
     signal: AbortSignal.timeout(LLM_STREAM_TIMEOUT_MS),
