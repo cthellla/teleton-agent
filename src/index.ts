@@ -21,6 +21,7 @@ import { TELETON_ROOT } from "./workspace/paths.js";
 import { join } from "path";
 import { ToolRegistry } from "./agent/tools/registry.js";
 import { registerAllTools } from "./agent/tools/register-all.js";
+import { initializeSkills, type SkillsHandle } from "./agent/skills/index.js";
 import { type PluginModuleWithHooks } from "./agent/tools/plugin-loader.js";
 import type { HookName, AgentStartEvent, AgentStopEvent } from "./sdk/hooks/types.js";
 import { createHookRunner } from "./sdk/hooks/runner.js";
@@ -79,6 +80,7 @@ export class TeletonApp {
   private messagesProcessed: number = 0;
   private heartbeatRunner: HeartbeatRunner;
   private scheduledTaskHandler: ScheduledTaskHandler;
+  private skillsHandle: SkillsHandle | null = null;
 
   private configPath: string;
 
@@ -157,6 +159,8 @@ export class TeletonApp {
 
     this.toolRegistry = new ToolRegistry(this.config.telegram.mode);
     registerAllTools(this.toolRegistry);
+
+    this.skillsHandle = initializeSkills();
 
     this.agent = new AgentRuntime(this.config, soul, this.toolRegistry);
 
@@ -1649,6 +1653,16 @@ ${blue}  ┌──────────────────────�
   private async stopAgent(): Promise<void> {
     // Stop heartbeat timer
     this.heartbeatRunner.stop();
+
+    // Stop skills watcher
+    if (this.skillsHandle) {
+      try {
+        await this.skillsHandle.stop();
+      } catch (error: unknown) {
+        log.error({ err: error }, "Skills watcher stop failed");
+      }
+      this.skillsHandle = null;
+    }
 
     // Hook: agent:stop — fire BEFORE disconnecting anything
     if (this.hookRunner) {

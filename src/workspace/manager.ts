@@ -73,6 +73,7 @@ export async function ensureWorkspace(config?: WorkspaceConfig): Promise<Workspa
     WORKSPACE_PATHS.UPLOADS_DIR,
     WORKSPACE_PATHS.TEMP_DIR,
     WORKSPACE_PATHS.MEMES_DIR,
+    WORKSPACE_PATHS.SKILLS_DIR,
   ];
 
   for (const dir of directories) {

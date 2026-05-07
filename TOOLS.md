@@ -1,4 +1,4 @@
-# Tools — 133 total
+# Tools — 135 total
 
 ## Telegram — Messaging (13)
 
@@ -236,6 +236,15 @@
 | Tool | Description |
 |------|-------------|
 | `bot_inline_send` | Send an inline bot result into a chat |
+
+## Skills (2)
+
+| Tool | Description |
+|------|-------------|
+| `skill_invoke` | Load the full body of a skill listed under `## Available Skills` in the system prompt |
+| `skill_install` | Install a new SKILL.md into the workspace (personal / shared / admin scope) |
+
+Skills are user-authored playbooks at `~/.teleton/workspace/skills/<scope>/<name>/SKILL.md` with three visibility scopes — `shared/` (all users), `admin/` (admins only), `users/<userId>/` (personal). The frontmatter (`name`, `description`) is injected into the system prompt filtered by viewer; the body is fetched on demand via `skill_invoke`. Agents can install new skills via `skill_install`. See [docs/SKILLS.md](docs/SKILLS.md).
 
 ## Exec — System (4, plugin)
 
