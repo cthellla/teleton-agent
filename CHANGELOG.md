@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Skills**: Claude-Code-style agent-callable Markdown playbooks with three visibility namespaces — `shared/` (all users), `admin/` (admins only), `users/<userId>/` (personal). Lazy loading — only the YAML frontmatter (`name` + one-line `description`) lands in the system prompt, filtered by viewer; full bodies are fetched on demand via the new `skill_invoke` tool. New `skill_install` tool lets the agent create skills on disk with scope-based access control (default: admin → admin scope, user → personal scope). Per-skill resource files supported. Hot reload via chokidar — drop a SKILL.md and the agent sees it without restart. See [docs/SKILLS.md](docs/SKILLS.md) and [examples/skills/](examples/skills/).
+
 ## [0.8.1] - 2026-03-05
 
 ### Added

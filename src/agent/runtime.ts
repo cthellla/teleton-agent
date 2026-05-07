@@ -503,6 +503,10 @@ export class AgentRuntime {
         .join("\n\n");
       const finalContext = additionalContext + (allHookContext ? `\n\n${allHookContext}` : "");
 
+      const isAdmin =
+        toolContext?.senderId !== undefined &&
+        (toolContext.config?.telegram.admin_ids.includes(toolContext.senderId) ?? false);
+
       const systemPrompt = buildSystemPrompt({
         soul: this.soul,
         userName,
@@ -518,6 +522,7 @@ export class AgentRuntime {
         isHeartbeat,
         agentModel: this.config.agent.model,
         telegramMode: this.config.telegram.mode,
+        isAdmin,
       });
 
       // Hook: prompt:after — observing, analytics on prompt size
@@ -564,8 +569,6 @@ export class AgentRuntime {
 
       const provider = (this.config.agent.provider || "anthropic") as SupportedProvider;
       const providerMeta = getProviderMetadata(provider);
-      const isAdmin =
-        toolContext?.config?.telegram.admin_ids.includes(toolContext.senderId) ?? false;
 
       let tools: PiAiTool[] | undefined;
       {
@@ -707,7 +710,10 @@ export class AgentRuntime {
               }
 
               // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- guarded by shouldStream check
-              const draftText = await bridge.streamDraft(opts.streamToChat!.chatId, prefixedStream());
+              const draftText = await bridge.streamDraft(
+                opts.streamToChat!.chatId,
+                prefixedStream()
+              );
               if (streamMode === "all") {
                 if (draftText.length === 0 && streamAccumulatedText.length > 0) {
                   // LLM produced only tool calls — clear the stale draft bubble
@@ -870,7 +876,9 @@ export class AgentRuntime {
             );
           } else if (
             errorMsg.includes("404") &&
-            (errorMsg.includes("deprecated") || errorMsg.includes("not found") || errorMsg.includes("does not exist"))
+            (errorMsg.includes("deprecated") ||
+              errorMsg.includes("not found") ||
+              errorMsg.includes("does not exist"))
           ) {
             // Model deprecated/removed — switch to provider's default model and retry once
             if (!modelDeprecatedRetried) {
@@ -919,7 +927,9 @@ export class AgentRuntime {
               await new Promise((r) => setTimeout(r, delay));
               continue;
             }
-            log.warn(`Empty response persists after ${EMPTY_RESPONSE_MAX_RETRIES} retries, accepting`);
+            log.warn(
+              `Empty response persists after ${EMPTY_RESPONSE_MAX_RETRIES} retries, accepting`
+            );
           }
           log.info(`${iteration}/${maxIterations} → done`);
           finalResponse = response;
@@ -1221,24 +1231,28 @@ export class AgentRuntime {
       }
 
       // Build response:after event (run after finalizeDraft so upsell appears after the answer)
-      const responseAfterEvent: ResponseAfterEvent | null = this.hookRunner ? {
-        chatId,
-        sessionId: session.sessionId,
-        isGroup: effectiveIsGroup,
-        text: content,
-        durationMs: Date.now() - processStartTime,
-        toolsUsed: totalToolCalls.map((tc) => tc.name),
-        tokenUsage:
-          accumulatedUsage.input > 0 || accumulatedUsage.output > 0 || accumulatedUsage.cacheRead > 0
-            ? {
-                input: accumulatedUsage.input,
-                output: accumulatedUsage.output,
-                cacheRead: accumulatedUsage.cacheRead,
-                cacheWrite: accumulatedUsage.cacheWrite,
-              }
-            : undefined,
-        metadata: responseMetadata,
-      } : null;
+      const responseAfterEvent: ResponseAfterEvent | null = this.hookRunner
+        ? {
+            chatId,
+            sessionId: session.sessionId,
+            isGroup: effectiveIsGroup,
+            text: content,
+            durationMs: Date.now() - processStartTime,
+            toolsUsed: totalToolCalls.map((tc) => tc.name),
+            tokenUsage:
+              accumulatedUsage.input > 0 ||
+              accumulatedUsage.output > 0 ||
+              accumulatedUsage.cacheRead > 0
+                ? {
+                    input: accumulatedUsage.input,
+                    output: accumulatedUsage.output,
+                    cacheRead: accumulatedUsage.cacheRead,
+                    cacheWrite: accumulatedUsage.cacheWrite,
+                  }
+                : undefined,
+            metadata: responseMetadata,
+          }
+        : null;
 
       // Finalize streaming draft — clear bubble, send final message only if no send tool was used
       if (wasStreamed && opts.streamToChat) {
@@ -1259,10 +1273,14 @@ export class AgentRuntime {
         try {
           await Promise.race([
             this.hookRunner.runObservingHook("response:after", responseAfterEvent),
-            new Promise((_, reject) => setTimeout(() => reject(new Error("response:after timeout")), 15000)),
+            new Promise((_, reject) =>
+              setTimeout(() => reject(new Error("response:after timeout")), 15000)
+            ),
           ]);
         } catch (hookErr) {
-          log.warn(`response:after hook failed or timed out: ${hookErr instanceof Error ? hookErr.message : hookErr}`);
+          log.warn(
+            `response:after hook failed or timed out: ${hookErr instanceof Error ? hookErr.message : hookErr}`
+          );
         }
       }
 

@@ -1,6 +1,7 @@
 import { readFileSync, existsSync } from "fs";
 import { readRecentMemory } from "../memory/daily-logs.js";
 import { getCoreMemoryForPrompt } from "../memory/core-blocks.js";
+import { renderSkillsPromptSection } from "../agent/skills/prompt.js";
 import { WORKSPACE_PATHS } from "../workspace/index.js";
 import { sanitizeForPrompt, sanitizeForContext } from "../utils/sanitize.js";
 
@@ -200,6 +201,7 @@ export function buildSystemPrompt(options: {
   isHeartbeat?: boolean;
   agentModel?: string;
   telegramMode?: "user" | "bot";
+  isAdmin?: boolean;
 }): string {
   const soul = options.soul ?? loadSoul();
   const parts = [soul];
@@ -255,6 +257,14 @@ NOT available in bot mode: browsing dialogs, reading chat history, editing profi
 
 For transactions: ALWAYS include Confirm/Cancel inline buttons using telegram_send_buttons.
 Use telegram_send_buttons for any interactive choice (pagination, confirmations, quick actions).`);
+  }
+
+  const skillsSection = renderSkillsPromptSection({
+    senderId: options.senderId,
+    isAdmin: options.isAdmin ?? false,
+  });
+  if (skillsSection) {
+    parts.push(`\n${skillsSection}`);
   }
 
   // --- DYNAMIC BLOCK (changes every turn) ---

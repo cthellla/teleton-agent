@@ -33,6 +33,7 @@ export const WORKSPACE_PATHS = {
   UPLOADS_DIR: join(WORKSPACE_ROOT, "uploads"),
   TEMP_DIR: join(WORKSPACE_ROOT, "temp"),
   MEMES_DIR: join(WORKSPACE_ROOT, "memes"),
+  SKILLS_DIR: join(WORKSPACE_ROOT, "skills"),
   PLUGINS_DIR: join(TELETON_ROOT, "plugins"),
 } as const;
 

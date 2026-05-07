@@ -17,6 +17,7 @@ import { tools as telegramTools } from "./telegram/index.js";
 // import { tools as workspaceTools } from "./workspace/index.js"; // Disabled: no file management
 import { tools as webTools } from "./web/index.js";
 import { tools as botTools } from "./bot/index.js";
+import { tools as skillsTools } from "../skills/index.js";
 
 const ALL_CATEGORIES: ToolEntry[][] = [
   telegramTools,
@@ -28,6 +29,7 @@ const ALL_CATEGORIES: ToolEntry[][] = [
   // workspaceTools,
   webTools,
   botTools,
+  skillsTools,
 ];
 
 export function registerAllTools(registry: ToolRegistry): void {
