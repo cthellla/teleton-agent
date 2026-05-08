@@ -754,12 +754,24 @@ export class MessageHandler {
         config: this.fullConfig,
       };
 
+      // Tell the agent it's a one-shot reply: no continuation, no telegram_send_*
+      // tools (those will 403 — bot isn't in the chat). Treating as DM keeps the
+      // "be brief in groups" heuristics off — the user wants a complete answer.
+      const guestDirective =
+        "[guest_mode] You were summoned in a chat you are NOT a member of. " +
+        "You have exactly ONE message to reply with via answerGuestQuery — no " +
+        "follow-ups, no telegram_send_* tools (they will fail). Deliver a " +
+        "complete, self-contained answer in a single message. Do not say " +
+        '"let me grab the rest" or similar continuations.';
+
       const response = await this.agent.processMessage({
-        chatId: `guest:${message.senderId}`,
-        userMessage: injectedContext ? `${userText}${injectedContext}` : userText,
+        // Fresh session per query — guest invocations are ad-hoc and shouldn't
+        // share a session that accumulates context across unrelated chats.
+        chatId: `guest:${queryId}`,
+        userMessage: `${guestDirective}\n\n${userText}${injectedContext}`,
         userName,
         timestamp: message.timestamp.getTime(),
-        isGroup: message.isGroup,
+        isGroup: false,
         toolContext,
         senderUsername: message.senderUsername,
         senderLangCode: message.senderLangCode,
