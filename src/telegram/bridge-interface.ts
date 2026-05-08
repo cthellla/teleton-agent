@@ -19,6 +19,10 @@ export interface TelegramMessage {
   mediaType?: "photo" | "document" | "video" | "audio" | "voice" | "sticker";
   replyToId?: number;
   _rawMessage?: Api.Message;
+  // Guest Mode (Bot API 10.0): bot received a guest invocation in a chat it isn't a member of.
+  // Reply must go through ITelegramBridge.answerGuestQuery (single reply, no follow-ups).
+  _isGuest?: boolean;
+  _guestQueryId?: string;
 }
 
 export interface InlineButton {
@@ -108,6 +112,9 @@ export interface ITelegramBridge {
 
   /** Stream a response token by token via message drafts (bot mode). Returns final sent message. */
   streamResponse?(chatId: string, textStream: AsyncIterable<string>): Promise<SentMessage>;
+
+  /** Bot API 10.0 Guest Mode: one-shot reply to a guest invocation. Bot mode only. */
+  answerGuestQuery?(guestQueryId: string, text: string): Promise<void>;
 
   // Events
   onNewMessage(

@@ -1,6 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { Bot, InlineKeyboard, InputFile, type Context } from "grammy";
 import { markdownToTelegramHtml } from "../formatting.js";
+import { sanitizeMarkdownForTelegram } from "../sanitize-markdown.js";
 import { TELEGRAM_MAX_MESSAGE_LENGTH } from "../../constants/limits.js";
 import type {
   ITelegramBridge,
@@ -23,6 +24,15 @@ interface GrammyBotBridgeConfig {
 }
 
 type GrammyMessage = NonNullable<Context["message"]>;
+
+// grammy 1.41 autodetects allowed_updates from handlers but doesn't know `guest_message`
+// (Bot API 10.0). Override to ensure Telegram delivers it.
+const ALLOWED_UPDATES = [
+  "message",
+  "callback_query",
+  "pre_checkout_query",
+  "guest_message",
+] as const;
 
 export class GrammyBotBridge implements ITelegramBridge {
   private bot: Bot;
@@ -73,6 +83,7 @@ export class GrammyBotBridge implements ITelegramBridge {
     this.botPromise = this.bot
       .start({
         drop_pending_updates: true,
+        allowed_updates: ALLOWED_UPDATES as unknown as never[],
         onStart: () => {
           log.info("Grammy bot polling started");
         },
@@ -101,6 +112,47 @@ export class GrammyBotBridge implements ITelegramBridge {
 
   getUsername(): string | undefined {
     return this.botInfo?.username;
+  }
+
+  /**
+   * Bot API 10.0: reply to a guest invocation. One-shot — the same guest_query_id
+   * cannot be answered twice. grammy 1.41 doesn't type the method, so we go raw.
+   */
+  async answerGuestQuery(guestQueryId: string, text: string): Promise<void> {
+    // Truncate raw text first (HTML escaping inflates length, but at the source we
+    // avoid mid-tag cuts that would 400 with "can't parse entities").
+    const safeMd = sanitizeMarkdownForTelegram(text);
+    const truncated =
+      safeMd.length > TELEGRAM_MAX_MESSAGE_LENGTH
+        ? safeMd.slice(0, TELEGRAM_MAX_MESSAGE_LENGTH - 1) + "…"
+        : safeMd;
+    const html = markdownToTelegramHtml(truncated);
+
+    const send = async (parseMode: "HTML" | undefined): Promise<Response> =>
+      fetch(`https://api.telegram.org/bot${this.bot.token}/answerGuestQuery`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          guest_query_id: guestQueryId,
+          text: parseMode === "HTML" ? html : truncated,
+          parse_mode: parseMode,
+        }),
+      });
+
+    let res = await send("HTML");
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      // Retry once without parse_mode if Telegram rejected our HTML
+      if (res.status === 400 && body.includes("can't parse entities")) {
+        log.warn(`answerGuestQuery HTML rejected, retrying as plain text: ${body}`);
+        res = await send(undefined);
+      }
+      if (!res.ok) {
+        const finalBody = await res.text().catch(() => "");
+        // Don't include the URL (contains the bot token) in the thrown error.
+        throw new Error(`answerGuestQuery ${res.status}: ${finalBody}`);
+      }
+    }
   }
 
   async sendMessage(options: SendMessageOptions): Promise<SentMessage> {
@@ -482,6 +534,33 @@ export class GrammyBotBridge implements ITelegramBridge {
     handler: (msg: TelegramMessage) => void | Promise<void>,
     filters?: { incoming?: boolean; outgoing?: boolean; chats?: string[] }
   ): void {
+    // Bot API 10.0 Guest Mode. grammy 1.41 doesn't type `guest_message`, so we tap
+    // the raw update via middleware. Must be registered BEFORE bot.on(...) below
+    // to avoid grammy treating an unrecognised update as unhandled.
+    this.bot.use(async (ctx, next) => {
+      const guest = (ctx.update as any).guest_message as
+        | (GrammyMessage & { guest_query_id?: string })
+        | undefined;
+      if (!guest || !guest.guest_query_id) return next();
+
+      try {
+        const parsed = this.parseMessage(guest);
+        const msg: TelegramMessage = {
+          ...parsed,
+          mentionsMe: true, // by definition: bot was summoned
+          _isGuest: true,
+          _guestQueryId: guest.guest_query_id,
+        };
+        log.info(
+          `[Guest] invocation from ${msg.senderId} in chat ${msg.chatId} (query ${guest.guest_query_id})`
+        );
+        await handler(msg);
+      } catch (err) {
+        log.error({ err }, "Error in guest_message handler");
+      }
+      // Don't fall through — guest_message has no body recognised by bot.on("message")
+    });
+
     this.bot.on(
       [
         "message:text",

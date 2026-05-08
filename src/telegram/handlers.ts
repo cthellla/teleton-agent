@@ -318,6 +318,14 @@ export class MessageHandler {
    * Process and respond to a message
    */
   async handleMessage(message: TelegramMessage): Promise<void> {
+    // Bot API 10.0 Guest Mode: bot was summoned in a chat it isn't a member of.
+    // Single-shot pipeline — no session, no plugin hooks (PaymentGate is DM-only),
+    // no pending history, response goes through answerGuestQuery (one reply, then silence).
+    if (message._isGuest) {
+      await this.handleGuestMessage(message);
+      return;
+    }
+
     const dedupKey = `${message.chatId}:${message.id}`;
 
     // 0. Dedup — GramJS may fire the same event multiple times via different MTProto update channels
@@ -655,6 +663,88 @@ export class MessageHandler {
         }
       }
     });
+  }
+
+  /**
+   * Bot API 10.0 Guest Mode pipeline. answerGuestQuery is single-shot per query_id —
+   * a second call returns 400 QUERY_ID_INVALID, so we track `replied` to avoid the
+   * fallback double-firing. Sessions are keyed by senderId (not queryId) so a given
+   * user gets a coherent thread instead of leaking one row per invocation.
+   */
+  private async handleGuestMessage(message: TelegramMessage): Promise<void> {
+    const queryId = message._guestQueryId;
+    if (!queryId) {
+      log.error(`Guest message ${message.id} has no _guestQueryId — dropping`);
+      return;
+    }
+    if (!this.bridge.answerGuestQuery) {
+      log.error("[Guest] bridge does not implement answerGuestQuery — dropping");
+      return;
+    }
+
+    log.info(
+      `[Guest] query ${queryId} from ${message.senderId} (@${message.senderUsername ?? "?"}) in chat ${message.chatId}`
+    );
+
+    const botUsername = this.bridge.getUsername();
+    let userText = message.text || "";
+    if (botUsername) {
+      userText = userText.replace(new RegExp(`@${botUsername}\\b`, "gi"), "").trim();
+    }
+    if (!userText) userText = "Hello!";
+
+    const userName = message.senderFirstName || message.senderUsername || `user${message.senderId}`;
+
+    let replied = false;
+    const reply = async (text: string): Promise<void> => {
+      if (replied) return;
+      replied = true;
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- guarded above
+      await this.bridge.answerGuestQuery!(queryId, text);
+    };
+
+    try {
+      const response = await this.agent.processMessage({
+        chatId: `guest:${message.senderId}`,
+        userMessage: userText,
+        userName,
+        timestamp: message.timestamp.getTime(),
+        isGroup: message.isGroup,
+        senderUsername: message.senderUsername,
+        senderLangCode: message.senderLangCode,
+        hasMedia: message.hasMedia,
+        mediaType: message.mediaType,
+        messageId: message.id,
+      });
+
+      // Streaming has no meaningful target in guest mode (bot isn't in the chat).
+      // If the agent claims it streamed, we still owe Telegram one answerGuestQuery —
+      // fall through with whatever content we have.
+      const telegramSendCalled =
+        response.toolCalls?.some((tc) => TELEGRAM_SEND_TOOLS.has(tc.name)) ?? false;
+      if (telegramSendCalled) {
+        // The agent tried to use a telegram_send_* tool; those go through bridge.sendMessage
+        // against the foreign chat and will 403 since the bot isn't a member. Log so we
+        // can spot it in production — answerGuestQuery below is still our delivery path.
+        log.warn(`[Guest] agent used telegram_send tool in guest context (query ${queryId})`);
+      }
+
+      const raw = response.content || "";
+      let replyText = raw.trim();
+      if (isSilentReply(raw) || !replyText) {
+        replyText = "…";
+      }
+
+      await reply(replyText);
+      log.info(`[Guest] replied to ${queryId} (${replyText.length} chars)`);
+    } catch (err) {
+      log.error({ err }, `[Guest] failed to handle query ${queryId}: ${getErrorMessage(err)}`);
+      try {
+        await reply("Sorry, something went wrong.");
+      } catch (replyErr) {
+        log.error({ err: replyErr }, `[Guest] error-reply also failed for ${queryId}`);
+      }
+    }
   }
 
   /**
