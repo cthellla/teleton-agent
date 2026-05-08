@@ -704,9 +704,52 @@ export class MessageHandler {
     };
 
     try {
+      // Run plugin onMessage hooks with isGuest=true so plugins (e.g. hackernews) can
+      // switch model based on premium status without writing to usage_tracking.
+      let injectedContext = "";
+      if (this.pluginMessageHooks.length > 0) {
+        const event: PluginMessageEvent = {
+          chatId: message.chatId,
+          senderId: message.senderId,
+          senderUsername: message.senderUsername,
+          text: userText,
+          isGroup: message.isGroup,
+          hasMedia: message.hasMedia,
+          messageId: message.id,
+          timestamp: message.timestamp,
+          isGuest: true,
+        };
+        for (const hook of this.pluginMessageHooks) {
+          try {
+            const result = await hook(event);
+            if (typeof result === "string") {
+              // Plugin produced a stub reply (e.g. paywall). Deliver via guest channel.
+              await reply(result);
+              return;
+            }
+            if (result && typeof result === "object") {
+              if ("block" in result && (result as { block: boolean }).block) {
+                log.info(`[Guest] plugin blocked query ${queryId}`);
+                await reply("…");
+                return;
+              }
+              if ("context" in result) {
+                const ctx = (result as { context: string }).context;
+                if (ctx) injectedContext += `\n\n${ctx}`;
+              }
+            }
+          } catch (hookErr) {
+            log.error(
+              { err: hookErr },
+              `[Guest] plugin hook error for query ${queryId}: ${getErrorMessage(hookErr)}`
+            );
+          }
+        }
+      }
+
       const response = await this.agent.processMessage({
         chatId: `guest:${message.senderId}`,
-        userMessage: userText,
+        userMessage: injectedContext ? `${userText}${injectedContext}` : userText,
         userName,
         timestamp: message.timestamp.getTime(),
         isGroup: message.isGroup,

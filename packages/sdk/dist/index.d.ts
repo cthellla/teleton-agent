@@ -1739,6 +1739,13 @@ interface PluginMessageEvent {
     messageId: number;
     /** Message timestamp */
     timestamp: Date;
+    /**
+     * Bot API 10.0 Guest Mode invocation: bot was @-mentioned in a chat it isn't a member of.
+     * Plugins should skip usage tracking / paywall side-effects when true and may only
+     * influence model selection or inject context. Reply goes through answerGuestQuery
+     * (single-shot) — string returns from the hook are still honoured by the host.
+     */
+    isGuest?: boolean;
 }
 /** Event passed to plugin onCallbackQuery hooks */
 interface PluginCallbackEvent {
