@@ -747,12 +747,20 @@ export class MessageHandler {
         }
       }
 
+      const toolContext: Omit<ToolContext, "chatId" | "isGroup"> = {
+        bridge: this.bridge,
+        db: this.db,
+        senderId: message.senderId,
+        config: this.fullConfig,
+      };
+
       const response = await this.agent.processMessage({
         chatId: `guest:${message.senderId}`,
         userMessage: injectedContext ? `${userText}${injectedContext}` : userText,
         userName,
         timestamp: message.timestamp.getTime(),
         isGroup: message.isGroup,
+        toolContext,
         senderUsername: message.senderUsername,
         senderLangCode: message.senderLangCode,
         hasMedia: message.hasMedia,

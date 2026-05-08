@@ -139,20 +139,19 @@ export class GrammyBotBridge implements ITelegramBridge {
         }),
       });
 
-    let res = await send("HTML");
-    if (!res.ok) {
-      const body = await res.text().catch(() => "");
-      // Retry once without parse_mode if Telegram rejected our HTML
-      if (res.status === 400 && body.includes("can't parse entities")) {
-        log.warn(`answerGuestQuery HTML rejected, retrying as plain text: ${body}`);
-        res = await send(undefined);
-      }
-      if (!res.ok) {
-        const finalBody = await res.text().catch(() => "");
-        // Don't include the URL (contains the bot token) in the thrown error.
-        throw new Error(`answerGuestQuery ${res.status}: ${finalBody}`);
-      }
+    const res = await send("HTML");
+    if (res.ok) return;
+
+    const body = await res.text().catch(() => "");
+    if (res.status === 400 && body.includes("can't parse entities")) {
+      log.warn(`answerGuestQuery HTML rejected, retrying as plain text: ${body}`);
+      const retry = await send(undefined);
+      if (retry.ok) return;
+      const retryBody = await retry.text().catch(() => "");
+      throw new Error(`answerGuestQuery ${retry.status}: ${retryBody}`);
     }
+    // Don't include the URL (contains the bot token) in the thrown error.
+    throw new Error(`answerGuestQuery ${res.status}: ${body}`);
   }
 
   async sendMessage(options: SendMessageOptions): Promise<SentMessage> {
