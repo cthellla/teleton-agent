@@ -115,12 +115,12 @@ export class GrammyBotBridge implements ITelegramBridge {
   }
 
   /**
-   * Bot API 10.0: reply to a guest invocation. One-shot — the same guest_query_id
-   * cannot be answered twice. grammy 1.41 doesn't type the method, so we go raw.
+   * Bot API 10.0: reply to a guest invocation. One-shot — same guest_query_id can't
+   * be answered twice. The reply is delivered as an InlineQueryResultArticle whose
+   * input_message_content is the actual message; the article title isn't shown to
+   * the user. grammy 1.41 doesn't type the method, so we go raw.
    */
   async answerGuestQuery(guestQueryId: string, text: string): Promise<void> {
-    // Truncate raw text first (HTML escaping inflates length, but at the source we
-    // avoid mid-tag cuts that would 400 with "can't parse entities").
     const safeMd = sanitizeMarkdownForTelegram(text);
     const truncated =
       safeMd.length > TELEGRAM_MAX_MESSAGE_LENGTH
@@ -128,14 +128,23 @@ export class GrammyBotBridge implements ITelegramBridge {
         : safeMd;
     const html = markdownToTelegramHtml(truncated);
 
+    const buildResult = (parseMode: "HTML" | undefined): Record<string, unknown> => ({
+      type: "article",
+      id: guestQueryId.slice(0, 64),
+      title: "Reply",
+      input_message_content: {
+        message_text: parseMode === "HTML" ? html : truncated,
+        parse_mode: parseMode,
+      },
+    });
+
     const send = async (parseMode: "HTML" | undefined): Promise<Response> =>
       fetch(`https://api.telegram.org/bot${this.bot.token}/answerGuestQuery`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           guest_query_id: guestQueryId,
-          text: parseMode === "HTML" ? html : truncated,
-          parse_mode: parseMode,
+          result: buildResult(parseMode),
         }),
       });
 
