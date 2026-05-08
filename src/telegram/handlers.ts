@@ -762,9 +762,13 @@ export class MessageHandler {
         "[mode: guest_oneshot — single reply, no follow-ups, no telegram_send tools]";
 
       const response = await this.agent.processMessage({
-        // Fresh session per query — guest invocations are ad-hoc and shouldn't
-        // share a session that accumulates context across unrelated chats.
-        chatId: `guest:${queryId}`,
+        // Session keyed by (foreign chat, sender) so continuity is preserved
+        // within one chat with one user (bot can refer back to its previous
+        // guest reply), but isolated across different chats or different
+        // callers — no cross-pollution. Telegram only delivers messages where
+        // the bot was mentioned, so the session only sees the bot's own
+        // exchanges with this user in this chat.
+        chatId: `guest:${message.chatId}:${message.senderId}`,
         userMessage: `${userText}\n\n${guestTag}${injectedContext}`,
         userName,
         timestamp: message.timestamp.getTime(),
