@@ -1967,6 +1967,8 @@ export interface PluginMessageEvent {
   senderId: number;
   /** Sender's @username (without @) */
   senderUsername?: string;
+  /** Telegram client locale (ISO 639-1, e.g. "ru", "en"). Bot mode only. */
+  senderLangCode?: string;
   /** Message text */
   text: string;
   /** Whether this is a group chat */
