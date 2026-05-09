@@ -756,6 +756,17 @@ export class MessageHandler {
         config: this.fullConfig,
       };
 
+      // Telegram delivers the replied-to message inside guest_message; without
+      // pulling it out the bot has no idea what the user is referring to ("о чём
+      // эта статья?" with the URL sitting in the reply target).
+      let replyContext: { text: string; senderName?: string; isAgent?: boolean } | undefined;
+      if (message.replyToId && message._rawMessage) {
+        const raw = await this.bridge.fetchReplyContext(message._rawMessage);
+        if (raw?.text) {
+          replyContext = { text: raw.text, senderName: raw.senderName, isAgent: raw.isAgent };
+        }
+      }
+
       // Tag-style hint, same shape as [account: ...] — verbose directives sounded
       // like a turn the model should acknowledge, leaking planning narration into
       // the reply. SOUL.md rule 4 already bans preamble; this just adds the
@@ -781,6 +792,7 @@ export class MessageHandler {
         hasMedia: message.hasMedia,
         mediaType: message.mediaType,
         messageId: message.id,
+        replyContext,
       });
 
       // Streaming has no meaningful target in guest mode (bot isn't in the chat).
