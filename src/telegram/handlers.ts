@@ -156,6 +156,7 @@ export class MessageHandler {
     (e: PluginMessageEvent) => Promise<string | { context: string } | void>
   > = [];
   private recentMessageIds: Set<string> = new Set();
+  private botReplyTimestamps: Map<string, number> = new Map();
   private static readonly DEDUP_MAX_SIZE = 500;
 
   constructor(
@@ -221,12 +222,21 @@ export class MessageHandler {
     }
 
     if (message.isBot) {
-      return {
-        message,
-        isAdmin,
-        shouldRespond: false,
-        reason: "Sender is a bot",
-      };
+      if (!this.config.bot_to_bot) {
+        return {
+          message,
+          isAdmin,
+          shouldRespond: false,
+          reason: "Sender is a bot",
+        };
+      }
+      // Anti-loop: rate limit bot senders (5s cooldown)
+      const botKey = `bot_${message.senderId}`;
+      const lastReply = this.botReplyTimestamps.get(botKey) || 0;
+      if (Date.now() - lastReply < 5000) {
+        return { message, isAdmin, shouldRespond: false, reason: "Bot rate limited" };
+      }
+      this.botReplyTimestamps.set(botKey, Date.now());
     }
 
     if (!message.isGroup && !message.isChannel) {
