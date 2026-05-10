@@ -1097,6 +1097,7 @@ async function runInteractiveOnboarding(
       bot_token: botToken,
       bot_username: botUsername,
       stream_mode: "all",
+      bot_to_bot: false,
     },
     storage: {
       sessions_file: `${workspace.root}/sessions.json`,
@@ -1310,6 +1311,7 @@ async function runNonInteractiveOnboarding(
       bot_token: nonInteractiveMode === "bot" ? options.botToken : undefined,
       bot_username: undefined,
       stream_mode: "all",
+      bot_to_bot: false,
     },
     storage: {
       sessions_file: `${workspace.root}/sessions.json`,
