@@ -764,6 +764,7 @@ export class GrammyBotBridge implements ITelegramBridge {
       { command: "clear", description: "Clear conversation history" },
       { command: "ping", description: "Check if agent is responsive" },
       { command: "help", description: "Show available commands" },
+      { command: "tldr", description: "Summarize an article, repo, HN story or thread by URL" },
     ];
     try {
       await this.bot.api.setMyCommands(commands);

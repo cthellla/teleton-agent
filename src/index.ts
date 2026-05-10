@@ -1450,6 +1450,10 @@ ${blue}  ┌──────────────────────�
             });
             return;
           }
+        } else if (adminCmd.command === "tldr") {
+          // /tldr passes through to the agent so the model can pick up the matching skill
+          // Keep original text so agent sees "/tldr <url>" and can extract args
+          // Fall through to handleMessage below
         } else if (adminCmd.command === "task") {
           // /task passes through to the agent with task creation context
           const taskDescription = adminCmd.args.join(" ");
