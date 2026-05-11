@@ -1021,7 +1021,7 @@ ${blue}  ┌──────────────────────�
 
     // ── PaymentGate: pre-message filter ────────────────────────────
     // Runs BEFORE debouncer/agent. Returns true to block the message.
-    const FREE_LIMIT = parseInt(process.env.HN_FREE_LIMIT || "1");
+    const FREE_LIMIT = parseInt(process.env.HN_FREE_LIMIT || "3");
     const FREE_WINDOW_SEC = parseInt(process.env.HN_FREE_WINDOW_SEC || "86400");
     const adminIds = (process.env.ADMIN_IDS || "").split(",").map(Number).filter(Boolean);
     const miniAppUrl =
