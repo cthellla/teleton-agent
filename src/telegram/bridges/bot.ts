@@ -135,6 +135,9 @@ export class GrammyBotBridge implements ITelegramBridge {
       input_message_content: {
         message_text: parseMode === "HTML" ? html : truncated,
         parse_mode: parseMode,
+        // Disable webpage previews — some chats forbid them (CHAT_SEND_WEBPAGE_FORBIDDEN)
+        // and URLs in our text are kept for re-fetch / user navigation, not preview value.
+        link_preview_options: { is_disabled: true },
       },
     });
 

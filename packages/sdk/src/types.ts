@@ -1986,6 +1986,16 @@ export interface PluginMessageEvent {
    * (single-shot) — string returns from the hook are still honoured by the host.
    */
   isGuest?: boolean;
+  /**
+   * True if this message is addressed to the bot — direct @-mention, /command@bot,
+   * private chat, or reply to one of the bot's own messages. In groups, this is
+   * the same signal the host uses to decide whether to invoke the LLM, so plugins
+   * routing model/tier per sender should gate their work on this flag rather than
+   * `isGroup` alone.
+   */
+  mentionsMe?: boolean;
+  /** Whether this message is a reply to another message (any author). */
+  isReply?: boolean;
 }
 
 /** Event passed to plugin onCallbackQuery hooks */

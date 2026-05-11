@@ -369,6 +369,8 @@ export class MessageHandler {
         hasMedia: message.hasMedia,
         messageId: message.id,
         timestamp: message.timestamp,
+        mentionsMe: message.mentionsMe,
+        isReply: typeof message.replyToId === "number",
       };
       for (const hook of this.pluginMessageHooks) {
         try {
