@@ -44,6 +44,9 @@ export class GrammyBotBridge implements ITelegramBridge {
     | ((userId: number, payment: SuccessfulPayment) => void | Promise<void>)
     | undefined;
   private paymentCallbackHandler: ((ctx: Context) => void | Promise<void>) | undefined;
+  private preCheckoutHandler:
+    | ((userId: number, totalAmount: number, payload: string) => void | Promise<void>)
+    | undefined;
   private preMessageFilter:
     | ((
         userId: number,
@@ -621,12 +624,24 @@ export class GrammyBotBridge implements ITelegramBridge {
       }
     );
 
-    // Pre-checkout query — must respond within 10s, no async work
+    // Pre-checkout query — must respond within 10s. Answer first, then log.
     this.bot.on("pre_checkout_query", async (ctx) => {
       try {
         await ctx.answerPreCheckoutQuery(true);
       } catch (err) {
         log.error({ err }, "Failed to answer pre_checkout_query");
+      }
+      // Fire-and-forget logging — never block the 10s Telegram window on a DB write.
+      if (this.preCheckoutHandler) {
+        const q = ctx.preCheckoutQuery;
+        const userId = q?.from?.id;
+        const totalAmount = q?.total_amount ?? 0;
+        const payload = q?.invoice_payload ?? "";
+        if (userId) {
+          Promise.resolve(this.preCheckoutHandler(userId, totalAmount, payload)).catch((err) => {
+            log.error({ err }, "preCheckoutHandler failed");
+          });
+        }
       }
     });
 
@@ -723,6 +738,17 @@ export class GrammyBotBridge implements ITelegramBridge {
   /** Set handler for payment-related callback queries (e.g. buy_one_answer) */
   setPaymentCallbackHandler(handler: (ctx: Context) => void | Promise<void>): void {
     this.paymentCallbackHandler = handler;
+  }
+
+  /**
+   * Set handler for pre_checkout_query events. Fired AFTER answering Telegram —
+   * useful for logging that a user reached the Stars wallet confirmation step
+   * (distinguishes "abandoned at invoice" from "abandoned in Stars wallet").
+   */
+  setPreCheckoutHandler(
+    handler: (userId: number, totalAmount: number, payload: string) => void | Promise<void>
+  ): void {
+    this.preCheckoutHandler = handler;
   }
 
   /**

@@ -693,6 +693,31 @@ ${blue}  ┌──────────────────────�
       return invoiceLinks;
     };
 
+    // Pre-checkout logging — fired when user clicks "Pay" in the Stars wallet
+    // (AFTER they saw the invoice and tapped the actual confirm button). Logging
+    // this distinguishes "abandoned at invoice card" (sent, no pre_checkout)
+    // from "abandoned in Stars wallet" (pre_checkout, no paid).
+    bridge.setPreCheckoutHandler(async (userId, totalAmount, payload) => {
+      let db: Database.Database | null = null;
+      try {
+        const Database = (await import("better-sqlite3")).default;
+        db = new Database(PLUGIN_DB_PATH);
+        ensureMigration(db);
+        db.prepare(
+          "INSERT INTO invoice_events (user_id, chat_id, event, amount, created_at) VALUES (?, ?, 'pre_checkout', ?, ?)"
+        ).run(String(userId), String(userId), totalAmount, Math.floor(Date.now() / 1000));
+        log.info(`[stars] pre_checkout from ${userId}: ${totalAmount}★ payload=${payload}`);
+      } catch (err) {
+        log.error({ err }, "[stars] failed to log pre_checkout");
+      } finally {
+        try {
+          db?.close();
+        } catch {
+          /* */
+        }
+      }
+    });
+
     // Successful payment handler
     bridge.setPaymentHandler(async (userId, payment) => {
       let db: Database.Database | null = null;
