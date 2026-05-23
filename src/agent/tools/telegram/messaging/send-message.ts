@@ -21,10 +21,11 @@ interface SendMessageParams {
 export const telegramSendMessageTool: Tool = {
   name: "telegram_send_message",
   description:
-    "Send a text message to a Telegram chat. For custom keyboards use telegram_reply_keyboard; for media use telegram_send_photo/gif/sticker.",
+    "Send a text message to a Telegram chat. `chatId` is NOT limited to the current chat — it can target ANY chat: a numeric chat id, '@username' for a user/bot direct message, or '@channel_name' for a channel. Use this to initiate a DM to another bot (requires Bot-to-Bot Communication Mode enabled on both bots in BotFather; Telegram returns USER_BOT_TO_BOT_DISABLED if the recipient bot disabled it). For custom keyboards use telegram_reply_keyboard; for media use telegram_send_photo/gif/sticker.",
   parameters: Type.Object({
     chatId: Type.String({
-      description: "The chat ID to send the message to",
+      description:
+        "Target chat. Numeric id (e.g. '-1001234567890') for known chats, '@username' for a user/bot DM, '@channel_name' for a public channel. NOT restricted to the current chat — you can address any chat or @username.",
     }),
     text: Type.String({
       description: "The message text to send (max 4096 characters)",
