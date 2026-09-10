@@ -3,6 +3,7 @@ import type { ResponseAfterEvent, ResponseBeforeEvent } from "../sdk/hooks/types
 import { updateSession } from "../session/store.js";
 import { isBotBridge } from "../telegram/bridge-guards.js";
 import { createLogger } from "../utils/logger.js";
+import { RESPONSE_AFTER_TIMEOUT_MS } from "../constants/timeouts.js";
 import type { ChatResponse } from "./client.js";
 import { accumulateTokenUsage } from "./token-usage.js";
 import { deliveredTelegramText, sentSuccessfullyToChat } from "./telegram-send-state.js";
@@ -92,6 +93,7 @@ export async function finalizeAgentResponse(
     responseMetadata = responseBeforeEvent.metadata;
   }
 
+  let pendingResponseAfter: ResponseAfterEvent | null = null;
   if (hookRunner) {
     const responseAfterEvent: ResponseAfterEvent = {
       chatId,
@@ -100,13 +102,21 @@ export async function finalizeAgentResponse(
       text: content,
       durationMs: Date.now() - processStartTime,
       toolsUsed: totalToolCalls.map((call) => call.name),
+      // cacheRead/cacheWrite are fork-only but load-bearing: the hackernews plugin
+      // bills input as new + cacheWrite + cacheRead*discount, so dropping them
+      // systematically under-charges cached turns.
       tokenUsage:
-        accumulatedUsage.input > 0 || accumulatedUsage.output > 0
-          ? { input: accumulatedUsage.input, output: accumulatedUsage.output }
+        accumulatedUsage.input > 0 || accumulatedUsage.output > 0 || accumulatedUsage.cacheRead > 0
+          ? {
+              input: accumulatedUsage.input,
+              output: accumulatedUsage.output,
+              cacheRead: accumulatedUsage.cacheRead,
+              cacheWrite: accumulatedUsage.cacheWrite,
+            }
           : undefined,
       metadata: responseMetadata,
     };
-    await hookRunner.runObservingHook("response:after", responseAfterEvent);
+    pendingResponseAfter = responseAfterEvent;
   }
 
   if (wasStreamed && opts.streamToChat) {
@@ -120,6 +130,24 @@ export async function finalizeAgentResponse(
       } else {
         await bridge.finalizeDraft(opts.streamToChat.chatId, content);
       }
+    }
+  }
+
+  // Fork-only: response:after runs AFTER finalizeDraft so a plugin upsell lands
+  // below the answer, and is bounded — the hackernews plugin bills over HTTP to
+  // payment_api here, and a hung call would otherwise deadlock the chat queue.
+  if (hookRunner && pendingResponseAfter) {
+    try {
+      await Promise.race([
+        hookRunner.runObservingHook("response:after", pendingResponseAfter),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error("response:after timeout")), RESPONSE_AFTER_TIMEOUT_MS)
+        ),
+      ]);
+    } catch (hookErr) {
+      log.warn(
+        `response:after hook failed or timed out: ${hookErr instanceof Error ? hookErr.message : hookErr}`
+      );
     }
   }
 

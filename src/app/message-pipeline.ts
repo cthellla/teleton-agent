@@ -72,6 +72,9 @@ export class MessagePipeline {
       { debounceMs: this.deps.config.telegram.debounce_ms },
       (message) => {
         if (!message.isGroup) return false;
+        // Fork-only: synthetic replays after a Stars payment carry a negative id
+        // and must not sit in the debounce window — the user already paid.
+        if (message.id < 0) return false;
         if (message.text.startsWith("/")) {
           const adminCommand = this.deps.adminHandler.parseCommand(message.text);
           if (adminCommand && this.deps.adminHandler.isAdmin(message.senderId)) return false;
@@ -222,7 +225,12 @@ export class MessagePipeline {
 
       const adminCommand = this.deps.adminHandler.parseCommand(message.text);
       if (adminCommand && this.deps.adminHandler.isAdmin(message.senderId)) {
-        if (adminCommand.command === "boot") {
+        if (adminCommand.command === "start" || adminCommand.command === "tldr") {
+          // Fork-only: both fall through to the agent with their original text —
+          // /start carries the deep-link payload (/start story_<id>) and /tldr is
+          // resolved by the matching skill. Without this they hit the unknown-command
+          // branch below for admins only.
+        } else if (adminCommand.command === "boot") {
           const bootstrapContent = this.deps.adminHandler.getBootstrapContent();
           if (bootstrapContent) message.text = bootstrapContent;
           else {

@@ -29,7 +29,7 @@ import { sanitizeForContext } from "../utils/sanitize.js";
 import { getEffectiveApiKey, loadContextFromTranscript } from "./client.js";
 import type { UserHookEvaluator } from "./hooks/user-hook-evaluator.js";
 import { resolveModelTarget } from "./model-target.js";
-import { isTrivialMessage } from "./runtime-utils.js";
+import { isTrivialMessage, trimRagContext } from "./runtime-utils.js";
 import { computeRagEmbedding, selectTools } from "./tool-selector.js";
 import type { ToolRegistry } from "./tools/registry.js";
 import type { ProcessMessageOptions, TurnContextResult } from "./turn-types.js";
@@ -295,6 +295,14 @@ export async function prepareTurn(
 
     if (contextParts.length > 0) {
       relevantContext = contextParts.join("\n\n");
+      // Fork-only: cap retrieved context so RAG cannot crowd out the conversation.
+      const maxRagChars = deps.config.agent.max_rag_chars;
+      if (maxRagChars !== undefined && relevantContext.length > maxRagChars) {
+        log.info(
+          `RAG context trimmed: ${relevantContext.length} → ${maxRagChars} chars (max_rag_chars limit)`
+        );
+      }
+      relevantContext = trimRagContext(relevantContext, maxRagChars);
       log.debug(
         `🔍 Found ${dbContext.relevantKnowledge.length} knowledge chunks, ${dbContext.relevantFeed.length} feed messages`
       );
@@ -323,16 +331,22 @@ export async function prepareTurn(
     soul: deps.soul,
     userName,
     senderUsername,
+    // Fork-only: drives the per-user language hint.
+    senderLangCode: opts.senderLangCode,
     senderId: toolContext?.senderId,
     ownerName: deps.config.telegram.owner_name,
     ownerUsername: deps.config.telegram.owner_username,
     context: finalContext,
-    includeMemory: true,
-    includeStrategy: true,
+    // Fork-only: memory and strategy stay out of group chats (data isolation) —
+    // upstream made both unconditional.
+    includeMemory: !effectiveIsGroup,
+    includeStrategy: !effectiveIsGroup,
     memoryFlushWarning: needsMemoryFlush,
     isHeartbeat,
     agentModel: deps.config.agent.model,
     telegramMode: deps.config.telegram.mode,
+    // Fork-only: gates admin-scoped skills in the prompt.
+    isAdmin,
   });
 
   // Hook: prompt:after — observing, analytics on prompt size

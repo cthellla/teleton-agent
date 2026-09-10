@@ -7,19 +7,38 @@ import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("App");
 
+/**
+ * Fork-only: the return value of a plugin's onMessage is load-bearing.
+ * The hackernews plugin answers with `{ context }` (account tier, TON balance,
+ * language) that must be merged into the turn; a string is an immediate reply
+ * and `{ block: true }` stops processing. Upstream discards all three.
+ */
 export async function dispatchPluginMessage(
   modules: PluginModule[],
   event: PluginMessageEvent
-): Promise<void> {
+): Promise<string | { context: string } | { block: boolean } | void> {
+  let mergedContext = "";
   for (const module of modules) {
     const withHooks = module as PluginModuleWithHooks;
     if (!withHooks.onMessage) continue;
     try {
-      await withHooks.onMessage(event);
+      const result = await withHooks.onMessage(event);
+      // String reply — intercept immediately, no agent turn.
+      if (typeof result === "string") return result;
+      if (result && typeof result === "object") {
+        if ("block" in result && (result as { block: boolean }).block) {
+          return result as { block: boolean };
+        }
+        if ("context" in result) {
+          const ctx = (result as { context: string }).context;
+          if (ctx) mergedContext += (mergedContext ? "\n" : "") + ctx;
+        }
+      }
     } catch (error: unknown) {
       log.error(`❌ [${module.name}] onMessage error: ${getErrorMessage(error)}`);
     }
   }
+  if (mergedContext) return { context: mergedContext };
 }
 
 export async function dispatchPluginCallback(

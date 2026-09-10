@@ -1,16 +1,5 @@
-import Database from 'better-sqlite3';
 import { TupleItem, Cell, Address } from '@ton/core';
-
-/**
- * Teleton Plugin SDK — public type definitions.
- *
- * These interfaces define the contract between the core platform
- * and external plugins. Plugin authors use these types for
- * TypeScript autocompletion and type safety.
- *
- * @module @teleton-agent/sdk
- * @version 1.0.0
- */
+import Database from 'better-sqlite3';
 
 /** Transaction type from blockchain history */
 type TransactionType = "ton_received" | "ton_sent" | "jetton_received" | "jetton_sent" | "nft_received" | "nft_sent" | "gas_refund" | "bounce" | "contract_call" | "multi_send";
@@ -32,7 +21,7 @@ interface TonPrice {
 }
 /** Result of a TON send operation */
 interface TonSendResult {
-    /** Transaction reference (format: seqno_timestamp_amount) */
+    /** On-chain transaction hash (hex), verifiable on TON explorers */
     txRef: string;
     /** Amount sent in TON */
     amount: number;
@@ -114,6 +103,8 @@ interface JettonSendResult {
     success: boolean;
     /** Wallet sequence number used */
     seqno: number;
+    /** On-chain transaction hash (hex), verifiable on TON explorers */
+    txRef?: string;
 }
 /**
  * Signed transfer ready for off-chain transmission (e.g. x402 payment).
@@ -156,6 +147,36 @@ interface TonSendOptions {
 interface TonTransferResult {
     hash: string;
     seqno: number;
+}
+/** Core-managed Highload Wallet v3 state. */
+interface HighloadWalletInfo {
+    address: string;
+    rawAddress: string;
+    balance: string;
+    balanceNano: string;
+    deployed: boolean;
+    currentQueryId: number;
+    hasNext: boolean;
+    timeout?: number;
+    lastCleaned?: number;
+    subwalletId?: number;
+}
+/** Result of a Highload Wallet v3 batch submission. */
+interface HighloadBatchResult {
+    address: string;
+    /** Query ID submitted on-chain. */
+    queryId: number;
+    /** Persisted query ID reserved for the next batch. */
+    nextQueryId: number;
+    recipientCount: number;
+}
+/** Highload Wallet v3 operations with signing and query IDs owned by Teleton core. */
+interface HighloadSDK {
+    getInfo(): Promise<HighloadWalletInfo>;
+    fund(amount: number): Promise<TonTransferResult>;
+    sendMessages(messages: TonMessage[], opts?: {
+        valuePerBatch?: number;
+    }): Promise<HighloadBatchResult>;
 }
 /** Result of runGetMethod */
 interface GetMethodResult {
@@ -309,6 +330,8 @@ interface DexSwapResult {
     minOutput: string;
     /** Slippage used */
     slippage: string;
+    /** On-chain transaction hash (hex), verifiable on TON explorers */
+    txRef?: string;
 }
 /** DEX sub-namespace on TonSDK */
 interface DexSDK {
@@ -409,131 +432,6 @@ interface DnsSDK {
     /** Set or update the TON Site (ADNL) record for a .ton domain you own */
     setSiteRecord(domain: string, adnlAddress: string): Promise<void>;
 }
-/** Dialog/conversation from getDialogs */
-interface Dialog {
-    /** Chat ID */
-    id: string | null;
-    /** Chat title or name */
-    title: string;
-    /** Chat type */
-    type: "dm" | "group" | "channel";
-    /** Number of unread messages */
-    unreadCount: number;
-    /** Number of unread mentions */
-    unreadMentionsCount: number;
-    /** Whether the chat is pinned */
-    isPinned: boolean;
-    /** Whether the chat is archived */
-    isArchived: boolean;
-    /** Last message date (unix timestamp) */
-    lastMessageDate: number | null;
-    /** Last message preview (truncated) */
-    lastMessage: string | null;
-}
-/** Stars transaction history entry */
-interface StarsTransaction {
-    /** Transaction ID */
-    id: string;
-    /** Amount (positive = received, negative = spent) */
-    amount: number;
-    /** Transaction date (unix timestamp) */
-    date: number;
-    /** Peer info */
-    peer?: string;
-    /** Description */
-    description?: string;
-}
-/** Result of transferring a collectible */
-interface TransferResult {
-    /** Message ID of the transferred gift */
-    msgId: number;
-    /** Recipient identifier */
-    transferredTo: string;
-    /** Whether transfer cost Stars */
-    paidTransfer: boolean;
-    /** Stars spent (if paid transfer) */
-    starsSpent?: string;
-}
-/** Fragment collectible information */
-interface CollectibleInfo {
-    /** Collectible type */
-    type: "username" | "phone";
-    /** The username or phone number */
-    value: string;
-    /** Purchase date (ISO 8601) */
-    purchaseDate: string;
-    /** Fiat currency */
-    currency: string;
-    /** Fiat amount */
-    amount?: string;
-    /** Crypto currency (e.g. "TON") */
-    cryptoCurrency?: string;
-    /** Crypto amount */
-    cryptoAmount?: string;
-    /** Fragment URL */
-    url?: string;
-}
-/** Unique NFT gift details */
-interface UniqueGift {
-    /** Gift ID */
-    id: string;
-    /** Collection gift ID */
-    giftId: string;
-    /** URL slug */
-    slug: string;
-    /** Gift title */
-    title: string;
-    /** Number in collection */
-    num: number;
-    /** Owner info */
-    owner: {
-        id?: string;
-        name?: string;
-        address?: string;
-        username?: string;
-    };
-    /** TON address of the gift NFT */
-    giftAddress?: string;
-    /** NFT attributes */
-    attributes: Array<{
-        type: string;
-        name: string;
-        rarityPercent?: number;
-    }>;
-    /** Availability info */
-    availability?: {
-        total: number;
-        remaining: number;
-    };
-    /** Link to NFT page */
-    nftLink: string;
-}
-/** Gift value/appraisal info */
-interface GiftValue {
-    /** NFT slug */
-    slug: string;
-    /** Initial sale date (ISO 8601) */
-    initialSaleDate?: string;
-    /** Initial sale price in Stars */
-    initialSaleStars?: string;
-    /** Last sale date (ISO 8601) */
-    lastSaleDate?: string;
-    /** Last sale price */
-    lastSalePrice?: string;
-    /** Floor price */
-    floorPrice?: string;
-    /** Average price */
-    averagePrice?: string;
-    /** Number listed */
-    listedCount?: number;
-    /** Currency */
-    currency?: string;
-}
-/** Options for sendGiftOffer */
-interface GiftOfferOptions {
-    /** Offer validity in seconds (default: 86400 = 24h, min: 21600 = 6h) */
-    duration?: number;
-}
 /** Parameters for verifying a TON payment */
 interface SDKVerifyPaymentParams {
     /** Expected payment amount in TON */
@@ -561,164 +459,6 @@ interface SDKPaymentVerification {
     secondsAgo?: number;
     /** Error message if verification failed */
     error?: string;
-}
-/** A single inline keyboard button. Exactly one of callback_data, url, or web_app must be set. */
-interface InlineButton {
-    /** Button label text */
-    text: string;
-    /** Callback data sent when button is pressed */
-    callback_data?: string;
-    /** URL to open when button is pressed */
-    url?: string;
-    /** Mini App to open when button is pressed */
-    web_app?: {
-        url: string;
-    };
-}
-/** Options for sending a message */
-interface SendMessageOptions {
-    /** Message ID to reply to */
-    replyToId?: number;
-    /** Inline keyboard buttons (2D array: rows of buttons) */
-    inlineKeyboard?: InlineButton[][];
-}
-/** Options for editing a message */
-interface EditMessageOptions {
-    /** Updated inline keyboard (omit to keep existing) */
-    inlineKeyboard?: InlineButton[][];
-}
-/** Result of sending a dice animation */
-interface DiceResult {
-    /** The dice value (1-6 for dice, 1-64 for slots, etc.) */
-    value: number;
-    /** Message ID of the dice message */
-    messageId: number;
-}
-/** User info returned by getMe */
-interface TelegramUser {
-    /** Telegram user ID */
-    id: number;
-    /** Username without @ (may be undefined) */
-    username?: string;
-    /** First name */
-    firstName?: string;
-    /** Whether the user is a bot */
-    isBot: boolean;
-}
-/** Simplified message from getMessages */
-interface SimpleMessage {
-    /** Message ID */
-    id: number;
-    /** Message text */
-    text: string;
-    /** Sender user ID */
-    senderId: number;
-    /** Sender username */
-    senderUsername?: string;
-    /** Message timestamp */
-    timestamp: Date;
-}
-/** Chat/group information returned by getChatInfo */
-interface ChatInfo {
-    /** Chat ID as string */
-    id: string;
-    /** Chat title (or user's first name for private chats) */
-    title: string;
-    /** Chat type */
-    type: "private" | "group" | "supergroup" | "channel";
-    /** Number of members (groups/channels only) */
-    membersCount?: number;
-    /** Chat username without @ (if public) */
-    username?: string;
-    /** Chat/channel description/bio */
-    description?: string;
-}
-/** Detailed user information returned by getUserInfo */
-interface UserInfo {
-    /** Telegram user ID */
-    id: number;
-    /** First name */
-    firstName: string;
-    /** Last name */
-    lastName?: string;
-    /** Username without @ */
-    username?: string;
-    /** Whether the user is a bot */
-    isBot: boolean;
-    /** Custom rank/title (Layer 223+), null if not set */
-    rank?: string | null;
-}
-/** Resolved peer from username lookup */
-interface ResolvedPeer {
-    /** Entity ID */
-    id: number;
-    /** Entity type */
-    type: "user" | "chat" | "channel";
-    /** Username if available */
-    username?: string;
-    /** Title (for groups/channels) or first name (for users) */
-    title?: string;
-}
-/** Options for sending media (photo, video, file, etc.) */
-interface MediaSendOptions {
-    /** Media caption text */
-    caption?: string;
-    /** Message ID to reply to */
-    replyToId?: number;
-    /** Inline keyboard buttons */
-    inlineKeyboard?: InlineButton[][];
-    /** Duration in seconds (for video/voice) */
-    duration?: number;
-    /** Width in pixels (for video) */
-    width?: number;
-    /** Height in pixels (for video) */
-    height?: number;
-}
-/** Options for creating a poll */
-interface PollOptions {
-    /** Whether voters are anonymous (default: true) */
-    isAnonymous?: boolean;
-    /** Allow multiple answers (default: false) */
-    multipleChoice?: boolean;
-}
-/** Star gift from catalog */
-interface StarGift {
-    /** Gift ID */
-    id: string;
-    /** Cost in Telegram Stars */
-    starsAmount: number;
-    /** Remaining available (limited gifts) */
-    availableAmount?: number;
-    /** Total supply (limited gifts) */
-    totalAmount?: number;
-}
-/** Received star gift */
-interface ReceivedGift {
-    /** Gift ID */
-    id: string;
-    /** Sender user ID */
-    fromId?: number;
-    /** Unix timestamp when received */
-    date: number;
-    /** Stars value */
-    starsAmount: number;
-    /** Whether saved to profile */
-    saved: boolean;
-    /** Associated message ID */
-    messageId?: number;
-}
-/** Context passed to plugin start() hook */
-interface StartContext {
-    /** Telegram bridge for advanced operations */
-    bridge: unknown;
-    /** Plugin's isolated SQLite database (null if unavailable) */
-    db: unknown;
-    /** Sanitized application config (no API keys) */
-    config: Record<string, unknown>;
-    /** Plugin-specific config from config.yaml */
-    pluginConfig: Record<string, unknown>;
-    /** Prefixed logger */
-    log: PluginLogger;
 }
 /**
  * TON blockchain operations.
@@ -971,6 +711,282 @@ interface TonSDK {
     readonly dex: DexSDK;
     /** DNS domain management (.ton domains) */
     readonly dns: DnsSDK;
+    /** Highload Wallet v3 batch transfers */
+    readonly highload: HighloadSDK;
+}
+
+/** Dialog/conversation from getDialogs */
+interface Dialog {
+    /** Chat ID */
+    id: string | null;
+    /** Chat title or name */
+    title: string;
+    /** Chat type */
+    type: "dm" | "group" | "channel";
+    /** Number of unread messages */
+    unreadCount: number;
+    /** Number of unread mentions */
+    unreadMentionsCount: number;
+    /** Whether the chat is pinned */
+    isPinned: boolean;
+    /** Whether the chat is archived */
+    isArchived: boolean;
+    /** Last message date (unix timestamp) */
+    lastMessageDate: number | null;
+    /** Last message preview (truncated) */
+    lastMessage: string | null;
+}
+/** Stars transaction history entry */
+interface StarsTransaction {
+    /** Transaction ID */
+    id: string;
+    /** Amount (positive = received, negative = spent) */
+    amount: number;
+    /** Transaction date (unix timestamp) */
+    date: number;
+    /** Peer info */
+    peer?: string;
+    /** Description */
+    description?: string;
+}
+/** Result of transferring a collectible */
+interface TransferResult {
+    /** Message ID of the transferred gift */
+    msgId: number;
+    /** Recipient identifier */
+    transferredTo: string;
+    /** Whether transfer cost Stars */
+    paidTransfer: boolean;
+    /** Stars spent (if paid transfer) */
+    starsSpent?: string;
+}
+/** Fragment collectible information */
+interface CollectibleInfo {
+    /** Collectible type */
+    type: "username" | "phone";
+    /** The username or phone number */
+    value: string;
+    /** Purchase date (ISO 8601) */
+    purchaseDate: string;
+    /** Fiat currency */
+    currency: string;
+    /** Fiat amount */
+    amount?: string;
+    /** Crypto currency (e.g. "TON") */
+    cryptoCurrency?: string;
+    /** Crypto amount */
+    cryptoAmount?: string;
+    /** Fragment URL */
+    url?: string;
+}
+/** Unique NFT gift details */
+interface UniqueGift {
+    /** Gift ID */
+    id: string;
+    /** Collection gift ID */
+    giftId: string;
+    /** URL slug */
+    slug: string;
+    /** Gift title */
+    title: string;
+    /** Number in collection */
+    num: number;
+    /** Owner info */
+    owner: {
+        id?: string;
+        name?: string;
+        address?: string;
+        username?: string;
+    };
+    /** TON address of the gift NFT */
+    giftAddress?: string;
+    /** NFT attributes */
+    attributes: Array<{
+        type: string;
+        name: string;
+        rarityPercent?: number;
+    }>;
+    /** Availability info */
+    availability?: {
+        total: number;
+        remaining: number;
+    };
+    /** Link to NFT page */
+    nftLink: string;
+}
+/** Gift value/appraisal info */
+interface GiftValue {
+    /** NFT slug */
+    slug: string;
+    /** Initial sale date (ISO 8601) */
+    initialSaleDate?: string;
+    /** Initial sale price in Stars */
+    initialSaleStars?: string;
+    /** Last sale date (ISO 8601) */
+    lastSaleDate?: string;
+    /** Last sale price */
+    lastSalePrice?: string;
+    /** Floor price */
+    floorPrice?: string;
+    /** Average price */
+    averagePrice?: string;
+    /** Number listed */
+    listedCount?: number;
+    /** Currency */
+    currency?: string;
+}
+/** Options for sendGiftOffer */
+interface GiftOfferOptions {
+    /** Offer validity in seconds (default: 86400 = 24h, min: 21600 = 6h) */
+    duration?: number;
+}
+/** A single inline keyboard button */
+interface InlineButton {
+    /** Button label text */
+    text: string;
+    /** Callback data sent when button is pressed */
+    callback_data: string;
+}
+/** Options for sending a message */
+interface SendMessageOptions {
+    /** Message ID to reply to */
+    replyToId?: number;
+    /** Inline keyboard buttons (2D array: rows of buttons) */
+    inlineKeyboard?: InlineButton[][];
+}
+/** Options for editing a message */
+interface EditMessageOptions {
+    /** Updated inline keyboard (omit to keep existing) */
+    inlineKeyboard?: InlineButton[][];
+}
+/** Result of sending a dice animation */
+interface DiceResult {
+    /** The dice value (1-6 for dice, 1-64 for slots, etc.) */
+    value: number;
+    /** Message ID of the dice message */
+    messageId: number;
+}
+/** User info returned by getMe */
+interface TelegramUser {
+    /** Telegram user ID */
+    id: number;
+    /** Username without @ (may be undefined) */
+    username?: string;
+    /** First name */
+    firstName?: string;
+    /** Whether the user is a bot */
+    isBot: boolean;
+}
+/** Simplified message from getMessages */
+interface SimpleMessage {
+    /** Message ID */
+    id: number;
+    /** Message text */
+    text: string;
+    /** Sender user ID */
+    senderId: number;
+    /** Sender username */
+    senderUsername?: string;
+    /** Message timestamp */
+    timestamp: Date;
+}
+/** Chat/group information returned by getChatInfo */
+interface ChatInfo {
+    /** Chat ID as string */
+    id: string;
+    /** Chat title (or user's first name for private chats) */
+    title: string;
+    /** Chat type */
+    type: "private" | "group" | "supergroup" | "channel";
+    /** Number of members (groups/channels only) */
+    membersCount?: number;
+    /** Chat username without @ (if public) */
+    username?: string;
+    /** Chat/channel description/bio */
+    description?: string;
+}
+/** Detailed user information returned by getUserInfo */
+interface UserInfo {
+    /** Telegram user ID */
+    id: number;
+    /** First name */
+    firstName: string;
+    /** Last name */
+    lastName?: string;
+    /** Username without @ */
+    username?: string;
+    /** Whether the user is a bot */
+    isBot: boolean;
+    /** Custom rank/title (Layer 223+), null if not set */
+    rank?: string | null;
+}
+/** Resolved peer from username lookup */
+interface ResolvedPeer {
+    /** Entity ID */
+    id: number;
+    /** Entity type */
+    type: "user" | "chat" | "channel";
+    /** Username if available */
+    username?: string;
+    /** Title (for groups/channels) or first name (for users) */
+    title?: string;
+}
+/** Options for sending media (photo, video, file, etc.) */
+interface MediaSendOptions {
+    /** Media caption text */
+    caption?: string;
+    /** Message ID to reply to */
+    replyToId?: number;
+    /** Inline keyboard buttons */
+    inlineKeyboard?: InlineButton[][];
+    /** Duration in seconds (for video/voice) */
+    duration?: number;
+    /** Width in pixels (for video) */
+    width?: number;
+    /** Height in pixels (for video) */
+    height?: number;
+}
+/** Options for creating a poll */
+interface PollOptions {
+    /** Whether voters are anonymous (default: true) */
+    isAnonymous?: boolean;
+    /** Allow multiple answers (default: false) */
+    multipleChoice?: boolean;
+}
+/** Star gift from catalog */
+interface StarGift {
+    /** Gift ID */
+    id: string;
+    /** Cost in Telegram Stars */
+    starsAmount: number;
+    /** Remaining available (limited gifts) */
+    availableAmount?: number;
+    /** Total supply (limited gifts) */
+    totalAmount?: number;
+}
+/** Received star gift */
+interface ReceivedGift {
+    /** Gift ID */
+    id: string;
+    /** Sender user ID */
+    fromId?: number;
+    /** Unix timestamp when received */
+    date: number;
+    /** Stars value */
+    starsAmount: number;
+    /** Whether saved to profile */
+    saved: boolean;
+    /** Associated message ID */
+    messageId?: number;
+}
+/** Metadata returned after sending a result from a third-party inline bot. */
+interface InlineBotResult {
+    query: string;
+    sentIndex: number;
+    totalResults: number;
+    title: string | null;
+    description: string | null;
+    type: string | null;
 }
 /**
  * Telegram messaging and user operations.
@@ -1041,46 +1057,33 @@ interface TelegramSDK {
      */
     getMessages(chatId: string, limit?: number): Promise<SimpleMessage[]>;
     /**
-     * Get a specific message by its ID.
-     * Requires user mode.
+     * Query a third-party inline bot and send one of its results to a chat.
+     * Available in Telegram user mode only.
+     *
+     * @param chatId — Destination chat ID
+     * @param botUsername — Inline bot username, with or without a leading @
+     * @param query — Inline query text
+     * @param index — Zero-based result index (default: 0, max: 49)
+     * @throws {PluginSDKError} NOT_AVAILABLE, BRIDGE_NOT_CONNECTED, OPERATION_FAILED
+     */
+    sendInlineBotResult(chatId: string, botUsername: string, query: string, index?: number): Promise<InlineBotResult>;
+    /**
+     * Get bot's own user info.
+     * @returns Own user info, or null if not connected.
+     */
+    /**
+     * Get a specific message by its ID (fork-only).
      *
      * @param chatId — Chat/channel ID or username (e.g. "@channel" or "-100xxx")
      * @param messageId — Numeric message ID
      * @returns The message, or null if not found.
      */
     getMessageById(chatId: string, messageId: number): Promise<SimpleMessage | null>;
-    /**
-     * Get bot's own user info.
-     * @returns Own user info, or null if not connected.
-     */
     getMe(): TelegramUser | null;
     /**
      * Check if the Telegram bridge is connected and ready.
      */
     isAvailable(): boolean;
-    /**
-     * Get the raw GramJS TelegramClient for advanced MTProto operations.
-     *
-     * Use this when the SDK methods don't cover your use case
-     * (e.g., inline bots, voice transcription, WebApp auth).
-     *
-     * The returned object is a `TelegramClient` from the `telegram` package.
-     * Cast it to the appropriate type in your plugin.
-     *
-     * @returns Raw GramJS client, or null if bridge not connected.
-     *
-     * @example
-     * ```typescript
-     * const client = sdk.telegram.getRawClient();
-     * if (!client) return { success: false, error: "Not connected" };
-     *
-     * const { Api } = require("telegram");
-     * const results = await client.invoke(
-     *   new Api.messages.GetInlineBotResults({ bot: "@pic", query: "cat", peer: chatId })
-     * );
-     * ```
-     */
-    getRawClient(): unknown | null;
     /**
      * Delete a message.
      *
@@ -1433,6 +1436,7 @@ interface TelegramSDK {
      */
     sendGiftOffer(userId: number | string, giftSlug: string, price: number, opts?: GiftOfferOptions): Promise<void>;
 }
+
 /**
  * Prefixed logger for plugin output.
  * All methods prepend the plugin name automatically.
@@ -1447,20 +1451,21 @@ interface PluginLogger {
     /** Log debug message (only visible when DEBUG or VERBOSE env vars are set) */
     debug(...args: unknown[]): void;
 }
+
 /** Manifest secret declaration */
 interface SecretDeclaration {
     /** Whether this secret is required for the plugin to function */
     required: boolean;
     /** Human-readable description shown when prompting admin */
     description: string;
-    /** Environment variable name (e.g. "SWIFTGIFTS_API_KEY") */
+    /** Namespaced override (must start with TELETON_PLUGIN_PLUGIN_NAME_) */
     env?: string;
 }
 /**
  * Secure access to plugin secrets (API keys, tokens, credentials).
  *
  * Resolution order:
- * 1. Environment variable (PLUGINNAME_KEY)
+ * 1. Declared environment variable override, or TELETON_PLUGIN_PLUGINNAME_KEY
  * 2. Secrets store (set via /plugin set command)
  * 3. pluginConfig from config.yaml
  *
@@ -1526,29 +1531,6 @@ interface StorageSDK {
     has(key: string): boolean;
     /** Delete all keys in this plugin's storage. */
     clear(): void;
-}
-/** Options for registering a cron job */
-interface CronJobOptions {
-    /** Interval in milliseconds (minimum 1000ms) */
-    every: number;
-    /** Fire immediately on start if a run was missed while offline (default: false) */
-    runMissed?: boolean;
-}
-/** Cron job state (read-only snapshot) */
-interface CronJob {
-    id: string;
-    intervalMs: number;
-    runMissed: boolean;
-    lastRunAt: number | null;
-    nextRunAt: number | null;
-    running: boolean;
-}
-/** Interval-based job scheduler for plugins. Persists lastRunAt in SQLite. */
-interface CronSDK {
-    register(id: string, opts: CronJobOptions, callback: () => Promise<void>): void;
-    unregister(id: string): boolean;
-    list(): CronJob[];
-    get(id: string): CronJob | undefined;
 }
 /** Event for tool:before hook — mutable params, block, blockReason */
 interface BeforeToolCallEvent {
@@ -1641,12 +1623,13 @@ interface ResponseAfterEvent {
     readonly durationMs: number;
     /** List of tool names called during this response */
     readonly toolsUsed: string[];
-    /** Token usage for this response (accumulated across all agentic iterations) */
+    /** Token usage for this response. cacheRead/cacheWrite are fork-only and are
+     * what the hackernews plugin bills on — dropping them under-charges cached turns. */
     readonly tokenUsage?: {
         input: number;
         output: number;
-        cacheRead: number;
-        cacheWrite: number;
+        cacheRead?: number;
+        cacheWrite?: number;
     };
     /** Metadata passed from response:before */
     readonly metadata: Record<string, unknown>;
@@ -1703,7 +1686,11 @@ interface AgentStopEvent {
     readonly messagesProcessed: number;
     readonly timestamp: number;
 }
-/** Maps hook names to their handler signatures */
+/** Hook names supported by the Teleton plugin runtime. */
+declare const PLUGIN_HOOK_NAMES: readonly ["tool:before", "tool:after", "tool:error", "prompt:before", "prompt:after", "session:start", "session:end", "message:receive", "response:before", "response:after", "response:error", "agent:start", "agent:stop"];
+/** Available hook names. */
+type HookName = (typeof PLUGIN_HOOK_NAMES)[number];
+/** Maps hook names to their handler signatures. */
 interface HookHandlerMap {
     "tool:before": (event: BeforeToolCallEvent) => void | Promise<void>;
     "tool:after": (event: AfterToolCallEvent) => void | Promise<void>;
@@ -1719,8 +1706,6 @@ interface HookHandlerMap {
     "agent:start": (event: AgentStartEvent) => void | Promise<void>;
     "agent:stop": (event: AgentStopEvent) => void | Promise<void>;
 }
-/** Available hook names */
-type HookName = keyof HookHandlerMap;
 /** Event passed to plugin onMessage hooks */
 interface PluginMessageEvent {
     /** Telegram chat ID */
@@ -1729,8 +1714,14 @@ interface PluginMessageEvent {
     senderId: number;
     /** Sender's @username (without @) */
     senderUsername?: string;
-    /** Telegram client locale (ISO 639-1, e.g. "ru", "en"). Bot mode only. */
+    /** Fork-only: Telegram language_code of the sender. */
     senderLangCode?: string;
+    /** Fork-only: whether the message mentions the bot (group gating). */
+    mentionsMe?: boolean;
+    /** Fork-only: whether this came in through guest mode. */
+    isGuest?: boolean;
+    /** Fork-only: whether the message is a reply to another message. */
+    isReply?: boolean;
     /** Message text */
     text: string;
     /** Whether this is a group chat */
@@ -1741,23 +1732,6 @@ interface PluginMessageEvent {
     messageId: number;
     /** Message timestamp */
     timestamp: Date;
-    /**
-     * Bot API 10.0 Guest Mode invocation: bot was @-mentioned in a chat it isn't a member of.
-     * Plugins should skip usage tracking / paywall side-effects when true and may only
-     * influence model selection or inject context. Reply goes through answerGuestQuery
-     * (single-shot) — string returns from the hook are still honoured by the host.
-     */
-    isGuest?: boolean;
-    /**
-     * True if this message is addressed to the bot — direct @-mention, /command@bot,
-     * private chat, or reply to one of the bot's own messages. In groups, this is
-     * the same signal the host uses to decide whether to invoke the LLM, so plugins
-     * routing model/tier per sender should gate their work on this flag rather than
-     * `isGroup` alone.
-     */
-    mentionsMe?: boolean;
-    /** Whether this message is a reply to another message (any author). */
-    isReply?: boolean;
 }
 /** Event passed to plugin onCallbackQuery hooks */
 interface PluginCallbackEvent {
@@ -1776,10 +1750,14 @@ interface PluginCallbackEvent {
     /** Answer the callback query (shows toast or alert to user) */
     answer: (text?: string, alert?: boolean) => Promise<void>;
 }
-/** Tool visibility scope for context-based filtering */
-type ToolScope = "always" | "dm-only" | "group-only" | "admin-only";
-/** Tool category for observation masking behavior */
-type ToolCategory = "data-bearing" | "action";
+/** Tool visibility scopes supported by the runtime. */
+declare const TOOL_SCOPES: readonly ["open", "always", "dm-only", "group-only", "admin-only", "allowlist", "disabled"];
+/** Tool visibility scope for context-based filtering. */
+type ToolScope = (typeof TOOL_SCOPES)[number];
+/** Tool categories supported by the runtime. */
+declare const TOOL_CATEGORIES: readonly ["data-bearing", "action"];
+/** Tool category for observation masking behavior. */
+type ToolCategory = (typeof TOOL_CATEGORIES)[number];
 /**
  * Context passed to plugin tool executors at runtime.
  * Contains information about the current chat, sender, and services.
@@ -1791,10 +1769,8 @@ interface PluginToolContext {
     senderId: number;
     /** Whether this is a group chat (vs DM) */
     isGroup: boolean;
-    /** TelegramBridge instance for Telegram operations */
-    bridge: unknown;
-    /** Plugin's isolated SQLite database */
-    db: unknown;
+    /** Plugin's isolated SQLite database. */
+    db: Database.Database | null;
     /** Sanitized bot config (no API keys) */
     config?: Record<string, unknown>;
 }
@@ -1813,7 +1789,7 @@ interface ToolResult {
  * This is the format plugins use to define their tools.
  * The core platform converts these into full Tool definitions.
  */
-interface SimpleToolDef {
+interface SimpleToolDef<TParams extends Record<string, unknown> = Record<string, unknown>> {
     /** Unique tool name (e.g. "casino_spin") */
     name: string;
     /** Human-readable description for the LLM */
@@ -1821,11 +1797,13 @@ interface SimpleToolDef {
     /** JSON Schema for parameters (defaults to empty object) */
     parameters?: Record<string, unknown>;
     /** Tool executor function */
-    execute: (params: Record<string, unknown>, context: PluginToolContext) => Promise<ToolResult>;
+    execute: (params: TParams, context: PluginToolContext) => Promise<ToolResult>;
     /** Visibility scope (default: "always") */
     scope?: ToolScope;
     /** Tool category for masking behavior */
     category?: ToolCategory;
+    /** @deprecated Retained for manifest compatibility; ignored by the runtime. */
+    requiresApproval?: boolean;
 }
 /** Button style for colored inline keyboards (GramJS Layer 222) */
 type ButtonStyle = "success" | "danger" | "primary";
@@ -1977,7 +1955,7 @@ interface PluginManifest {
     dependencies?: string[];
     /** Default plugin config (merged with config.yaml plugins section) */
     defaultConfig?: Record<string, unknown>;
-    /** Required SDK version range (e.g. ">=1.0.0", "^1.0.0") */
+    /** Required SDK version range (e.g. ">=2.0.0", "^2.0.0") */
     sdkVersion?: string;
     /**
      * Secrets required by this plugin (API keys, tokens, etc.)
@@ -1996,6 +1974,17 @@ interface PluginManifest {
     secrets?: Record<string, SecretDeclaration>;
     /** Bot capabilities (inline mode, callbacks) */
     bot?: BotManifest;
+    /** Agent lifecycle hooks this plugin is allowed to register. */
+    hooks?: PluginHookDeclaration[];
+}
+/** Hook declaration in a plugin manifest. */
+interface PluginHookDeclaration {
+    /** Hook name supported by the current SDK. */
+    name: HookName;
+    /** Per-hook execution priority, restricted to -1000..1000. */
+    priority?: number;
+    /** Human-readable purpose of the hook. */
+    description?: string;
 }
 /**
  * The complete Plugin SDK passed to plugins via `tools(sdk)`.
@@ -2018,14 +2007,37 @@ interface PluginManifest {
  * }];
  * ```
  */
+/** Options for registering a cron job (fork-only). */
+interface CronJobOptions {
+    /** Interval in milliseconds (minimum 1000ms) */
+    every: number;
+    /** Fire immediately on start if a run was missed while offline (default: false) */
+    runMissed?: boolean;
+}
+/** A registered cron job's observable state (fork-only). */
+interface CronJob {
+    id: string;
+    intervalMs: number;
+    runMissed: boolean;
+    lastRunAt: number | null;
+    nextRunAt: number | null;
+    running: boolean;
+}
+/** Interval-based job scheduler exposed to plugins as `sdk.cron` (fork-only). */
+interface CronSDK {
+    register(id: string, opts: CronJobOptions, callback: () => Promise<void>): void;
+    unregister(id: string): boolean;
+    list(): CronJob[];
+    get(id: string): CronJob | undefined;
+}
 interface PluginSDK {
-    /** SDK version (semver, e.g. "1.0.0") */
+    /** SDK version (semver, e.g. "2.0.0") */
     readonly version: string;
     /** TON blockchain operations */
     readonly ton: TonSDK;
     /** Telegram messaging and user operations */
     readonly telegram: TelegramSDK;
-    /** Plugin's isolated SQLite database (null if no migrate() exported) */
+    /** Plugin's isolated SQLite database (null only if DB initialization failed). */
     readonly db: Database.Database | null;
     /** Sanitized application config (no API keys or secrets) */
     readonly config: Record<string, unknown>;
@@ -2033,24 +2045,37 @@ interface PluginSDK {
     readonly pluginConfig: Record<string, unknown>;
     /** Secure access to plugin secrets (API keys, tokens) */
     readonly secrets: SecretsSDK;
-    /** Simple key-value storage (null if no DB — use migrate() or storage auto-creates _kv table) */
+    /** Simple key-value storage (null only if DB initialization failed). */
     readonly storage: StorageSDK | null;
-    /** Interval-based job scheduler (null if no DB) */
-    readonly cron: CronSDK | null;
     /** Prefixed logger */
     readonly log: PluginLogger;
     /** Bot inline mode SDK (null if bot not available or plugin has no bot manifest) */
     readonly bot: BotSDK | null;
-    /** Switch the LLM model at runtime (takes effect on next processMessage). */
+    /** Interval-based job scheduler (null if no DB). Fork-only. */
+    readonly cron: CronSDK | null;
+    /** Switch the LLM model at runtime (takes effect on next processMessage). Fork-only. */
     setModel(modelId: string): void;
     /** Register a typed hook handler for agent lifecycle events. */
     on<K extends HookName>(hookName: K, handler: HookHandlerMap[K], opts?: {
         priority?: number;
     }): void;
 }
+/** Context passed to a plugin's start() lifecycle hook. */
+interface StartContext {
+    /** The same capability-scoped SDK exposed to tools(sdk). */
+    sdk: PluginSDK;
+    /** Plugin's isolated SQLite database (null only if initialization failed). */
+    db: Database.Database | null;
+    /** Sanitized application config (no credentials). */
+    config: Record<string, unknown>;
+    /** Plugin-specific config merged with manifest defaults. */
+    pluginConfig: Record<string, unknown>;
+    /** Prefixed plugin logger. */
+    log: PluginLogger;
+}
 
 /** Error codes thrown by SDK methods */
-type SDKErrorCode = "BRIDGE_NOT_CONNECTED" | "WALLET_NOT_INITIALIZED" | "INVALID_ADDRESS" | "OPERATION_FAILED" | "SECRET_NOT_FOUND";
+type SDKErrorCode = "BRIDGE_NOT_CONNECTED" | "WALLET_NOT_INITIALIZED" | "INVALID_ADDRESS" | "INVALID_INPUT" | "NOT_AVAILABLE" | "RATE_LIMITED" | "TRANSACTION_FAILED" | "PERMISSION_DENIED" | "OPERATION_FAILED" | "SECRET_NOT_FOUND";
 /**
  * Error thrown by Plugin SDK operations.
  *
@@ -2104,6 +2129,6 @@ declare class PluginSDKError extends Error {
  */
 
 /** Current SDK version (semver) */
-declare const SDK_VERSION = "1.0.0";
+declare const SDK_VERSION: string;
 
-export { type AfterToolCallEvent, type AgentStartEvent, type AgentStopEvent, type BeforePromptBuildEvent, type BeforeToolCallEvent, type BotKeyboard, type BotManifest, type BotSDK, type ButtonDef, type ButtonStyle, type CallbackContext, type ChatInfo, type ChosenResultContext, type CollectibleInfo, type CronJob, type CronJobOptions, type CronSDK, type DexQuoteParams, type DexQuoteResult, type DexSDK, type DexSingleQuote, type DexSwapParams, type DexSwapResult, type Dialog, type DiceResult, type DnsAuction, type DnsAuctionResult, type DnsBidResult, type DnsCheckResult, type DnsResolveResult, type DnsSDK, type EditMessageOptions, type GetMethodResult, type GiftOfferOptions, type GiftValue, type HookHandlerMap, type HookName, type InlineQueryContext, type InlineResult, type InlineResultContent, type JettonBalance, type JettonHistory, type JettonHolder, type JettonInfo, type JettonPrice, type JettonSendResult, type MediaSendOptions, type MessageReceiveEvent, type NftItem, type PluginCallbackEvent, type PluginLogger, type PluginManifest, type PluginMessageEvent, type PluginSDK, PluginSDKError, type PluginToolContext, type PollOptions, type PromptAfterEvent, type ReceivedGift, type ResolvedPeer, type ResponseAfterEvent, type ResponseBeforeEvent, type ResponseErrorEvent, type SDKErrorCode, type SDKPaymentVerification, type SDKVerifyPaymentParams, SDK_VERSION, type SecretDeclaration, type SecretsSDK, type SendMessageOptions, type SessionEndEvent, type SessionStartEvent, type SignedTransfer, type SimpleMessage, type SimpleToolDef, type StarGift, type StarsTransaction, type StartContext, type StorageSDK, type TelegramSDK, type TelegramUser, type TonBalance, type TonMessage, type TonPrice, type TonSDK, type TonSendOptions, type TonSendResult, type TonSender, type TonTransaction, type TonTransferResult, type ToolCategory, type ToolErrorEvent, type ToolResult, type ToolScope, type TransactionType, type TransferResult, type UniqueGift, type UserInfo };
+export { type AfterToolCallEvent, type AgentStartEvent, type AgentStopEvent, type BeforePromptBuildEvent, type BeforeToolCallEvent, type BotKeyboard, type BotManifest, type BotSDK, type ButtonDef, type ButtonStyle, type CallbackContext, type ChatInfo, type ChosenResultContext, type CollectibleInfo, type CronJob, type CronJobOptions, type CronSDK, type DexQuoteParams, type DexQuoteResult, type DexSDK, type DexSingleQuote, type DexSwapParams, type DexSwapResult, type Dialog, type DiceResult, type DnsAuction, type DnsAuctionResult, type DnsBidResult, type DnsCheckResult, type DnsResolveResult, type DnsSDK, type EditMessageOptions, type GetMethodResult, type GiftOfferOptions, type GiftValue, type HighloadBatchResult, type HighloadSDK, type HighloadWalletInfo, type HookHandlerMap, type HookName, type InlineBotResult, type InlineQueryContext, type InlineResult, type InlineResultContent, type JettonBalance, type JettonHistory, type JettonHolder, type JettonInfo, type JettonPrice, type JettonSendResult, type MediaSendOptions, type MessageReceiveEvent, type NftItem, PLUGIN_HOOK_NAMES, type PluginCallbackEvent, type PluginHookDeclaration, type PluginLogger, type PluginManifest, type PluginMessageEvent, type PluginSDK, PluginSDKError, type PluginToolContext, type PollOptions, type PromptAfterEvent, type ReceivedGift, type ResolvedPeer, type ResponseAfterEvent, type ResponseBeforeEvent, type ResponseErrorEvent, type SDKErrorCode, type SDKPaymentVerification, type SDKVerifyPaymentParams, SDK_VERSION, type SecretDeclaration, type SecretsSDK, type SendMessageOptions, type SessionEndEvent, type SessionStartEvent, type SignedTransfer, type SimpleMessage, type SimpleToolDef, type StarGift, type StarsTransaction, type StartContext, type StorageSDK, TOOL_CATEGORIES, TOOL_SCOPES, type TelegramSDK, type TelegramUser, type TonBalance, type TonMessage, type TonPrice, type TonSDK, type TonSendOptions, type TonSendResult, type TonSender, type TonTransaction, type TonTransferResult, type ToolCategory, type ToolErrorEvent, type ToolResult, type ToolScope, type TransactionType, type TransferResult, type UniqueGift, type UserInfo };

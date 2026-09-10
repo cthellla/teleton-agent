@@ -11,6 +11,7 @@ import { getCodexApiKey } from "../providers/codex-credentials.js";
 import { getGrokBuildApiKey } from "../providers/grok-build-credentials.js";
 import { getProviderModel } from "../providers/model-resolver.js";
 import { TELEGRAM_SEND_TOOLS } from "../constants/tools.js";
+import { LLM_REQUEST_TIMEOUT_MS } from "../constants/timeouts.js";
 import { sanitizeToolsForGemini } from "./schema-sanitizer.js";
 
 export interface ModelRequestOptions {
@@ -139,7 +140,9 @@ export function prepareModelRequest(
       sessionId: request.sessionId,
       cacheRetention: getCacheRetention(provider),
       signal: request.signal,
-      timeoutMs: request.timeoutMs,
+      // Fork-only: never leave an LLM call unbounded. Upstream passes the caller's
+      // value through unchanged, which is undefined for every call site we have.
+      timeoutMs: request.timeoutMs ?? LLM_REQUEST_TIMEOUT_MS,
       ...getReasoningOptions(provider, config.reasoning_effort),
       ...(provider === "anthropic" && model.id === "claude-fable-5-1" && { thinkingEnabled: true }),
       ...getProviderPayloadOptions(provider),

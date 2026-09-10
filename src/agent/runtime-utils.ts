@@ -97,7 +97,11 @@ export function isServerError(errorMessage?: string): boolean {
     // or a dropped socket is not a terminal error — back off and retry.
     errorMessage.includes("WebSocket closed") ||
     errorMessage.includes("ECONNRESET") ||
-    errorMessage.includes("socket hang up")
+    errorMessage.includes("socket hang up") ||
+    // Fork-only: the Pi's uplink drops often enough that transient network
+    // failures must share the server_error retry+backoff path instead of
+    // falling through to "unknown" and surfacing to the user.
+    isNetworkErrorMessage(errorMessage)
   );
 }
 

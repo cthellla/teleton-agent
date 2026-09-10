@@ -52,6 +52,13 @@ export const AgentConfigSchema = z
       .optional()
       .describe("Cheap model for summarization (auto-detected if omitted)"),
     max_tokens: z.number().default(4096),
+    // Fork-only: hard cap on retrieved RAG context, unset = no cap.
+    max_rag_chars: z
+      .number()
+      .int()
+      .min(500)
+      .optional()
+      .describe("Maximum characters of retrieved context injected into the prompt"),
     temperature: z.number().default(0.7),
     system_prompt: z.string().nullable().default(null),
     max_agentic_iterations: z

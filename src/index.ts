@@ -172,7 +172,8 @@ export class TeletonApp {
     this.userHookEvaluator = new UserHookEvaluator(db);
     this.agent.setUserHookEvaluator(this.userHookEvaluator);
 
-    this.sdkDeps = { bridge: this.bridge };
+    // configRef is fork-only: sdk.setModel() mutates the live config through it.
+    this.sdkDeps = { bridge: this.bridge, configRef: this.config };
 
     this.modules = loadModules(this.toolRegistry, this.config, db);
 

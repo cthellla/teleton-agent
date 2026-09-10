@@ -27,11 +27,12 @@ interface SendMessageParams {
 export const telegramSendMessageTool: Tool = {
   name: "telegram_send_message",
   description:
-    "Send a Telegram message. Omit chatId to use the current chat. Use text alone for a normal message, or add rich for one native user-mode Rich Message with structured blocks, local attachments, small inline or row URL/copy buttons, alignment, and styles. Do not write tg:// references yourself.",
+    "Send a Telegram message. `chatId` is NOT limited to the current chat — omit it for the current chat, or target ANY chat: a numeric chat id, '@username' for a user/bot direct message, or '@channel_name' for a channel. Use this to initiate a DM to another bot (requires Bot-to-Bot Communication Mode enabled on both bots in BotFather; Telegram returns USER_BOT_TO_BOT_DISABLED if the recipient bot disabled it). Use text alone for a normal message, or add rich for one native user-mode Rich Message with structured blocks, local attachments, small inline or row URL/copy buttons, alignment, and styles. Do not write tg:// references yourself.",
   parameters: Type.Object({
     chatId: Type.Optional(
       Type.String({
-        description: "Destination chat ID. Defaults to the current chat.",
+        description:
+          "Target chat. Numeric id (e.g. '-1001234567890') for known chats, '@username' for a user/bot DM, '@channel_name' for a public channel. NOT restricted to the current chat — you can address any chat or @username. Defaults to the current chat.",
       })
     ),
     text: Type.Optional(

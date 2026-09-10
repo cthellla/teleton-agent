@@ -214,7 +214,7 @@ export class AdminHandler {
     const cfg = this.agent.getConfig();
     const valid = ReasoningEffort.options;
     if (command.args.length === 0) {
-      return `💭 Reasoning effort: **${cfg.agent.reasoning_effort ?? "low"}**\n\nControls thinking depth for reasoning models (o3, R1, etc).\nUsage: /reasoning <${valid.join("|")}>\n• off — skip reasoning (may not work with reasoning-only models)\n• low/medium/high — thinking depth`;
+      return `💭 Reasoning effort: **${cfg.agent.reasoning_effort ?? "medium"}**\n\nControls thinking depth for reasoning models.\nUsage: /reasoning <${valid.join("|")}>\n• none/minimal — skip or barely use reasoning\n• low/medium/high/xhigh/max — thinking depth`;
     }
     const value = command.args[0].toLowerCase();
     if (!valid.includes(value as (typeof valid)[number])) {
@@ -579,7 +579,7 @@ View agent status
 **/model** <name>
 Switch LLM model
 
-**/reasoning** [off|low|medium|high]
+**/reasoning** [none|minimal|low|medium|high|xhigh|max]
 Thinking depth for reasoning models (o3, DeepSeek R1, etc). No args = show current
 
 **/loop** <1-50>

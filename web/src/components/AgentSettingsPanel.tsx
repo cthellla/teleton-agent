@@ -79,7 +79,7 @@ export function AgentSettingsPanel({
           <label>Reasoning <InfoTip text={supportsReasoning ? "Thinking depth for this reasoning model" : "Current model does not support reasoning"} /></label>
           <Select
             value={getLocal('agent.reasoning_effort') || 'low'}
-            options={['off', 'low', 'medium', 'high']}
+            options={['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']}
             labels={['Off', 'Low', 'Medium', 'High']}
             onChange={(v) => saveConfig('agent.reasoning_effort', v)}
             disabled={!supportsReasoning}

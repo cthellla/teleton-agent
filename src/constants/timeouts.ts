@@ -21,3 +21,9 @@ export const TYPING_REFRESH_MS = 4_000;
 export const LLM_REQUEST_TIMEOUT_MS = 60_000;
 /** Timeout for streaming LLM requests (longer since response generation is incremental) */
 export const LLM_STREAM_TIMEOUT_MS = 180_000;
+
+/**
+ * Fork-only: cap on the response:after hook. The hackernews plugin bills over
+ * HTTP to payment_api there, and a hung call would deadlock the chat queue.
+ */
+export const RESPONSE_AFTER_TIMEOUT_MS = 15_000;

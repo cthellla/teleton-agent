@@ -17,6 +17,7 @@ import {
   type PreparedModelRequest,
 } from "./model-request.js";
 import { isSilentReply } from "../constants/tokens.js";
+import { LLM_STREAM_TIMEOUT_MS } from "../constants/timeouts.js";
 
 // Model resolution + provider model registration live in the neutral providers/
 // layer so non-agent consumers (e.g. memory) can resolve models without importing
@@ -124,7 +125,12 @@ export interface StreamResult {
 }
 
 export function streamWithContext(config: AgentConfig, options: ChatOptions): StreamResult {
-  const request = prepareModelRequest(config, options);
+  // Fork-only: streaming gets the longer budget; a stalled stream would
+  // otherwise hold the chat queue open indefinitely.
+  const request = prepareModelRequest(config, {
+    ...options,
+    timeoutMs: options.timeoutMs ?? LLM_STREAM_TIMEOUT_MS,
+  });
   const eventStream = stream(request.model, request.context, request.options);
 
   // Transform event stream into a simple text delta async iterable,

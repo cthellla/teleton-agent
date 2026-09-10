@@ -201,7 +201,7 @@ export class MessageHandler {
   private db: Database.Database;
   private chatQueue: ChatQueue = new ChatQueue();
   private pluginMessageHooks: Array<
-    (e: PluginMessageEvent) => Promise<string | { context: string } | void>
+    (e: PluginMessageEvent) => Promise<string | { context: string } | { block: boolean } | void>
   > = [];
   private recentMessageIds: Set<string> = new Set();
   private botReplyTimestamps: Map<string, number> = new Map();
@@ -254,7 +254,9 @@ export class MessageHandler {
   }
 
   setPluginMessageHooks(
-    hooks: Array<(e: PluginMessageEvent) => Promise<string | { context: string } | void>>
+    hooks: Array<
+      (e: PluginMessageEvent) => Promise<string | { context: string } | { block: boolean } | void>
+    >
   ): void {
     this.pluginMessageHooks = hooks;
   }
