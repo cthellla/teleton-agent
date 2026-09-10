@@ -5,43 +5,37 @@ import { telegramGetUserInfoTool, telegramGetUserInfoExecutor } from "./get-user
 import { telegramCheckUsernameTool, telegramCheckUsernameExecutor } from "./check-username.js";
 import type { ToolEntry } from "../../types.js";
 
-export { telegramBlockUserTool, telegramBlockUserExecutor };
-export { telegramGetBlockedTool, telegramGetBlockedExecutor };
-export { telegramGetCommonChatsTool, telegramGetCommonChatsExecutor };
-export { telegramGetUserInfoTool, telegramGetUserInfoExecutor };
-export { telegramCheckUsernameTool, telegramCheckUsernameExecutor };
-
 export const tools: ToolEntry[] = [
   {
     tool: telegramBlockUserTool,
     executor: telegramBlockUserExecutor,
     scope: "dm-only",
-    requiredMode: "user",
+    mode: "user",
     tags: ["social"],
   },
   {
     tool: telegramGetBlockedTool,
     executor: telegramGetBlockedExecutor,
     scope: "dm-only",
-    requiredMode: "user",
+    mode: "user",
     tags: ["social"],
   },
   {
     tool: telegramGetCommonChatsTool,
     executor: telegramGetCommonChatsExecutor,
-    requiredMode: "user",
+    mode: "user",
     tags: ["social"],
   },
   {
     tool: telegramGetUserInfoTool,
     executor: telegramGetUserInfoExecutor,
-    requiredMode: "user",
+    mode: "user",
     tags: ["social"],
   },
   {
     tool: telegramCheckUsernameTool,
     executor: telegramCheckUsernameExecutor,
-    requiredMode: "user",
+    mode: "user",
     tags: ["social"],
   },
 ];

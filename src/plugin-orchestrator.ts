@@ -7,6 +7,7 @@ import type { PluginModule } from "./agent/tools/types.js";
 import { getProviderMetadata, type SupportedProvider } from "./config/providers.js";
 import { getDatabase } from "./memory/index.js";
 import type { EmbeddingProvider } from "./memory/embeddings/provider.js";
+import type { VectorSearchWorkerClient } from "./memory/workers/vector-search-client.js";
 import { createLogger } from "./utils/logger.js";
 import { getErrorMessage } from "./utils/errors.js";
 
@@ -19,6 +20,7 @@ export interface OrchestratorResult {
   hookRegistry: HookRegistry;
   externalModules: PluginModule[];
   toolCount: number;
+  dispose: () => void;
 }
 
 export class PluginOrchestrator {
@@ -26,7 +28,8 @@ export class PluginOrchestrator {
     private registry: ToolRegistry,
     private config: Config,
     private sdkDeps: SDKDependencies,
-    private embedder: EmbeddingProvider
+    private embedder: EmbeddingProvider,
+    private vectorSearchWorker?: VectorSearchWorkerClient
   ) {}
 
   async loadAll(
@@ -44,6 +47,7 @@ export class PluginOrchestrator {
     );
     let pluginToolCount = 0;
     const pluginNames: string[] = [];
+    const healthyExternalModules: PluginModule[] = [];
     for (const mod of externalModules) {
       try {
         mod.configure?.(this.config);
@@ -53,12 +57,21 @@ export class PluginOrchestrator {
           pluginToolCount += this.registry.registerPluginTools(mod.name, tools);
           pluginNames.push(mod.name);
         }
+        healthyExternalModules.push(mod);
       } catch (error) {
         log.error(`❌ Plugin "${mod.name}" failed to load: ${getErrorMessage(error)}`);
+        this.registry.removePluginTools(mod.name);
+        hookRegistry.unregister(mod.name);
+        try {
+          await mod.stop?.();
+        } catch (cleanupError) {
+          log.error(`❌ Plugin "${mod.name}" cleanup failed: ${getErrorMessage(cleanupError)}`);
+        }
       }
     }
 
     let toolCount = this.registry.count;
+    let disposeToolIndexSubscription = (): void => {};
 
     // Load MCP servers
     const mcpServerNames: string[] = [];
@@ -85,16 +98,21 @@ export class PluginOrchestrator {
     // Initialize Tool RAG index
     if (this.config.tool_rag.enabled) {
       const { ToolIndex } = await import("./agent/tools/tool-index.js");
-      const toolIndex = new ToolIndex(db, this.embedder, getDatabase().isVectorSearchReady(), {
-        topK: this.config.tool_rag.top_k,
-        alwaysInclude: this.config.tool_rag.always_include,
-        skipUnlimitedProviders: this.config.tool_rag.skip_unlimited_providers,
-      });
+      const toolIndex = new ToolIndex(
+        db,
+        this.embedder,
+        getDatabase().isVectorSearchReady(),
+        {
+          topK: this.config.tool_rag.top_k,
+          alwaysInclude: this.config.tool_rag.always_include,
+          skipUnlimitedProviders: this.config.tool_rag.skip_unlimited_providers,
+        },
+        this.vectorSearchWorker
+      );
       toolIndex.ensureSchema();
       this.registry.setToolIndex(toolIndex);
 
-      // eslint-disable-next-line @typescript-eslint/no-misused-promises -- callback is fire-and-forget
-      this.registry.onToolsChanged(async (removed, added) => {
+      disposeToolIndexSubscription = this.registry.onToolsChanged(async (removed, added) => {
         await toolIndex.reindexTools(removed, added);
       });
     }
@@ -118,8 +136,9 @@ export class PluginOrchestrator {
       pluginToolCount,
       mcpServerNames,
       hookRegistry,
-      externalModules,
+      externalModules: healthyExternalModules,
       toolCount,
+      dispose: disposeToolIndexSubscription,
     };
   }
 }

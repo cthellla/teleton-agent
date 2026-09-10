@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, useCallback, useEffect, useRef, type ReactNode } from 'react';
 import { setup, SetupConfig } from '../../lib/api';
+import { errMsg } from '../../lib/utils';
 
 // ── Step metadata ───────────────────────────────────────────────────
 
@@ -19,9 +20,6 @@ export function getSteps(telegramMode: 'user' | 'bot') {
   return ALL_STEPS;
 }
 
-// Default export for backward compat — components can use getSteps(data.telegramMode) for dynamic
-export const STEPS = ALL_STEPS;
-
 // ── Shared types ────────────────────────────────────────────────────
 
 export interface WizardData {
@@ -29,7 +27,7 @@ export interface WizardData {
   agentName: string;
   provider: string;
   apiKey: string;
-  cocoonPort: number;
+  gocoonPort: number;
   localUrl: string;
   apiId: number;
   apiHash: string;
@@ -48,9 +46,6 @@ export interface WizardData {
   tonapiKey: string;
   toncenterKey: string;
   tavilyKey: string;
-  customizeThresholds: boolean;
-  buyMaxFloor: number;
-  sellMinFloor: number;
   walletAction: 'keep' | 'generate' | 'import';
   mnemonic: string;
   walletAddress: string;
@@ -73,7 +68,7 @@ const DEFAULTS: WizardData = {
   agentName: 'Nova',
   provider: '',
   apiKey: '',
-  cocoonPort: 11435,
+  gocoonPort: 10000,
   localUrl: 'http://localhost:11434/v1',
   apiId: 0,
   apiHash: '',
@@ -92,9 +87,6 @@ const DEFAULTS: WizardData = {
   tonapiKey: '',
   toncenterKey: '',
   tavilyKey: '',
-  customizeThresholds: false,
-  buyMaxFloor: 95,
-  sellMinFloor: 105,
   walletAction: 'generate',
   mnemonic: '',
   walletAddress: '',
@@ -109,26 +101,24 @@ const DEFAULTS: WizardData = {
 
 // ── Validation ──────────────────────────────────────────────────────
 
-export function validateStep(step: number, data: WizardData): boolean {
+function validateStep(step: number, data: WizardData): boolean {
   switch (step) {
     case 0:
       return data.riskAccepted;
     case 1:
       if (!data.provider) return false;
-      if (data.provider === 'cocoon') {
-        return data.cocoonPort >= 1 && data.cocoonPort <= 65535;
+      if (data.provider === 'gocoon') {
+        return data.gocoonPort >= 1 && data.gocoonPort <= 65535;
       }
       if (data.provider === 'local') {
         try { new URL(data.localUrl); return true; }
         catch { return false; }
       }
-      if (data.provider === 'claude-code') {
-        return true; // credentials auto-detected or fallback handled by ProviderStep
-      }
+      if (data.provider === 'codex' || data.provider === 'grok-build') return true;
       return data.apiKey.length > 0;
     case 2: {
       // Config
-      if (data.provider !== 'cocoon' && data.provider !== 'local') {
+      if (data.provider !== 'gocoon' && data.provider !== 'local') {
         const modelValue = data.model === '__custom__' ? data.customModel : data.model;
         if (!modelValue) return false;
       }
@@ -200,57 +190,66 @@ export function SetupProvider({ children }: { children: ReactNode }) {
     setStep((s) => Math.max(s - 1, 0));
   }, []);
 
+  const buildConfig = useCallback((): SetupConfig => {
+    const resolvedModel =
+      data.model === '__custom__'
+        ? data.customModel
+        : data.model || undefined;
+
+    return {
+      agent: {
+        provider: data.provider,
+        ...(data.provider !== 'gocoon' && data.provider !== 'local' && data.apiKey ? { api_key: data.apiKey } : {}),
+        ...(data.provider === 'local' ? { base_url: data.localUrl } : {}),
+        ...(resolvedModel ? { model: resolvedModel } : {}),
+        max_agentic_iterations: data.maxIterations,
+      },
+      telegram: {
+        ...(data.telegramMode === 'bot' ? { mode: 'bot' as const } : {}),
+        api_id: data.apiId,
+        api_hash: data.apiHash,
+        phone: data.phone,
+        admin_ids: [data.userId],
+        owner_id: data.userId,
+        dm_policy: data.telegramMode === 'bot' ? 'admin-only' : data.dmPolicy,
+        group_policy: data.groupPolicy,
+        require_mention: data.telegramMode === 'bot' ? true : data.requireMention,
+        ...(data.botToken ? { bot_token: data.botToken } : {}),
+        ...(data.botUsername ? { bot_username: data.botUsername } : {}),
+      },
+      ...(data.provider === 'gocoon' ? { gocoon: { port: data.gocoonPort } } : {}),
+      ...(data.tonapiKey ? { tonapi_key: data.tonapiKey } : {}),
+      ...(data.toncenterKey ? { toncenter_api_key: data.toncenterKey } : {}),
+      ...(data.tavilyKey ? { tavily_api_key: data.tavilyKey } : {}),
+      webui: { enabled: true },
+    };
+  }, [data]);
+
+  // Final save: writes config.yaml and marks the wizard complete (→ SetupComplete).
   const handleSave = useCallback(async () => {
     setLoading(true);
     setError('');
     try {
-      const resolvedModel =
-        data.model === '__custom__'
-          ? data.customModel
-          : data.model || undefined;
-
-      const config: SetupConfig = {
-        agent: {
-          provider: data.provider,
-          ...(data.provider !== 'cocoon' && data.provider !== 'local' && data.apiKey ? { api_key: data.apiKey } : {}),
-          ...(data.provider === 'local' ? { base_url: data.localUrl } : {}),
-          ...(resolvedModel ? { model: resolvedModel } : {}),
-          max_agentic_iterations: data.maxIterations,
-        },
-        telegram: {
-          ...(data.telegramMode === 'bot' ? { mode: 'bot' as const } : {}),
-          api_id: data.apiId,
-          api_hash: data.apiHash,
-          phone: data.phone,
-          admin_ids: [data.userId],
-          owner_id: data.userId,
-          dm_policy: data.telegramMode === 'bot' ? 'admin-only' : data.dmPolicy,
-          group_policy: data.groupPolicy,
-          require_mention: data.telegramMode === 'bot' ? true : data.requireMention,
-          ...(data.botToken ? { bot_token: data.botToken } : {}),
-          ...(data.botUsername ? { bot_username: data.botUsername } : {}),
-        },
-        ...(data.provider === 'cocoon' ? { cocoon: { port: data.cocoonPort } } : {}),
-        deals: {
-          enabled: !!data.botToken,
-          ...(data.customizeThresholds
-            ? { buy_max_floor_percent: data.buyMaxFloor, sell_min_floor_percent: data.sellMinFloor }
-            : {}),
-        },
-        ...(data.tonapiKey ? { tonapi_key: data.tonapiKey } : {}),
-        ...(data.toncenterKey ? { toncenter_api_key: data.toncenterKey } : {}),
-        ...(data.tavilyKey ? { tavily_api_key: data.tavilyKey } : {}),
-        webui: { enabled: true },
-      };
-
-      await setup.saveConfig(config);
+      await setup.saveConfig(buildConfig());
       setSaved(true);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(errMsg(err));
     } finally {
       setLoading(false);
     }
-  }, [data]);
+  }, [buildConfig]);
+
+  // Silent persist: writes config.yaml WITHOUT marking the wizard complete.
+  // Used before the Telegram auth flow so the backend has a config to merge into.
+  const persistConfig = useCallback(async () => {
+    try {
+      await setup.saveConfig(buildConfig());
+      return true;
+    } catch (err) {
+      setError(errMsg(err));
+      return false;
+    }
+  }, [buildConfig]);
 
   const handleLaunch = useCallback(async () => {
     setLaunching(true);
@@ -262,14 +261,40 @@ export function SetupProvider({ children }: { children: ReactNode }) {
       // Redirect to the dashboard with token-based auth
       window.location.href = `/auth/exchange?token=${encodeURIComponent(token)}`;
     } catch (err) {
-      setLaunchError(err instanceof Error ? err.message : String(err));
+      setLaunchError(errMsg(err));
     } finally {
       setLaunching(false);
     }
   }, []);
 
-  // Auto-save when Telegram connects on the last step (user mode only)
-  // In bot mode, the last step is Wallet — save is triggered by the Finish button
+  // Persist config.yaml as soon as the user reaches the Connect step (user mode),
+  // BEFORE the Telegram auth flow runs. The auth flow (saveSession on the backend)
+  // does a read-modify-write of config.yaml to merge the Telegram credentials, so
+  // the file must already exist by the time the user submits their login code / 2FA
+  // password — otherwise readRawConfig throws "Config file not found". All required
+  // data (api_id/api_hash/phone) is already collected in the preceding Telegram step.
+  // This is silent: it does NOT mark the wizard complete (the Connect UI must stay).
+  const persistRef = useRef(persistConfig);
+  persistRef.current = persistConfig;
+  const preSavedRef = useRef(false);
+  useEffect(() => {
+    const onConnectStep = step === steps.length - 1 && data.telegramMode === 'user';
+    if (!onConnectStep) {
+      // Reset so a return visit (after editing earlier steps) re-persists.
+      preSavedRef.current = false;
+      return;
+    }
+    // Fire once per visit; the guard prevents an error from spinning a retry loop.
+    if (!preSavedRef.current && !saved) {
+      preSavedRef.current = true;
+      void persistRef.current();
+    }
+  }, [step, steps.length, data.telegramMode, saved]);
+
+  // Auto-save when Telegram connects on the last step (user mode only).
+  // Marks the wizard complete (→ SetupComplete). config.yaml already exists at this
+  // point (persisted on entering Connect + merged with credentials by the backend).
+  // In bot mode, the last step is Wallet — save is triggered by the Finish button.
   const saveRef = useRef(handleSave);
   saveRef.current = handleSave;
   useEffect(() => {

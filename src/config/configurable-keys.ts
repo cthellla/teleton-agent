@@ -1,7 +1,14 @@
 import { readFileSync, writeFileSync, existsSync } from "fs";
 import { parse, stringify } from "yaml";
 import { expandPath } from "./loader.js";
-import { ConfigSchema } from "./schema.js";
+import {
+  ConfigSchema,
+  DMPolicy,
+  GroupPolicy,
+  ExecMode,
+  ExecScope,
+  ReasoningEffort,
+} from "./schema.js";
 import { getSupportedProviders } from "./providers.js";
 
 // ── Types ──────────────────────────────────────────────────────────────
@@ -15,7 +22,6 @@ export type ConfigCategory =
   | "Telegram"
   | "Embedding"
   | "WebUI"
-  | "Deals"
   | "TON Proxy"
   | "Coding Agent"
   | "Developer";
@@ -120,7 +126,7 @@ export const CONFIGURABLE_KEYS: Record<string, ConfigKeyMeta> = {
     label: "Bot Token",
     description: "Bot token from @BotFather",
     sensitive: true,
-    hotReload: "instant",
+    hotReload: "restart",
     validate: (v) => (v.includes(":") ? undefined : "Must contain ':' (e.g., 123456:ABC...)"),
     mask: (v) => v.split(":")[0] + ":****",
     parse: identity,
@@ -133,7 +139,7 @@ export const CONFIGURABLE_KEYS: Record<string, ConfigKeyMeta> = {
     label: "Provider",
     description: "LLM provider",
     sensitive: false,
-    hotReload: "instant",
+    hotReload: "restart",
     options: getSupportedProviders().map((p) => p.id),
     validate: enumValidator(getSupportedProviders().map((p) => p.id)),
     mask: identity,
@@ -150,6 +156,18 @@ export const CONFIGURABLE_KEYS: Record<string, ConfigKeyMeta> = {
     mask: identity,
     parse: identity,
   },
+  "agent.reasoning_effort": {
+    type: "enum",
+    category: "Agent",
+    label: "Reasoning Effort",
+    description: "Reasoning effort for Codex models",
+    sensitive: false,
+    hotReload: "instant",
+    options: ReasoningEffort.options,
+    validate: enumValidator(ReasoningEffort.options),
+    mask: identity,
+    parse: identity,
+  },
   "agent.utility_model": {
     type: "string",
     category: "Agent",
@@ -158,19 +176,6 @@ export const CONFIGURABLE_KEYS: Record<string, ConfigKeyMeta> = {
     sensitive: false,
     hotReload: "instant",
     validate: noValidation,
-    mask: identity,
-    parse: identity,
-  },
-  "agent.reasoning_effort": {
-    type: "enum",
-    category: "Agent",
-    label: "Reasoning Effort",
-    description: "Thinking depth for reasoning models (off = no reasoning)",
-    sensitive: false,
-    hotReload: "instant",
-    options: ["off", "low", "medium", "high"],
-    optionLabels: { off: "Off", low: "Low", medium: "Medium", high: "High" },
-    validate: enumValidator(["off", "low", "medium", "high"]),
     mask: identity,
     parse: identity,
   },
@@ -203,7 +208,18 @@ export const CONFIGURABLE_KEYS: Record<string, ConfigKeyMeta> = {
     description: "Max tool-call loop iterations per message",
     sensitive: false,
     hotReload: "instant",
-    validate: numberInRange(1, 20),
+    validate: numberInRange(1, 50),
+    mask: identity,
+    parse: (v) => Number(v),
+  },
+  "agent.max_turn_duration_ms": {
+    type: "number",
+    category: "Agent",
+    label: "Turn Time Budget",
+    description: "Maximum turn duration in milliseconds, checked between safe phases",
+    sensitive: false,
+    hotReload: "instant",
+    validate: numberInRange(10_000, 900_000),
     mask: identity,
     parse: (v) => Number(v),
   },
@@ -218,11 +234,11 @@ export const CONFIGURABLE_KEYS: Record<string, ConfigKeyMeta> = {
     mask: identity,
     parse: identity,
   },
-  "cocoon.port": {
+  "gocoon.port": {
     type: "number",
     category: "Agent",
-    label: "Cocoon Port",
-    description: "Cocoon proxy port (requires restart)",
+    label: "Gocoon Port",
+    description: "gocoon-runner port (requires restart)",
     sensitive: false,
     hotReload: "restart",
     validate: numberInRange(1, 65535),
@@ -295,6 +311,7 @@ export const CONFIGURABLE_KEYS: Record<string, ConfigKeyMeta> = {
     description: "Who can message the bot in private",
     sensitive: false,
     hotReload: "instant",
+    // UI order intentionally differs from the schema enum order
     options: ["admin-only", "allowlist", "open", "disabled"],
     optionLabels: {
       "admin-only": "Admin Only",
@@ -302,7 +319,7 @@ export const CONFIGURABLE_KEYS: Record<string, ConfigKeyMeta> = {
       open: "Open",
       disabled: "Disabled",
     },
-    validate: enumValidator(["open", "allowlist", "admin-only", "disabled"]),
+    validate: enumValidator([...DMPolicy.options]),
     mask: identity,
     parse: identity,
   },
@@ -313,14 +330,14 @@ export const CONFIGURABLE_KEYS: Record<string, ConfigKeyMeta> = {
     description: "Which groups the bot can respond in",
     sensitive: false,
     hotReload: "instant",
-    options: ["open", "allowlist", "admin-only", "disabled"],
+    options: [...GroupPolicy.options],
     optionLabels: {
       open: "Open",
       allowlist: "Allow Groups",
       "admin-only": "Admin Only",
       disabled: "Disabled",
     },
-    validate: enumValidator(["open", "allowlist", "admin-only", "disabled"]),
+    validate: enumValidator([...GroupPolicy.options]),
     mask: identity,
     parse: identity,
   },
@@ -470,6 +487,17 @@ export const CONFIGURABLE_KEYS: Record<string, ConfigKeyMeta> = {
     mask: identity,
     parse: (v) => Number(v),
   },
+  "telegram.guest_mode": {
+    type: "boolean",
+    category: "Telegram",
+    label: "Guest Mode",
+    description: "Answer guest queries in chats the bot is not a member of",
+    sensitive: false,
+    hotReload: "instant",
+    validate: enumValidator(["true", "false"]),
+    mask: identity,
+    parse: (v) => v === "true",
+  },
 
   // ─── Embedding ─────────────────────────────────────────────────────
   "embedding.provider": {
@@ -478,7 +506,7 @@ export const CONFIGURABLE_KEYS: Record<string, ConfigKeyMeta> = {
     label: "Embedding Provider",
     description: "Embedding provider for RAG",
     sensitive: false,
-    hotReload: "instant",
+    hotReload: "restart",
     options: ["local", "anthropic", "none"],
     validate: enumValidator(["local", "anthropic", "none"]),
     mask: identity,
@@ -514,56 +542,10 @@ export const CONFIGURABLE_KEYS: Record<string, ConfigKeyMeta> = {
     label: "Log HTTP Requests",
     description: "Log all HTTP requests to console",
     sensitive: false,
-    hotReload: "instant",
+    hotReload: "restart",
     validate: enumValidator(["true", "false"]),
     mask: identity,
     parse: (v) => v === "true",
-  },
-
-  // ─── Deals ─────────────────────────────────────────────────────────
-  "deals.enabled": {
-    type: "boolean",
-    category: "Deals",
-    label: "Deals Enabled",
-    description: "Enable the deals/escrow module",
-    sensitive: false,
-    hotReload: "instant",
-    validate: enumValidator(["true", "false"]),
-    mask: identity,
-    parse: (v) => v === "true",
-  },
-  "deals.expiry_seconds": {
-    type: "number",
-    category: "Deals",
-    label: "Deal Expiry",
-    description: "Deal expiry timeout in seconds",
-    sensitive: false,
-    hotReload: "instant",
-    validate: numberInRange(10, 3600),
-    mask: identity,
-    parse: (v) => Number(v),
-  },
-  "deals.buy_max_floor_percent": {
-    type: "number",
-    category: "Deals",
-    label: "Buy Max Floor %",
-    description: "Maximum floor % for buy deals",
-    sensitive: false,
-    hotReload: "instant",
-    validate: numberInRange(1, 100),
-    mask: identity,
-    parse: (v) => Number(v),
-  },
-  "deals.sell_min_floor_percent": {
-    type: "number",
-    category: "Deals",
-    label: "Sell Min Floor %",
-    description: "Minimum floor % for sell deals",
-    sensitive: false,
-    hotReload: "instant",
-    validate: numberInRange(100, 500),
-    mask: identity,
-    parse: (v) => Number(v),
   },
 
   // ─── TON Proxy ────────────────────────────────────────────────────
@@ -573,7 +555,7 @@ export const CONFIGURABLE_KEYS: Record<string, ConfigKeyMeta> = {
     label: "TON Proxy Enabled",
     description: "Enable Tonutils-Proxy for .ton site access (auto-downloads binary on first run)",
     sensitive: false,
-    hotReload: "instant",
+    hotReload: "restart",
     validate: enumValidator(["true", "false"]),
     mask: identity,
     parse: (v) => v === "true",
@@ -609,9 +591,9 @@ export const CONFIGURABLE_KEYS: Record<string, ConfigKeyMeta> = {
     description: "System execution: off (disabled) or yolo (full system access)",
     sensitive: false,
     hotReload: "restart",
-    options: ["off", "yolo"],
+    options: [...ExecMode.options],
     optionLabels: { off: "Disabled", yolo: "YOLO" },
-    validate: enumValidator(["off", "yolo"]),
+    validate: enumValidator([...ExecMode.options]),
     mask: identity,
     parse: identity,
   },
@@ -622,9 +604,9 @@ export const CONFIGURABLE_KEYS: Record<string, ConfigKeyMeta> = {
     description: "Who can trigger exec tools",
     sensitive: false,
     hotReload: "restart",
-    options: ["admin-only", "allowlist", "all"],
+    options: [...ExecScope.options],
     optionLabels: { "admin-only": "Admin Only", allowlist: "Allowlist", all: "Everyone" },
-    validate: enumValidator(["admin-only", "allowlist", "all"]),
+    validate: enumValidator([...ExecScope.options]),
     mask: identity,
     parse: identity,
   },
@@ -671,27 +653,12 @@ export const CONFIGURABLE_KEYS: Record<string, ConfigKeyMeta> = {
     label: "Hot Reload",
     description: "Watch ~/.teleton/plugins/ for live changes",
     sensitive: false,
-    hotReload: "instant",
+    hotReload: "restart",
     validate: enumValidator(["true", "false"]),
     mask: identity,
     parse: (v) => v === "true",
   },
 };
-
-// ── Category order for frontend grouping ───────────────────────────────
-
-export const CATEGORY_ORDER: ConfigCategory[] = [
-  "API Keys",
-  "Agent",
-  "Session",
-  "Telegram",
-  "Embedding",
-  "WebUI",
-  "Deals",
-  "TON Proxy",
-  "Coding Agent",
-  "Developer",
-];
 
 // ── Dot-notation helpers ───────────────────────────────────────────────
 

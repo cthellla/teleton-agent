@@ -73,5 +73,5 @@ export const skillInvokeExecutor: ToolExecutor<SkillInvokeParams> = async (
 };
 
 export const tools: ToolEntry[] = [
-  { tool: skillInvokeTool, executor: skillInvokeExecutor, tags: ["core"] },
+  { tool: skillInvokeTool, executor: skillInvokeExecutor, mode: "both", tags: ["core"] },
 ];

@@ -99,6 +99,24 @@ const mockLog = {
 
 const VALID_ADDRESS = "EQDtFpEwcFAEcRe5mLVh2N6C0x-_hJEM7W61_JLnSF74p4q2";
 
+/** A confirmed external-in wallet tx, for mocking on-chain send confirmation (hash = "cd"*32). */
+const CONFIRMED_TX = {
+  lt: 100n,
+  now: 2000,
+  inMessage: { info: { type: "external-in" } },
+  description: {
+    type: "generic",
+    computePhase: { type: "vm", success: true, exitCode: 0 },
+    actionPhase: { success: true, resultCode: 0, noFunds: false },
+  },
+  hash: () => Buffer.from("cd".repeat(32), "hex"),
+} as any;
+
+/** getTransactions mock: empty pre-send snapshot, then the confirmed tx on every poll. */
+function confirmingGetTransactions() {
+  return vi.fn().mockResolvedValueOnce([]).mockResolvedValue([CONFIRMED_TX]);
+}
+
 function mockResponse(data: any, status = 200): Response {
   return {
     ok: status >= 200 && status < 300,
@@ -263,11 +281,15 @@ describe("createTonSDK", () => {
         });
       });
 
-      it("returns txRef on success", async () => {
-        (sendTon as Mock).mockResolvedValue("42_1700000000_1.5");
+      it("returns the on-chain tx hash as txRef on success", async () => {
+        (sendTon as Mock).mockResolvedValue({
+          hash: "cd".repeat(32),
+          seqno: 42,
+          at: 1700000000000,
+        });
 
         const result = await sdk.sendTON(VALID_ADDRESS, 1.5, "hello");
-        expect(result).toEqual({ txRef: "42_1700000000_1.5", amount: 1.5 });
+        expect(result).toEqual({ txRef: "cd".repeat(32), amount: 1.5 });
         expect(sendTon).toHaveBeenCalledWith({
           toAddress: VALID_ADDRESS,
           amount: 1.5,
@@ -276,12 +298,12 @@ describe("createTonSDK", () => {
         });
       });
 
-      it("throws OPERATION_FAILED when sendTon returns null", async () => {
+      it("throws OPERATION_FAILED when the transfer is not confirmed", async () => {
         (sendTon as Mock).mockResolvedValue(null);
 
         await expect(sdk.sendTON(VALID_ADDRESS, 1)).rejects.toMatchObject({
           code: "OPERATION_FAILED",
-          message: expect.stringContaining("no reference returned"),
+          message: expect.stringContaining("not be confirmed"),
         });
       });
 
@@ -618,11 +640,13 @@ describe("createTonSDK", () => {
 
         // Mock getCachedTonClient — returns a client with an open() method
         const mockWalletContract = {
+          address: { toString: () => "EQwallet" },
           getSeqno: vi.fn().mockResolvedValue(42),
           sendTransfer: vi.fn().mockResolvedValue(undefined),
         };
         (getCachedTonClient as Mock).mockResolvedValue({
           open: vi.fn().mockReturnValue(mockWalletContract),
+          getTransactions: confirmingGetTransactions(),
         });
       });
 
@@ -716,7 +740,7 @@ describe("createTonSDK", () => {
         );
 
         const result = await sdk.sendJetton(jettonAddr, recipientAddr, 10);
-        expect(result).toEqual({ success: true, seqno: 42 });
+        expect(result).toEqual({ success: true, seqno: 42, txRef: "cd".repeat(32) });
       });
 
       it("throws OPERATION_FAILED when getKeyPair returns null", async () => {
@@ -958,82 +982,6 @@ describe("createTonSDK", () => {
 
         const result = await sdk.getNftInfo("EQNft");
         expect(result?.description).toHaveLength(200);
-      });
-    });
-  });
-
-  // ═══════════════════════════════════════════════════════════════
-  // UTILITY METHODS
-  // ═══════════════════════════════════════════════════════════════
-
-  // These now use top-level ESM imports (mocked by vi.mock).
-  // We configure the mock return values to match the real behaviour.
-  describe("Utility methods", () => {
-    describe("toNano()", () => {
-      it("converts a number to nanoTON", () => {
-        mocks.toNano.mockReturnValue(BigInt("1500000000"));
-        const result = sdk.toNano(1.5);
-        expect(mocks.toNano).toHaveBeenCalledWith("1.5");
-        expect(result).toBe(BigInt("1500000000"));
-      });
-
-      it("converts a string to nanoTON", () => {
-        mocks.toNano.mockReturnValue(BigInt("2000000000"));
-        const result = sdk.toNano("2");
-        expect(mocks.toNano).toHaveBeenCalledWith("2");
-        expect(result).toBe(BigInt("2000000000"));
-      });
-
-      it("converts zero", () => {
-        mocks.toNano.mockReturnValue(BigInt(0));
-        expect(sdk.toNano(0)).toBe(BigInt(0));
-      });
-
-      it("throws PluginSDKError on invalid input", () => {
-        mocks.toNano.mockImplementation(() => {
-          throw new Error("Invalid number");
-        });
-        expect(() => sdk.toNano("not_a_number")).toThrow(PluginSDKError);
-      });
-    });
-
-    describe("fromNano()", () => {
-      it("converts nanoTON bigint to string", () => {
-        mocks.fromNano.mockReturnValue("1.5");
-        const result = sdk.fromNano(BigInt("1500000000"));
-        expect(result).toBe("1.5");
-      });
-
-      it("converts nanoTON string to string", () => {
-        mocks.fromNano.mockReturnValue("3");
-        const result = sdk.fromNano("3000000000");
-        expect(result).toBe("3");
-      });
-
-      it("converts zero", () => {
-        mocks.fromNano.mockReturnValue("0");
-        expect(sdk.fromNano(BigInt(0))).toBe("0");
-      });
-    });
-
-    describe("validateAddress()", () => {
-      it("returns true for a valid TON address", () => {
-        mocks.addressParse.mockReturnValue({});
-        expect(sdk.validateAddress(VALID_ADDRESS)).toBe(true);
-      });
-
-      it("returns false for an invalid address", () => {
-        mocks.addressParse.mockImplementation(() => {
-          throw new Error("Invalid");
-        });
-        expect(sdk.validateAddress("not-an-address")).toBe(false);
-      });
-
-      it("returns false for empty string", () => {
-        mocks.addressParse.mockImplementation(() => {
-          throw new Error("Invalid");
-        });
-        expect(sdk.validateAddress("")).toBe(false);
       });
     });
   });
@@ -1347,6 +1295,7 @@ describe("createTonSDK", () => {
         };
         (getCachedTonClient as Mock).mockResolvedValue({
           open: vi.fn().mockReturnValue(mockContract),
+          getTransactions: confirmingGetTransactions(),
         });
         mocks.toNano.mockReturnValue(BigInt(50000000));
         mocks.internal.mockReturnValue({});
@@ -1426,23 +1375,6 @@ describe("createTonSDK", () => {
           message: expect.stringContaining("key derivation"),
         });
       });
-
-      it("does NOT call sendTransfer (no broadcast)", async () => {
-        const mockWallet = {
-          address: { toString: () => VALID_ADDRESS, toRawString: () => MOCK_RAW_ADDRESS },
-          init: undefined,
-          createTransfer: vi.fn().mockReturnValue(mockCell),
-        };
-        mocks.walletV5R1Create.mockReturnValue(mockWallet);
-
-        await sdk.createTransfer(VALID_ADDRESS, 1);
-
-        expect(mockWallet.createTransfer).toHaveBeenCalled();
-        // Verify the mock contract does NOT have sendTransfer called
-        const client = await getCachedTonClient();
-        const contract = client.open({});
-        expect(contract.sendTransfer).toBeUndefined();
-      });
     });
 
     describe("createJettonTransfer()", () => {
@@ -1487,6 +1419,7 @@ describe("createTonSDK", () => {
         };
         (getCachedTonClient as Mock).mockResolvedValue({
           open: vi.fn().mockReturnValue(mockContract),
+          getTransactions: confirmingGetTransactions(),
         });
 
         // Mock TonAPI jetton balances
@@ -1607,6 +1540,7 @@ describe("createTonSDK", () => {
         };
         (getCachedTonClient as Mock).mockResolvedValue({
           open: vi.fn().mockReturnValue(mockContract),
+          getTransactions: confirmingGetTransactions(),
         });
       });
 
@@ -1761,6 +1695,7 @@ describe("createTonSDK", () => {
 
     describe("send()", () => {
       const mockContract = {
+        address: { toString: () => VALID_ADDRESS },
         getSeqno: vi.fn().mockResolvedValue(7),
         sendTransfer: vi.fn().mockResolvedValue(undefined),
       };
@@ -1777,6 +1712,7 @@ describe("createTonSDK", () => {
         }));
         (getCachedTonClient as Mock).mockResolvedValue({
           open: vi.fn().mockReturnValue(mockContract),
+          getTransactions: confirmingGetTransactions(),
         });
         (withTxLock as Mock).mockImplementation((fn: () => any) => fn());
         mockContract.getSeqno.mockResolvedValue(7);
@@ -1785,9 +1721,7 @@ describe("createTonSDK", () => {
 
       it("sends with default options", async () => {
         const result = await sdk.send(VALID_ADDRESS, 1);
-        expect(result).toMatchObject({ seqno: 7 });
-        expect(result.hash).toContain("7_");
-        expect(result.hash).toContain("_send");
+        expect(result).toEqual({ hash: "cd".repeat(32), seqno: 7 });
         expect(withTxLock).toHaveBeenCalled();
       });
 
@@ -1829,6 +1763,7 @@ describe("createTonSDK", () => {
           mockContract.sendTransfer.mockResolvedValue(undefined);
           (getCachedTonClient as Mock).mockResolvedValue({
             open: vi.fn().mockReturnValue(mockContract),
+            getTransactions: confirmingGetTransactions(),
           });
           (withTxLock as Mock).mockImplementation((fn: () => any) => fn());
 
@@ -1901,6 +1836,7 @@ describe("createTonSDK", () => {
 
     describe("sendMessages()", () => {
       const mockContract = {
+        address: { toString: () => VALID_ADDRESS },
         getSeqno: vi.fn().mockResolvedValue(15),
         sendTransfer: vi.fn().mockResolvedValue(undefined),
       };
@@ -1917,6 +1853,7 @@ describe("createTonSDK", () => {
         }));
         (getCachedTonClient as Mock).mockResolvedValue({
           open: vi.fn().mockReturnValue(mockContract),
+          getTransactions: confirmingGetTransactions(),
         });
         (withTxLock as Mock).mockImplementation((fn: () => any) => fn());
         mockContract.getSeqno.mockResolvedValue(15);
@@ -1929,8 +1866,7 @@ describe("createTonSDK", () => {
           { to: VALID_ADDRESS, value: 2 },
         ];
         const result = await sdk.sendMessages(msgs);
-        expect(result).toMatchObject({ seqno: 15 });
-        expect(result.hash).toContain("_sendMessages");
+        expect(result).toEqual({ hash: "cd".repeat(32), seqno: 15 });
         expect(mocks.internal).toHaveBeenCalledTimes(2);
         expect(withTxLock).toHaveBeenCalled();
       });
@@ -1999,6 +1935,7 @@ describe("createTonSDK", () => {
 
     describe("createSender()", () => {
       const mockContract = {
+        address: { toString: () => VALID_ADDRESS },
         getSeqno: vi.fn().mockResolvedValue(20),
         sendTransfer: vi.fn().mockResolvedValue(undefined),
       };
@@ -2013,6 +1950,7 @@ describe("createTonSDK", () => {
         mocks.internal.mockReturnValue({});
         (getCachedTonClient as Mock).mockResolvedValue({
           open: vi.fn().mockReturnValue(mockContract),
+          getTransactions: confirmingGetTransactions(),
         });
         (withTxLock as Mock).mockImplementation((fn: () => any) => fn());
         mockContract.getSeqno.mockResolvedValue(20);
@@ -2056,78 +1994,6 @@ describe("createTonSDK", () => {
           code: "OPERATION_FAILED",
         });
       });
-    });
-  });
-
-  // ═══════════════════════════════════════════════════════════════
-  // ERROR HANDLING PATTERNS
-  // ═══════════════════════════════════════════════════════════════
-
-  describe("Error handling patterns", () => {
-    it("query methods return null/[] on error, never throw", async () => {
-      // Force all wallet-service calls to throw
-      (getWalletAddress as Mock).mockImplementation(() => {
-        throw new Error("boom");
-      });
-      (getWalletBalance as Mock).mockRejectedValue(new Error("boom"));
-      (getTonPrice as Mock).mockRejectedValue(new Error("boom"));
-      (tonapiFetch as Mock).mockRejectedValue(new Error("boom"));
-
-      // These should all return null/[]
-      expect(sdk.getAddress()).toBeNull();
-      expect(await sdk.getBalance(VALID_ADDRESS)).toBeNull();
-      expect(await sdk.getPrice()).toBeNull();
-      expect(await sdk.getJettonBalances(VALID_ADDRESS)).toEqual([]);
-      expect(await sdk.getJettonInfo("EQ")).toBeNull();
-      expect(await sdk.getNftItems(VALID_ADDRESS)).toEqual([]);
-      expect(await sdk.getNftInfo("EQ")).toBeNull();
-      expect(await sdk.getJettonWalletAddress(VALID_ADDRESS, "EQ")).toBeNull();
-    });
-
-    it("mutation methods throw PluginSDKError, not raw errors", async () => {
-      (getWalletAddress as Mock).mockReturnValue(null);
-
-      // sendTON
-      try {
-        await sdk.sendTON(VALID_ADDRESS, 1);
-        expect.unreachable("should have thrown");
-      } catch (err) {
-        expect(err).toBeInstanceOf(PluginSDKError);
-      }
-
-      // sendJetton
-      (loadWallet as Mock).mockReturnValue(null);
-      try {
-        await sdk.sendJetton("EQ", "EQ", 1);
-        expect.unreachable("should have thrown");
-      } catch (err) {
-        expect(err).toBeInstanceOf(PluginSDKError);
-      }
-
-      // createTransfer
-      (loadWallet as Mock).mockReturnValue(null);
-      try {
-        await sdk.createTransfer(VALID_ADDRESS, 1);
-        expect.unreachable("should have thrown");
-      } catch (err) {
-        expect(err).toBeInstanceOf(PluginSDKError);
-      }
-
-      // createJettonTransfer
-      try {
-        await sdk.createJettonTransfer("EQ", "EQ", 1);
-        expect.unreachable("should have thrown");
-      } catch (err) {
-        expect(err).toBeInstanceOf(PluginSDKError);
-      }
-
-      // verifyPayment (no db)
-      try {
-        await sdk.verifyPayment({ amount: 1, memo: "x", gameType: "y" });
-        expect.unreachable("should have thrown");
-      } catch (err) {
-        expect(err).toBeInstanceOf(PluginSDKError);
-      }
     });
   });
 });

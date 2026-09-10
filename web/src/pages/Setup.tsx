@@ -6,11 +6,11 @@ import { WalletStep } from '../components/setup/WalletStep';
 import { ConnectStep } from '../components/setup/ConnectStep';
 import { SetupComplete } from '../components/setup/SetupComplete';
 import { useState } from 'react';
-import { STEPS, getSteps, useSetup } from '../components/setup/SetupContext';
+import { getSteps, useSetup } from '../components/setup/SetupContext';
 import { setup } from '../lib/api';
 
 // Re-export types for step components that import from here
-export type { WizardData, StepProps } from '../components/setup/SetupContext';
+export type { StepProps } from '../components/setup/SetupContext';
 
 const ALL_STEP_COMPONENTS: Record<string, typeof WelcomeStep> = {
   welcome: WelcomeStep,

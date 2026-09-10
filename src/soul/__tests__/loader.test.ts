@@ -120,6 +120,51 @@ describe("buildSystemPrompt() restructured sections", () => {
     const prompt = buildSystemPrompt({});
     expect(prompt).toContain("__SILENT__");
   });
+
+  it("keeps owner profile and strategy in the global agent context", () => {
+    mockExistsSync.mockImplementation(
+      (path: string) => path === WORKSPACE_PATHS.USER || path === WORKSPACE_PATHS.STRATEGY
+    );
+    mockReadFileSync.mockImplementation((path: string) => {
+      if (path === WORKSPACE_PATHS.USER) return "private owner profile";
+      if (path === WORKSPACE_PATHS.STRATEGY) return "private strategy";
+      return "";
+    });
+
+    const prompt = buildSystemPrompt({
+      ownerName: "Private Owner",
+    });
+
+    expect(prompt).toContain("Private Owner");
+    expect(prompt).toContain("private owner profile");
+    expect(prompt).toContain("private strategy");
+  });
+
+  it("advertises native Rich Markdown for structured user-mode replies", () => {
+    const prompt = buildSystemPrompt({
+      soul: "Custom production soul.",
+      telegramMode: "user",
+    });
+
+    expect(prompt).toContain("## Telegram Rich Formatting");
+    expect(prompt).toContain("Plain responses use regular Telegram text");
+    expect(prompt).toContain("Structured responses");
+    expect(prompt).toContain("GitHub-Flavored Markdown");
+    expect(prompt).toContain("tables");
+    expect(prompt).toContain("<details>");
+    expect(prompt).toContain("telegram_send_message");
+    expect(prompt).toContain("never write tg:// references yourself");
+    expect(prompt).toContain("below 4000 characters");
+  });
+
+  it("does not advertise Rich Markdown in the unsupported bot bridge", () => {
+    const prompt = buildSystemPrompt({
+      soul: "Custom production soul.",
+      telegramMode: "bot",
+    });
+
+    expect(prompt).not.toContain("## Telegram Rich Formatting");
+  });
 });
 
 // ── DEFAULT_SOUL / loadSoul() ────────────────────────────────────────────────

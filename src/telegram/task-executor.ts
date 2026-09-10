@@ -1,5 +1,7 @@
 import type { Task } from "../memory/agent/tasks.js";
 import type { ToolContext } from "../agent/tools/types.js";
+import type { ToolRegistry } from "../agent/tools/registry.js";
+import type { ToolCall } from "@earendil-works/pi-ai";
 import type { AgentRuntime } from "../agent/runtime.js";
 import {
   MAX_JSON_FIELD_CHARS,
@@ -62,8 +64,7 @@ export async function executeScheduledTask(
   task: Task,
   agent: AgentRuntime,
   toolContext: ToolContext,
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- ToolRegistry.execute() takes (ToolCall, ToolContext) but is called here with positional args (name, params, context) — mismatch prevents typing
-  toolRegistry: any,
+  toolRegistry: ToolRegistry,
   parentResults?: Array<{ taskId: string; description: string; result: unknown }>
 ): Promise<string> {
   if (!task.payload) {
@@ -76,7 +77,27 @@ export async function executeScheduledTask(
   if (payload.type === "tool_call") {
     // Mode 1: Auto-execute tool, feed result to agent
     try {
-      const result = await toolRegistry.execute(payload.tool, payload.params, toolContext);
+      // Scheduled direct calls are limited to read-only tools. Actions must run
+      // through an agent turn (and its normal authorization gates).
+      if (toolRegistry.getToolCategory(payload.tool) !== "data-bearing") {
+        return buildAgentPrompt(
+          task,
+          {
+            toolExecuted: payload.tool,
+            toolParams: payload.params ?? {},
+            toolError: `Refused scheduled action tool "${payload.tool}"; only data-bearing tools can auto-execute.`,
+          },
+          parentResults
+        );
+      }
+
+      const toolCall: ToolCall = {
+        type: "toolCall",
+        id: `scheduled-${task.id}`,
+        name: payload.tool,
+        arguments: payload.params ?? {},
+      };
+      const result = await toolRegistry.execute(toolCall, toolContext);
 
       // Build prompt with task context + tool result
       return buildAgentPrompt(

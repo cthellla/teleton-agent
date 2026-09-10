@@ -9,7 +9,7 @@ RUN if [ "$TARGETARCH" = "arm64" ]; then \
     fi
 
 # ---- Build stage ----
-FROM node:20-slim AS build
+FROM node:22.22.2-slim AS build
 
 WORKDIR /app
 
@@ -40,20 +40,24 @@ RUN cd web && npm ci
 RUN npm run build
 
 # ---- Runtime stage ----
-FROM node:20-slim
+FROM node:22.22.2-slim
 
 WORKDIR /app
 
-# Install build tools for native modules (bufferutil, utf-8-validate lack
-# linux-arm64 prebuilds), compile, then remove build tools.
-# package.json overrides onnxruntime-node to 1.22.0-rev (fixes SIGILL on ARM64 Cortex-A72)
+# Copy package files and install production deps only.
+# better-sqlite3 has no usable prebuilt for this image and compiles from source, so the
+# build toolchain is installed, used, then purged in the same layer to keep the image slim.
+# bufferutil / utf-8-validate also lack linux-arm64 prebuilds.
+# package.json overrides onnxruntime-node to 1.22.0-rev (fixes SIGILL on ARM64 Cortex-A72).
 COPY package.json package-lock.json ./
-RUN apt-get update && apt-get install -y python3 make g++ \
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends python3 make g++ \
     && npm pkg delete scripts.prepare \
     && npm ci --omit=dev \
-    && apt-get purge -y python3 make g++ && apt-get autoremove -y \
-    && rm -rf /var/lib/apt/lists/* \
-    && npm cache clean --force
+    && npm cache clean --force \
+    && apt-get purge -y python3 make g++ \
+    && apt-get autoremove -y \
+    && rm -rf /var/lib/apt/lists/*
 
 # Copy compiled code, bin wrapper, and templates
 COPY --from=build /app/dist/ dist/

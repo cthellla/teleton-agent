@@ -43,6 +43,13 @@ vi.mock("big-integer", () => ({
 import { createMocks } from "./__fixtures__/mocks.js";
 const { mockGramJsClient, mockBridge, mockLog } = createMocks();
 
+function mockUpdate(className: string, messageId?: number): Api.TypeUpdate {
+  return {
+    className,
+    ...(messageId === undefined ? {} : { message: { id: messageId } }),
+  } as unknown as Api.TypeUpdate;
+}
+
 describe("createTelegramMessagesSDK", () => {
   let sdk: ReturnType<typeof createTelegramMessagesSDK>;
 
@@ -133,7 +140,11 @@ describe("createTelegramMessagesSDK", () => {
     it("extracts forwarded message ID from UpdateNewMessage", async () => {
       mockGramJsClient.invoke.mockResolvedValue(
         new Api.Updates({
-          updates: [{ className: "UpdateNewMessage", message: { id: 77 } }],
+          updates: [mockUpdate("UpdateNewMessage", 77)],
+          users: [],
+          chats: [],
+          date: 0,
+          seq: 0,
         })
       );
 
@@ -144,7 +155,12 @@ describe("createTelegramMessagesSDK", () => {
     it("extracts from UpdateNewChannelMessage", async () => {
       mockGramJsClient.invoke.mockResolvedValue(
         new Api.UpdatesCombined({
-          updates: [{ className: "UpdateNewChannelMessage", message: { id: 88 } }],
+          updates: [mockUpdate("UpdateNewChannelMessage", 88)],
+          users: [],
+          chats: [],
+          date: 0,
+          seqStart: 0,
+          seq: 0,
         })
       );
 
@@ -155,7 +171,11 @@ describe("createTelegramMessagesSDK", () => {
     it("returns null when no matching update found", async () => {
       mockGramJsClient.invoke.mockResolvedValue(
         new Api.Updates({
-          updates: [{ className: "UpdateReadHistoryOutbox" }],
+          updates: [mockUpdate("UpdateReadHistoryOutbox")],
+          users: [],
+          chats: [],
+          date: 0,
+          seq: 0,
         })
       );
 
@@ -164,7 +184,9 @@ describe("createTelegramMessagesSDK", () => {
     });
 
     it("returns null when updates is empty", async () => {
-      mockGramJsClient.invoke.mockResolvedValue(new Api.Updates({ updates: [] }));
+      mockGramJsClient.invoke.mockResolvedValue(
+        new Api.Updates({ updates: [], users: [], chats: [], date: 0, seq: 0 })
+      );
 
       const result = await sdk.forwardMessage("from", "to", 10);
       expect(result).toBeNull();
@@ -309,7 +331,7 @@ describe("createTelegramMessagesSDK", () => {
     it("wraps errors", async () => {
       mockGramJsClient.sendMessage.mockRejectedValue(new Error("fail"));
 
-      await expect(sdk.scheduleMessage("c", "t", 0)).rejects.toMatchObject({
+      await expect(sdk.scheduleMessage("c", "t", 1700000000)).rejects.toMatchObject({
         code: "OPERATION_FAILED",
       });
     });
@@ -377,6 +399,7 @@ describe("createTelegramMessagesSDK", () => {
         file: expect.any(Buffer),
         caption: "nice pic",
         replyTo: 5,
+        forceDocument: false,
       });
       expect(result).toBe(10);
     });
@@ -390,6 +413,7 @@ describe("createTelegramMessagesSDK", () => {
         file: "/path/to/photo.jpg",
         caption: undefined,
         replyTo: undefined,
+        forceDocument: false,
       });
       expect(result).toBe(11);
     });
@@ -555,6 +579,46 @@ describe("createTelegramMessagesSDK", () => {
       await expect(sdk.setTyping("c")).rejects.toMatchObject({
         code: "OPERATION_FAILED",
       });
+    });
+  });
+
+  describe("v2 input contract", () => {
+    it("uses NOT_AVAILABLE for user-only methods in bot mode", async () => {
+      const botSdk = createTelegramMessagesSDK(mockBridge, mockLog, "bot");
+      await expect(botSdk.deleteMessage("chat", 1)).rejects.toMatchObject({
+        code: "NOT_AVAILABLE",
+      });
+    });
+
+    it("rejects invalid message IDs", async () => {
+      await expect(sdk.deleteMessage("chat", 0)).rejects.toMatchObject({
+        code: "INVALID_INPUT",
+      });
+      await expect(sdk.forwardMessage("from", "to", 1.5)).rejects.toMatchObject({
+        code: "INVALID_INPUT",
+      });
+      await expect(sdk.downloadMedia("chat", -1)).rejects.toMatchObject({
+        code: "INVALID_INPUT",
+      });
+      await expect(sdk.sendScheduledNow("chat", 0)).rejects.toMatchObject({
+        code: "INVALID_INPUT",
+      });
+    });
+
+    it("rejects empty text identifiers and invalid limits", async () => {
+      await expect(sdk.searchMessages("chat", " ")).rejects.toMatchObject({
+        code: "INVALID_INPUT",
+      });
+      await expect(sdk.searchMessages("chat", "query", 0)).rejects.toMatchObject({
+        code: "INVALID_INPUT",
+      });
+      await expect(sdk.getReplies("chat", 1, 101.5)).rejects.toMatchObject({
+        code: "INVALID_INPUT",
+      });
+      await expect(sdk.scheduleMessage("chat", " ", 1)).rejects.toMatchObject({
+        code: "INVALID_INPUT",
+      });
+      await expect(sdk.setTyping(" ")).rejects.toMatchObject({ code: "INVALID_INPUT" });
     });
   });
 });

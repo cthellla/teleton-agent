@@ -9,22 +9,19 @@ import {
 } from "./get-transactions.js";
 import type { ToolEntry } from "../../types.js";
 
-export { telegramGetStarsBalanceTool, telegramGetStarsBalanceExecutor };
-export { telegramGetStarsTransactionsTool, telegramGetStarsTransactionsExecutor };
-
 export const tools: ToolEntry[] = [
   {
     tool: telegramGetStarsBalanceTool,
     executor: telegramGetStarsBalanceExecutor,
     scope: "dm-only",
-    requiredMode: "user",
+    mode: "user",
     tags: ["finance"],
   },
   {
     tool: telegramGetStarsTransactionsTool,
     executor: telegramGetStarsTransactionsExecutor,
     scope: "dm-only",
-    requiredMode: "user",
+    mode: "user",
     tags: ["finance"],
   },
 ];

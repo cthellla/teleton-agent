@@ -14,6 +14,7 @@ vi.mock("../../utils/logger.js", () => ({
 // Mock offset-store — controlable per-test
 const mockReadOffset = vi.fn<(chatId?: string) => number | null>().mockReturnValue(null);
 const mockWriteOffset = vi.fn();
+const mockStoreMessage = vi.fn().mockResolvedValue(undefined);
 vi.mock("../offset-store.js", () => ({
   readOffset: (...args: unknown[]) => mockReadOffset(args[0] as string | undefined),
   writeOffset: (...args: unknown[]) => mockWriteOffset(...args),
@@ -22,7 +23,7 @@ vi.mock("../offset-store.js", () => ({
 // Mock feed stores — must be classes (used with `new`)
 vi.mock("../../memory/feed/index.js", () => ({
   MessageStore: class {
-    storeMessage = vi.fn().mockResolvedValue(undefined);
+    storeMessage = mockStoreMessage;
   },
   ChatStore: class {
     upsertChat = vi.fn();
@@ -47,10 +48,11 @@ vi.mock("../../agent/tools/telegram/media/transcribe-audio.js", () => ({
   telegramTranscribeAudioExecutor: vi.fn().mockResolvedValue({ success: false }),
 }));
 
-import { MessageHandler, type MessageContext } from "../handlers.js";
+import { ChatQueue, MessageHandler, type MessageContext } from "../handlers.js";
 import type { TelegramMessage } from "../bridge.js";
 import type { TelegramConfig } from "../../config/schema.js";
 import { TELEGRAM_SEND_TOOLS } from "../../constants/tools.js";
+import type { MessageStore } from "../../memory/feed/messages.js";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -95,6 +97,7 @@ function makeBridge() {
     setTyping: vi.fn().mockResolvedValue(undefined),
     fetchReplyContext: vi.fn().mockResolvedValue(null),
     getMode: vi.fn().mockReturnValue("user"),
+    requiresOffsetDedup: vi.fn().mockReturnValue(true),
   } as any;
 }
 
@@ -132,6 +135,25 @@ describe("MessageHandler", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockReadOffset.mockReturnValue(null);
+  });
+
+  it("uses the shared message store when one is provided", async () => {
+    const sharedStore = { storeMessage: vi.fn().mockResolvedValue(undefined) };
+    const handler = new MessageHandler(
+      makeBridge(),
+      makeConfig({ dm_policy: "disabled" }),
+      makeAgent(),
+      makeDb(),
+      makeEmbedder(),
+      false,
+      undefined,
+      sharedStore as unknown as MessageStore
+    );
+
+    await handler.handleMessage(makeMessage());
+
+    expect(sharedStore.storeMessage).toHaveBeenCalledOnce();
+    expect(mockStoreMessage).not.toHaveBeenCalled();
   });
 
   describe("analyzeMessage()", () => {
@@ -277,6 +299,16 @@ describe("MessageHandler", () => {
       const ctx = handler.analyzeMessage(makeMessage({ isBot: true }));
       expect(ctx.shouldRespond).toBe(false);
       expect(ctx.reason).toBe("Sender is a bot");
+    });
+
+    it("own user messages → shouldRespond=false", () => {
+      const { handler } = createHandler({ dm_policy: "open" });
+      handler.setOwnUserId("222");
+
+      const ctx = handler.analyzeMessage(makeMessage({ senderId: 222 }));
+
+      expect(ctx.shouldRespond).toBe(false);
+      expect(ctx.reason).toBe("Sender is self");
     });
 
     it("message.id <= chatOffset → shouldRespond=false (already processed)", () => {
@@ -487,17 +519,86 @@ describe("MessageHandler", () => {
   // ── T9: telegramSendCalled detection ─────────────────────────────────────
 
   describe("telegramSendCalled detection", () => {
-    it("when processMessage uses a telegram send tool → bridge.sendMessage NOT called", async () => {
+    it("does not duplicate text successfully delivered to the current chat", async () => {
       const agent = makeAgent();
       agent.processMessage.mockResolvedValue({
         content: "sent via tool",
-        toolCalls: [{ name: "telegram_send_message", args: {} }],
+        toolCalls: [
+          {
+            name: "telegram_send_message",
+            input: { chatId: "chat1", text: "sent via tool" },
+            result: { success: true },
+          },
+        ],
       });
 
       const { handler, bridge } = createHandler({ dm_policy: "open" }, { agent });
       await handler.handleMessage(makeMessage({ id: 101 }));
 
       expect(bridge.sendMessage).not.toHaveBeenCalled();
+    });
+
+    it("sends the final response when the Telegram tool targeted another chat", async () => {
+      const agent = makeAgent();
+      agent.processMessage.mockResolvedValue({
+        content: "Message sent to Alice",
+        toolCalls: [
+          {
+            name: "telegram_send_message",
+            input: { chatId: "alice", text: "hello" },
+            result: { success: true },
+          },
+        ],
+      });
+
+      const { handler, bridge } = createHandler({ dm_policy: "open" }, { agent });
+      await handler.handleMessage(makeMessage({ id: 102, chatId: "chat1" }));
+
+      expect(bridge.sendMessage).toHaveBeenCalledWith(
+        expect.objectContaining({ chatId: "chat1", text: "Message sent to Alice" })
+      );
+    });
+
+    it("sends the final response when the Telegram tool failed", async () => {
+      const agent = makeAgent();
+      agent.processMessage.mockResolvedValue({
+        content: "I could not send the message",
+        toolCalls: [
+          {
+            name: "telegram_send_message",
+            input: { chatId: "chat1", text: "hello" },
+            result: { success: false, error: "forbidden" },
+          },
+        ],
+      });
+
+      const { handler, bridge } = createHandler({ dm_policy: "open" }, { agent });
+      await handler.handleMessage(makeMessage({ id: 103, chatId: "chat1" }));
+
+      expect(bridge.sendMessage).toHaveBeenCalledWith(
+        expect.objectContaining({ chatId: "chat1", text: "I could not send the message" })
+      );
+    });
+
+    it("sends a distinct confirmation after a successful current-chat send", async () => {
+      const agent = makeAgent();
+      agent.processMessage.mockResolvedValue({
+        content: "Done",
+        toolCalls: [
+          {
+            name: "telegram_send_message",
+            input: { chatId: "chat1", text: "hello" },
+            result: { success: true },
+          },
+        ],
+      });
+
+      const { handler, bridge } = createHandler({ dm_policy: "open" }, { agent });
+      await handler.handleMessage(makeMessage({ id: 104, chatId: "chat1" }));
+
+      expect(bridge.sendMessage).toHaveBeenCalledWith(
+        expect.objectContaining({ chatId: "chat1", text: "Done" })
+      );
     });
 
     it("when processMessage has no send tool → bridge.sendMessage IS called", async () => {
@@ -546,11 +647,18 @@ describe("MessageHandler", () => {
     });
 
     for (const toolName of TELEGRAM_SEND_TOOLS) {
+      if (toolName === "telegram_forward_message") continue;
       it(`recognizes ${toolName} as a send tool`, async () => {
         const agent = makeAgent();
         agent.processMessage.mockResolvedValue({
           content: "tool response",
-          toolCalls: [{ name: toolName, args: {} }],
+          toolCalls: [
+            {
+              name: toolName,
+              input: { chatId: "chat1", text: "tool response" },
+              result: { success: true },
+            },
+          ],
         });
 
         const { handler, bridge } = createHandler({ dm_policy: "open" }, { agent });
@@ -559,6 +667,49 @@ describe("MessageHandler", () => {
         expect(bridge.sendMessage).not.toHaveBeenCalled();
       });
     }
+
+    it("does not append an acknowledgement after sending a rich message", async () => {
+      const richText = "Before\n\n![Chart](tg://photo?id=chart)\n\nAfter";
+      const agent = makeAgent();
+      agent.processMessage.mockResolvedValue({
+        content: "Done",
+        toolCalls: [
+          {
+            name: "telegram_send_message",
+            input: {
+              chatId: "chat1",
+              rich: {
+                attachments: [{ id: "chart", type: "photo", path: "/workspace/chart.png" }],
+              },
+            },
+            result: {
+              success: true,
+              data: {
+                messageId: 777,
+                chatId: "chat1",
+                deliveryKind: "rich",
+                renderedText: richText,
+                hasMedia: true,
+                mediaType: "photo",
+              },
+            },
+          },
+        ],
+      });
+
+      const { handler, bridge } = createHandler({ dm_policy: "open" }, { agent });
+      await handler.handleMessage(makeMessage({ id: 701 }));
+
+      expect(bridge.sendMessage).not.toHaveBeenCalled();
+      expect(mockStoreMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: "777",
+          text: richText,
+          hasMedia: true,
+          mediaType: "photo",
+        })
+      );
+    });
   });
 
   // ── Silent reply suppression (scenarios 30-31) ──────────────────────────
@@ -593,6 +744,55 @@ describe("MessageHandler", () => {
       expect(bridge.sendMessage).toHaveBeenCalledWith(
         expect.objectContaining({ text: "Here is a useful response" })
       );
+    });
+  });
+
+  describe("provider failures", () => {
+    it("replies with a safe quota message and marks the update processed", async () => {
+      const agent = makeAgent();
+      agent.processMessage.mockRejectedValue(
+        new Error("API error: Codex error: The usage limit has been reached")
+      );
+
+      const { handler, bridge } = createHandler({ dm_policy: "open" }, { agent });
+      await handler.handleMessage(makeMessage({ id: 201, chatId: "chat1" }));
+
+      expect(bridge.sendMessage).toHaveBeenCalledWith({
+        chatId: "chat1",
+        text: "⚠️ The AI provider usage limit has been reached. Please try again later or switch providers.",
+        replyToId: 201,
+      });
+      expect(mockWriteOffset).toHaveBeenCalledWith(201, "chat1");
+    });
+
+    it("does not expose unexpected provider details", async () => {
+      const agent = makeAgent();
+      agent.processMessage.mockRejectedValue(
+        new Error("API error: upstream failed with secret diagnostic details")
+      );
+
+      const { handler, bridge } = createHandler({ dm_policy: "open" }, { agent });
+      await handler.handleMessage(makeMessage({ id: 202, chatId: "chat1" }));
+
+      expect(bridge.sendMessage).toHaveBeenCalledWith({
+        chatId: "chat1",
+        text: "⚠️ The AI provider is unavailable. Please try again later.",
+        replyToId: 202,
+      });
+    });
+
+    it("keeps the update retryable when the error notification cannot be delivered", async () => {
+      const agent = makeAgent();
+      agent.processMessage.mockRejectedValue(
+        new Error("API error: Codex error: The usage limit has been reached")
+      );
+      const bridge = makeBridge();
+      bridge.sendMessage.mockRejectedValue(new Error("Telegram unavailable"));
+
+      const { handler } = createHandler({ dm_policy: "open" }, { agent, bridge });
+      await handler.handleMessage(makeMessage({ id: 203, chatId: "chat1" }));
+
+      expect(mockWriteOffset).not.toHaveBeenCalled();
     });
   });
 
@@ -632,5 +832,21 @@ describe("MessageHandler", () => {
 
       expect(agent.processMessage).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe("ChatQueue", () => {
+  it("rejects excess messages instead of growing without bound", async () => {
+    const queue = new ChatQueue(1, 1);
+    let release!: () => void;
+    const first = queue.enqueue(
+      "chat-a",
+      () => new Promise<void>((resolve) => (release = resolve))
+    );
+
+    await expect(queue.enqueue("chat-b", async () => {})).rejects.toThrow(/capacity/i);
+    await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+    release();
+    await first;
   });
 });

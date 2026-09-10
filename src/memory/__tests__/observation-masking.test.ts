@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import type { Message, ToolResultMessage, UserMessage } from "@mariozechner/pi-ai";
+import type { Message, ToolResultMessage, UserMessage } from "@earendil-works/pi-ai";
 import {
   maskOldToolResults,
   DEFAULT_MASKING_CONFIG,
@@ -21,14 +21,6 @@ function makeToolResult(name: string, text: string, isError = false): ToolResult
 
 function makeUserMsg(text: string): UserMessage {
   return { role: "user", content: [{ type: "text", text }], timestamp: Date.now() };
-}
-
-function makeCocoonToolResult(text: string): UserMessage {
-  return {
-    role: "user",
-    content: [{ type: "text", text: `<tool_response>${text}</tool_response>` }],
-    timestamp: Date.now(),
-  };
 }
 
 const SHORT_RESULT = JSON.stringify({ success: true, data: { message: "Done" } });
@@ -179,19 +171,6 @@ describe("maskOldToolResults — inter-iteration truncation", () => {
     ];
     const result = maskOldToolResults(messages, { config, currentIterationStartIndex: 1 });
     expect(result[0]).toBe(messages[0]); // kept intact
-  });
-
-  it("truncates Cocoon-style tool results", () => {
-    const config: MaskingConfig = { ...DEFAULT_MASKING_CONFIG, keepRecentCount: 20 };
-    const longCocoon = "x".repeat(5000);
-    const messages: Message[] = [
-      makeCocoonToolResult(longCocoon), // index 0, prev iteration
-      makeToolResult("current", SHORT_RESULT), // index 1, current
-    ];
-    const result = maskOldToolResults(messages, { config, currentIterationStartIndex: 1 });
-    const text = (result[0] as UserMessage).content[0];
-    expect(text.type === "text" && text.text.length).toBeLessThan(longCocoon.length + 30);
-    expect(text.type === "text" && text.text).toContain("truncated");
   });
 
   it("uses summary field for truncation when available", () => {

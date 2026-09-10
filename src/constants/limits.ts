@@ -1,9 +1,7 @@
 /** Maximum serialized tool result size before truncation */
 export const MAX_TOOL_RESULT_SIZE = 200_000;
 export const MAX_FILENAME_LENGTH = 255;
-export const DEFAULT_GIFTS_QUERY_LIMIT = 50;
 export const MAX_POLL_QUESTION_LENGTH = 300;
-export const DEAL_VERIFICATION_WINDOW_SECONDS = 300;
 export const TELEGRAM_MAX_MESSAGE_LENGTH = 4096;
 export const MAX_JSON_FIELD_CHARS = 8_000;
 export const MAX_TOTAL_PROMPT_CHARS = 32_000;
@@ -82,7 +80,6 @@ export const WEB_SEARCH_MAX_RESULTS = 10; // max allowed count
 export const TOOL_CONCURRENCY_LIMIT = 3;
 
 // ─── Tool RAG ──────────────────────────────────────────────────
-export const TOOL_RAG_DEFAULT_TOP_K = 35;
 export const TOOL_RAG_MIN_SCORE = 0.1;
 export const TOOL_RAG_VECTOR_WEIGHT = 0.6;
 export const TOOL_RAG_KEYWORD_WEIGHT = 0.4;

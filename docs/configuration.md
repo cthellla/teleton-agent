@@ -11,7 +11,6 @@ Run `teleton setup` to generate a config file interactively, or copy `config.exa
 - [agent](#agent)
 - [telegram](#telegram)
 - [embedding](#embedding)
-- [deals](#deals)
 - [webui](#webui)
 - [storage](#storage)
 - [logging](#logging)
@@ -23,7 +22,7 @@ Run `teleton setup` to generate a config file interactively, or copy `config.exa
 - [plugins](#plugins)
 - [ton_proxy](#ton_proxy)
 - [api](#api)
-- [cocoon](#cocoon)
+- [gocoon](#gocoon)
 - [tonapi_key](#tonapi_key)
 - [toncenter_api_key](#toncenter_api_key)
 - [tavily_api_key](#tavily_api_key)
@@ -38,15 +37,18 @@ LLM provider and agentic loop configuration.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `agent.provider` | `enum` | `"anthropic"` | LLM provider. One of: `anthropic`, `claude-code`, `openai`, `google`, `xai`, `groq`, `openrouter`, `moonshot`, `mistral`, `cerebras`, `zai`, `minimax`, `huggingface`, `cocoon`, `local`. |
+| `agent.provider` | `enum` | `"anthropic"` | LLM provider. One of: `anthropic`, `codex`, `grok-build`, `openai`, `google`, `xai`, `groq`, `openrouter`, `moonshot`, `mistral`, `cerebras`, `zai`, `minimax`, `huggingface`, `gocoon`, `local`. |
 | `agent.api_key` | `string` | `""` | API key for the chosen provider. Can be overridden with `TELETON_API_KEY` env var. |
 | `agent.model` | `string` | `"claude-haiku-4-5-20251001"` | Primary model ID. Auto-detected from provider if not set (only for non-Anthropic providers). |
-| `agent.utility_model` | `string` | *auto-detected* | Cheap/fast model used for summarization and compaction. If omitted, the platform selects one based on the provider (e.g., `claude-haiku-4-5-20251001` for Anthropic, `gpt-4o-mini` for OpenAI). |
+| `agent.reasoning_effort` | `enum` | `"medium"` | Codex reasoning effort: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`. |
+| `agent.utility_model` | `string` | *auto-detected* | Cheap/fast model used for summarization and compaction. If omitted, the platform selects one based on the provider (e.g., `claude-haiku-4-5-20251001` for Anthropic, `gpt-5.4-nano` for OpenAI). |
 | `agent.base_url` | `string` | *optional* | Base URL for local LLM server (e.g., `http://localhost:11434/v1`). Must be a valid URL. |
 | `agent.max_tokens` | `number` | `4096` | Maximum tokens in each LLM response. |
 | `agent.temperature` | `number` | `0.7` | Sampling temperature (0.0 = deterministic, 1.0 = creative). |
 | `agent.system_prompt` | `string \| null` | `null` | Additional system prompt text appended to the default SOUL.md personality. Set to `null` to use only the built-in soul. |
 | `agent.max_agentic_iterations` | `number` | `5` | Maximum number of agentic loop iterations per message. Each iteration is one tool-call-then-result cycle. Higher values allow more complex multi-step reasoning but increase cost and latency. |
+| `agent.max_turn_duration_ms` | `number` | `300000` | Wall-clock budget checked between safe loop phases. Running external actions are never cut off. |
+| `agent.fallbacks` | `array` | `[]` | Ordered provider/model fallbacks used only after quota or transient provider failures and only before any external action has started. |
 
 ### agent.session_reset_policy
 
@@ -66,10 +68,15 @@ agent:
   provider: "anthropic"
   api_key: "sk-ant-..."
   model: "claude-haiku-4-5-20251001"
+  reasoning_effort: "medium"
   utility_model: "claude-haiku-4-5-20251001"
   max_tokens: 4096
   temperature: 0.7
   max_agentic_iterations: 5
+  max_turn_duration_ms: 300000
+  fallbacks:
+    - provider: "codex"
+      model: "gpt-5.6-terra"
   session_reset_policy:
     daily_reset_enabled: true
     daily_reset_hour: 4
@@ -84,21 +91,30 @@ When you change the `provider` and omit `model`, the platform auto-selects:
 | Provider | Default Model | Default Utility Model |
 |----------|--------------|----------------------|
 | `anthropic` | `claude-haiku-4-5-20251001` | `claude-haiku-4-5-20251001` |
-| `claude-code` | `claude-haiku-4-5-20251001` | `claude-haiku-4-5-20251001` |
-| `codex` | `gpt-5.5` | `gpt-5.1-codex-mini` |
-| `openai` | `gpt-5.5` | `gpt-4o-mini` |
-| `google` | `gemini-2.5-flash` | `gemini-2.0-flash-lite` |
-| `xai` | `grok-3` | `grok-3-mini-fast` |
-| `groq` | `llama-3.3-70b-versatile` | `llama-3.1-8b-instant` |
-| `openrouter` | `anthropic/claude-opus-4.5` | `google/gemini-2.5-flash-lite` |
-| `moonshot` | `k2p6` | `k2p6` |
-| `mistral` | `devstral-small-2507` | `ministral-8b-latest` |
-| `cerebras` | `qwen-3-235b-a22b-instruct-2507` | `llama3.1-8b` |
-| `zai` | `glm-4.7-flash` | `glm-4.5-flash` |
-| `minimax` | `MiniMax-M2.7` | `MiniMax-M2.7` |
-| `huggingface` | `deepseek-ai/DeepSeek-V3.2` | `Qwen/Qwen3-Next-80B-A3B-Instruct` |
-| `cocoon` | `Qwen/Qwen3-32B` | `Qwen/Qwen3-32B` |
+| `codex` | `gpt-5.6-terra` | `gpt-5.4-mini` |
+| `grok-build` | `grok-4.6` | `grok-4.6` |
+| `openai` | `gpt-5.6-terra` | `gpt-5.4-nano` |
+| `google` | `gemini-3.6-flash` | `gemini-3.5-flash-lite` |
+| `xai` | `grok-4.5` | `grok-4.3` |
+| `groq` | `openai/gpt-oss-120b` | `openai/gpt-oss-20b` |
+| `openrouter` | `anthropic/claude-opus-5` | `google/gemini-3.5-flash-lite` |
+| `moonshot` | `kimi-for-coding` | `kimi-for-coding` |
+| `mistral` | `mistral-medium-latest` | `mistral-small-2603` |
+| `cerebras` | `gpt-oss-120b` | `gemma-4-31b` |
+| `zai` | `glm-5.2` | `glm-5-turbo` |
+| `minimax` | `MiniMax-M3` | `MiniMax-M3` |
+| `huggingface` | `deepseek-ai/DeepSeek-V4-Pro` | `Qwen/Qwen3-Next-80B-A3B-Instruct` |
+| `gocoon` | `Qwen/Qwen3-32B` | `Qwen/Qwen3-32B` |
 | `local` | `auto` | `auto` |
+
+`grok-build` reads the browser/OIDC session created by `grok login` from
+`$GROK_HOME/auth.json` (default: `~/.grok/auth.json`) and connects directly to
+the Grok Build CLI proxy. `grok-4.6` is the default and `grok-4.5` remains
+available for existing configurations. The session token is not stored in
+Teleton's config.
+
+Codex exposes the full GPT-5.6 family. `gpt-5.6-terra` is the balanced default;
+`gpt-5.6-sol` favors capability and `gpt-5.6-luna` favors speed and cost.
 
 ---
 
@@ -128,8 +144,8 @@ Telegram client and messaging behavior.
 | `telegram.owner_username` | `string` | *optional* | Owner's Telegram username without `@` (e.g., `"zkproof"`). |
 | `telegram.owner_id` | `number` | *optional* | Owner's Telegram user ID. |
 | `telegram.debounce_ms` | `number` | `1500` | Debounce delay in milliseconds for group messages. When multiple messages arrive in quick succession, they are batched into a single processing cycle. Set to `0` to disable. |
-| `telegram.bot_token` | `string` | *optional* | Telegram Bot token from @BotFather. Required for the deals system's inline buttons. |
-| `telegram.bot_username` | `string` | *optional* | Bot username without `@` (e.g., `"teleton_deals_bot"`). Required when `bot_token` is set. |
+| `telegram.bot_token` | `string` | *optional in user mode* | Telegram Bot token from @BotFather. Required in bot mode; enables plugin inline cards and callbacks in user mode. |
+| `telegram.bot_username` | `string` | *optional* | Bot username without `@` (e.g., `"teleton_agent_bot"`). Used with `bot_token` for inline queries. |
 
 ### DM Policies
 
@@ -164,7 +180,7 @@ telegram:
   owner_username: "zkproof"
   debounce_ms: 1500
   # bot_token: "123456:ABC-DEF..."
-  # bot_username: "my_deals_bot"
+  # bot_username: "my_agent_bot"
 ```
 
 ---
@@ -187,33 +203,6 @@ embedding:
 ```
 
 The `"local"` provider uses ONNX Runtime with the `@huggingface/transformers` library and requires no external API calls. The `"none"` provider disables vector search entirely and uses only SQLite FTS5 for memory retrieval.
-
----
-
-## deals
-
-Configuration for the peer-to-peer deals/escrow system.
-
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `deals.enabled` | `boolean` | `true` | Enable the deals module. |
-| `deals.expiry_seconds` | `number` | `120` | Time in seconds before an unaccepted deal expires. |
-| `deals.buy_max_floor_percent` | `number` | `95` | Maximum price as a percentage of floor price for buy deals. |
-| `deals.sell_min_floor_percent` | `number` | `105` | Minimum price as a percentage of floor price for sell deals. |
-| `deals.poll_interval_ms` | `number` | `5000` | How frequently (in milliseconds) the system polls for payment verification on active deals. |
-| `deals.max_verification_retries` | `number` | `12` | Maximum number of payment verification attempts before timing out. |
-| `deals.expiry_check_interval_ms` | `number` | `60000` | How frequently (in milliseconds) expired deals are cleaned up. |
-
-### Example
-
-```yaml
-deals:
-  enabled: true
-  expiry_seconds: 120
-  buy_max_floor_percent: 80
-  sell_min_floor_percent: 115
-  poll_interval_ms: 5000
-```
 
 ---
 
@@ -315,7 +304,7 @@ Semantic tool retrieval configuration. When enabled, the agent uses embedding-ba
 |-----|------|---------|-------------|
 | `tool_rag.enabled` | `boolean` | `true` | Enable semantic tool retrieval (Tool RAG). |
 | `tool_rag.top_k` | `number` | `35` | Maximum number of tools to retrieve per LLM call. |
-| `tool_rag.always_include` | `string[]` | `["telegram_send_message", "telegram_quote_reply", "telegram_send_photo", "journal_*", "workspace_*"]` | Tool name patterns always included regardless of relevance score. Supports prefix glob with `*`. |
+| `tool_rag.always_include` | `string[]` | `["journal_*", "workspace_*", "web_*"]` | Tool name patterns always included regardless of relevance score. Supports prefix glob with `*`. Telegram send tools remain searchable but are excluded by default to prevent duplicate replies and progress messages. |
 | `tool_rag.skip_unlimited_providers` | `boolean` | `false` | Skip Tool RAG for providers with no tool limit (e.g., Anthropic). When `true`, all tools are sent to those providers. |
 
 ### Example
@@ -325,11 +314,9 @@ tool_rag:
   enabled: true
   top_k: 35
   always_include:
-    - "telegram_send_message"
-    - "telegram_quote_reply"
-    - "telegram_send_photo"
     - "journal_*"
     - "workspace_*"
+    - "web_*"
   skip_unlimited_providers: false
 ```
 
@@ -486,20 +473,20 @@ api:
 
 ---
 
-## cocoon
+## gocoon
 
-Cocoon Network configuration. The Cocoon provider is a decentralized LLM proxy that pays in TON. It requires an external `cocoon-cli` process running on the specified port.
+Gocoon configuration. Gocoon is a pure-Go COCOON client: a decentralized LLM that pays in TON. It exposes a native OpenAI-compatible API (with function calling) and requires the `gocoon-runner` process running on the specified port.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `cocoon.port` | `number` | `10000` | HTTP port of the `cocoon-cli` proxy (1-65535). |
+| `gocoon.port` | `number` | `10000` | HTTP port of the `gocoon-runner` OpenAI-compatible API (1-65535). |
 
-The `cocoon` section is optional. Only needed when `agent.provider` is set to `"cocoon"`.
+The `gocoon` section is optional. Only needed when `agent.provider` is set to `"gocoon"`.
 
 ### Example
 
 ```yaml
-cocoon:
+gocoon:
   port: 10000
 ```
 
@@ -664,6 +651,7 @@ agent:
   max_tokens: 4096
   temperature: 0.7
   max_agentic_iterations: 5
+  max_turn_duration_ms: 300000
   session_reset_policy:
     daily_reset_enabled: true
     daily_reset_hour: 4
@@ -684,10 +672,6 @@ telegram:
 
 embedding:
   provider: "local"
-
-deals:
-  enabled: true
-  expiry_seconds: 120
 
 webui:
   enabled: false

@@ -8,6 +8,7 @@ import {
   SECONDS_PER_HOUR,
 } from "../../constants/limits.js";
 import { createLogger } from "../../utils/logger.js";
+import { escapeFts5Query, bm25ToScore } from "./fts-utils.js";
 
 const log = createLogger("Memory");
 
@@ -62,22 +63,13 @@ export function parseTemporalIntent(query: string): { afterTimestamp?: number } 
 }
 
 /**
- * Escape FTS5 special characters to prevent syntax errors.
- */
-function escapeFts5Query(query: string): string {
-  return query
-    .replace(/["\*\-\+\(\)\:\^\~\?\.\@\#\$\%\&\!\[\]\{\}\|\\\/<>=,;'`]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-/**
  * Hybrid search combining vector similarity and BM25 keyword search.
  */
 export class HybridSearch {
   constructor(
     private db: Database.Database,
-    private vectorEnabled: boolean
+    private vectorEnabled: boolean,
+    private trackKnowledgeAccess = true
   ) {}
 
   async searchKnowledge(
@@ -108,7 +100,7 @@ export class HybridSearch {
     );
 
     // Fire-and-forget: track access on returned chunks (deferred to avoid blocking response)
-    if (results.length > 0) {
+    if (this.trackKnowledgeAccess && results.length > 0) {
       const ids = results.map((r) => r.id);
       setImmediate(() => {
         try {
@@ -132,6 +124,8 @@ export class HybridSearch {
     queryEmbedding: number[],
     options: {
       chatId?: string;
+      excludeChatId?: string;
+      excludeMessageId?: string;
       limit?: number;
       vectorWeight?: number;
       keywordWeight?: number;
@@ -147,6 +141,8 @@ export class HybridSearch {
           queryEmbedding,
           Math.ceil(limit * 3),
           options.chatId,
+          options.excludeChatId,
+          options.excludeMessageId,
           options.afterTimestamp
         )
       : [];
@@ -155,6 +151,8 @@ export class HybridSearch {
       query,
       Math.ceil(limit * 3),
       options.chatId,
+      options.excludeChatId,
+      options.excludeMessageId,
       options.afterTimestamp
     );
 
@@ -235,7 +233,7 @@ export class HybridSearch {
 
       return rows.map((row) => ({
         ...row,
-        keywordScore: this.bm25ToScore(row.score),
+        keywordScore: bm25ToScore(row.score),
         createdAt: row.created_at ?? undefined,
         importance: row.importance ?? 0.5,
         lastAccessedAt: row.last_accessed_at ?? undefined,
@@ -250,35 +248,42 @@ export class HybridSearch {
     embedding: number[],
     limit: number,
     chatId?: string,
+    excludeChatId?: string,
+    excludeMessageId?: string,
     afterTimestamp?: number
   ): HybridSearchResult[] {
     if (!this.vectorEnabled || embedding.length === 0) return [];
 
     try {
       const embeddingBuffer = serializeEmbedding(embedding);
-      const conditions: string[] = [];
+      const conditions: string[] = ["embedding MATCH ?", "k = ?"];
       const params: unknown[] = [embeddingBuffer, limit];
 
       if (chatId) {
-        conditions.push("m.chat_id = ?");
+        conditions.push("chat_id = ?");
         params.push(chatId);
       }
-      if (afterTimestamp) {
-        conditions.push("m.timestamp >= ?");
-        params.push(afterTimestamp);
+      if (excludeChatId) {
+        conditions.push("chat_id != ?");
+        params.push(excludeChatId);
       }
-
-      const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+      if (excludeMessageId) {
+        conditions.push("message_id != ?");
+        params.push(excludeMessageId);
+      }
+      if (afterTimestamp) {
+        conditions.push("timestamp >= ?");
+        params.push(BigInt(afterTimestamp));
+      }
 
       const sql = `
         SELECT mv.id, m.text, m.chat_id as source, mv.distance, m.timestamp
         FROM (
           SELECT id, distance
           FROM tg_messages_vec
-          WHERE embedding MATCH ? AND k = ?
+          WHERE ${conditions.join(" AND ")}
         ) mv
-        JOIN tg_messages m ON m.id = mv.id
-        ${whereClause}
+        JOIN tg_messages m ON (m.chat_id || char(31) || m.id) = mv.id
       `;
 
       const rows = this.db.prepare(sql).all(...params) as Array<{
@@ -307,6 +312,8 @@ export class HybridSearch {
     query: string,
     limit: number,
     chatId?: string,
+    excludeChatId?: string,
+    excludeMessageId?: string,
     afterTimestamp?: number
   ): HybridSearchResult[] {
     const safeQuery = escapeFts5Query(query);
@@ -320,6 +327,14 @@ export class HybridSearch {
         conditions.push("m.chat_id = ?");
         params.push(chatId);
       }
+      if (excludeChatId) {
+        conditions.push("m.chat_id != ?");
+        params.push(excludeChatId);
+      }
+      if (excludeMessageId) {
+        conditions.push("m.id != ?");
+        params.push(excludeMessageId);
+      }
       if (afterTimestamp) {
         conditions.push("m.timestamp >= ?");
         params.push(afterTimestamp);
@@ -327,7 +342,8 @@ export class HybridSearch {
       params.push(limit);
 
       const sql = `
-        SELECT m.id, m.text, m.chat_id as source, rank as score, m.timestamp
+        SELECT (m.chat_id || char(31) || m.id) AS id,
+               m.text, m.chat_id as source, rank as score, m.timestamp
         FROM tg_messages_fts mf
         JOIN tg_messages m ON m.rowid = mf.rowid
         WHERE ${conditions.join(" AND ")}
@@ -346,7 +362,7 @@ export class HybridSearch {
       return rows.map((row) => ({
         ...row,
         text: row.text ?? "",
-        keywordScore: this.bm25ToScore(row.score),
+        keywordScore: bm25ToScore(row.score),
         createdAt: row.timestamp ?? undefined,
       }));
     } catch (error) {
@@ -400,13 +416,5 @@ export class HybridSearch {
       .filter((r) => r.score >= HYBRID_SEARCH_MIN_SCORE)
       .sort((a, b) => b.score - a.score)
       .slice(0, limit);
-  }
-
-  /**
-   * Convert BM25 rank to normalized score.
-   * FTS5 rank is negative; more negative = better match.
-   */
-  private bm25ToScore(rank: number): number {
-    return 1 / (1 + Math.exp(rank));
   }
 }

@@ -1,20 +1,13 @@
-import type { Api } from "telegram";
-import type { PluginMessageEvent, PluginCallbackEvent } from "@teleton-agent/sdk";
 import { loadConfig, getDefaultConfigPath, type Config } from "./config/index.js";
 import { loadSoul } from "./soul/index.js";
 import { AgentRuntime } from "./agent/runtime.js";
-import type { TelegramMessage } from "./telegram/bridge.js";
 import type { ITelegramBridge } from "./telegram/bridge-interface.js";
-import { isBotBridge, isUserBridge } from "./telegram/bridge-guards.js";
-import type { GrammyBotBridge } from "./telegram/bridges/bot.js";
+import { isBotBridge } from "./telegram/bridge-guards.js";
 import { createBridge } from "./telegram/factory.js";
-import { eventBus } from "./events/bus.js";
 import { MessageHandler } from "./telegram/handlers.js";
 import { AdminHandler } from "./telegram/admin.js";
-import { MessageDebouncer } from "./telegram/debounce.js";
 import { getDatabase, closeDatabase, initializeMemory, type MemorySystem } from "./memory/index.js";
 import { setKnowledgeIndexer } from "./memory/agent/knowledge.js";
-import { getWalletAddress } from "./ton/wallet-service.js";
 import { setTonapiKey } from "./constants/api-endpoints.js";
 import { setToncenterApiKey } from "./ton/endpoint.js";
 import { TELETON_ROOT } from "./workspace/paths.js";
@@ -22,35 +15,27 @@ import { join } from "path";
 import { ToolRegistry } from "./agent/tools/registry.js";
 import { registerAllTools } from "./agent/tools/register-all.js";
 import { initializeSkills, type SkillsHandle } from "./agent/skills/index.js";
-import { type PluginModuleWithHooks } from "./agent/tools/plugin-loader.js";
-import type { HookName, AgentStartEvent, AgentStopEvent } from "./sdk/hooks/types.js";
-import { createHookRunner } from "./sdk/hooks/runner.js";
 import type { SDKDependencies } from "./sdk/index.js";
-import type { SupportedProvider } from "./config/providers.js";
-import { readRawConfig, setNestedValue, writeRawConfig } from "./config/configurable-keys.js";
 import { loadModules } from "./agent/tools/module-loader.js";
-import type Database from "better-sqlite3";
 import { ModulePermissions } from "./agent/tools/module-permissions.js";
 import { SHUTDOWN_TIMEOUT_MS } from "./constants/timeouts.js";
 
-const PLUGIN_START_TIMEOUT_MS = 30_000;
-const PLUGIN_STOP_TIMEOUT_MS = 30_000;
-import type { PluginModule, PluginContext } from "./agent/tools/types.js";
-import { PluginWatcher } from "./agent/tools/plugin-watcher.js";
-import { loadMcpServers, closeMcpServers, type McpConnection } from "./agent/tools/mcp-loader.js";
+import type { PluginModule } from "./agent/tools/types.js";
 import { getErrorMessage } from "./utils/errors.js";
 import { UserHookEvaluator } from "./agent/hooks/user-hook-evaluator.js";
 import { createLogger, initLoggerFromConfig } from "./utils/logger.js";
 import { AgentLifecycle } from "./agent/lifecycle.js";
 import { InlineRouter } from "./bot/inline-router.js";
 import { PluginRateLimiter } from "./bot/rate-limiter.js";
-
 import type { WebUIServer } from "./webui/server.js";
 import type { ApiServer } from "./api/server.js";
 import { HeartbeatRunner } from "./heartbeat.js";
-import { StartupMaintenance } from "./startup-maintenance.js";
 import { ScheduledTaskHandler } from "./scheduled-tasks.js";
-import { PluginOrchestrator } from "./plugin-orchestrator.js";
+import { ProviderRuntime } from "./app/provider-runtime.js";
+import { createServerDeps } from "./app/server-deps.js";
+import { MessagePipeline } from "./app/message-pipeline.js";
+import { AgentLifecycleController } from "./app/agent-lifecycle-controller.js";
+import { deleteNestedValue, setNestedValue } from "./config/configurable-keys.js";
 
 const log = createLogger("App");
 
@@ -60,90 +45,87 @@ export class TeletonApp {
   private bridge: ITelegramBridge;
   private messageHandler: MessageHandler;
   private adminHandler: AdminHandler;
-  private debouncer: MessageDebouncer | null = null;
-  private toolCount: number = 0;
   private toolRegistry: ToolRegistry;
+  private skillsHandle: SkillsHandle | null = null;
   private modules: PluginModule[] = [];
-  private builtinModuleCount: number = 0;
   private memory: MemorySystem;
   private sdkDeps: SDKDependencies;
   private webuiServer: WebUIServer | null = null;
   private apiServer: ApiServer | null = null;
-  private pluginWatcher: PluginWatcher | null = null;
-  private mcpConnections: McpConnection[] = [];
-  private callbackHandlerRegistered = false;
-  private messageHandlersRegistered = false;
+  private providerRuntime: ProviderRuntime;
   private lifecycle = new AgentLifecycle();
-  private hookRunner?: ReturnType<typeof createHookRunner>;
   private userHookEvaluator: UserHookEvaluator | null = null;
-  private startTime: number = 0;
-  private messagesProcessed: number = 0;
   private heartbeatRunner: HeartbeatRunner;
   private scheduledTaskHandler: ScheduledTaskHandler;
-  private skillsHandle: SkillsHandle | null = null;
+  private inlineRouter = new InlineRouter();
+  private pluginRateLimiter = new PluginRateLimiter();
+  private inlineMiddlewareBridge: ITelegramBridge | null = null;
+  private messagePipeline: MessagePipeline;
+  private agentLifecycleController = new AgentLifecycleController();
 
   private configPath: string;
 
-  private getMcpServerInfo() {
-    return Object.entries(this.config.mcp.servers).map(([name, serverConfig]) => {
-      const type = serverConfig.command
-        ? ("stdio" as const)
-        : serverConfig.url
-          ? ("streamable-http" as const)
-          : ("sse" as const);
-      const target = serverConfig.command ?? serverConfig.url ?? "";
-      const connected = this.mcpConnections.some((c) => c.serverName === name);
-      const moduleName = `mcp_${name}`;
-      const moduleTools = this.toolRegistry.getModuleTools(moduleName);
-      return {
-        name,
-        type,
-        target,
-        scope: serverConfig.scope ?? "always",
-        enabled: serverConfig.enabled ?? true,
-        connected,
-        toolCount: moduleTools.length,
-        tools: moduleTools.map((t) => t.name),
-        envKeys: Object.keys(serverConfig.env ?? {}),
-      };
-    });
-  }
-
   private buildServerDeps() {
-    const mcpServers = () => this.getMcpServerInfo();
-    const builtinNames = this.modules.map((m) => m.name);
-    const pluginContext: PluginContext = {
-      bridge: this.bridge,
-      db: getDatabase().getDb(),
-      config: this.config,
-    };
-    return {
+    return createServerDeps({
       agent: this.agent,
       bridge: this.bridge,
       memory: this.memory,
       toolRegistry: this.toolRegistry,
-      plugins: this.modules
-        .filter((m) => this.toolRegistry.isPluginModule(m.name))
-        .map((m) => ({ name: m.name, version: m.version ?? "0.0.0" })),
-      mcpServers,
-      config: this.config.webui,
+      modules: this.modules,
+      mcpConnections: this.agentLifecycleController.getMcpConnections(),
+      config: this.config,
       configPath: this.configPath,
       lifecycle: this.lifecycle,
-      marketplace: {
-        modules: this.modules,
-        config: this.config,
-        sdkDeps: this.sdkDeps,
-        pluginContext,
-        loadedModuleNames: builtinNames,
-        rewireHooks: () => this.wirePluginEventHooks(),
-      },
+      sdkDeps: this.sdkDeps,
       userHookEvaluator: this.userHookEvaluator,
-    };
+      rewireHooks: () => this.messagePipeline.wirePluginEventHooks(),
+      stopGocoonRunner: () => this.stopGocoonRunner(),
+      reloadConfig: () => loadConfig(this.configPath),
+      applyConfigKey: (key, value) => this.applyHotConfigKey(key, value),
+      getHookRegistry: () => this.agentLifecycleController.getHookRegistry(),
+    });
+  }
+
+  private applyHotConfigKey(key: string, value: unknown): void {
+    const runtimeConfig = this.config as unknown as Record<string, unknown>;
+    if (value === undefined) deleteNestedValue(runtimeConfig, key);
+    else setNestedValue(runtimeConfig, key, value);
+
+    this.providerRuntime.updateConfig(this.config);
+    this.agent.updateConfig(this.config);
+    this.toolRegistry.setAllowFrom(this.config.telegram.allow_from ?? []);
+    this.toolRegistry.setAdminIds(this.config.telegram.admin_ids);
+    this.messageHandler.updateConfig(this.config);
+    this.adminHandler.updateConfig(this.config.telegram);
+    this.scheduledTaskHandler.updateConfig(this.config);
+    this.heartbeatRunner.updateConfig(this.config);
+    if (key === "telegram.debounce_ms") {
+      this.messagePipeline.updateDebounceMs(this.config.telegram.debounce_ms);
+    }
+    initLoggerFromConfig(this.config.logging);
+
+    if (key === "heartbeat.enabled" || key === "telegram.admin_ids") {
+      this.heartbeatRunner.stop();
+      const adminChatId = this.config.telegram.admin_ids[0];
+      if (this.config.heartbeat.enabled && adminChatId) {
+        this.heartbeatRunner.start(adminChatId, this.config.heartbeat.interval_ms);
+      }
+    }
+  }
+
+  /**
+   * Stop the supervised gocoon runner + SSE proxy. A withdraw refuses to run
+   * while the runner is active, so the Gocoon page calls this first. The agent
+   * stays up; gocoon inference is unavailable until the next restart.
+   */
+  stopGocoonRunner(): boolean {
+    return this.providerRuntime.stopGocoon();
   }
 
   constructor(configPath?: string) {
     this.configPath = configPath ?? getDefaultConfigPath();
     this.config = loadConfig(this.configPath);
+    this.providerRuntime = new ProviderRuntime(this.config);
 
     // Wire YAML logging config to pino (H2 fix)
     initLoggerFromConfig(this.config.logging);
@@ -190,15 +172,13 @@ export class TeletonApp {
     this.userHookEvaluator = new UserHookEvaluator(db);
     this.agent.setUserHookEvaluator(this.userHookEvaluator);
 
-    this.sdkDeps = { bridge: this.bridge, configRef: this.config };
+    this.sdkDeps = { bridge: this.bridge };
 
     this.modules = loadModules(this.toolRegistry, this.config, db);
-    this.builtinModuleCount = this.modules.length;
 
     const modulePermissions = new ModulePermissions(db);
     this.toolRegistry.setPermissions(modulePermissions);
 
-    this.toolCount = this.toolRegistry.count;
     this.messageHandler = new MessageHandler(
       this.bridge,
       this.config.telegram,
@@ -206,16 +186,32 @@ export class TeletonApp {
       db,
       this.memory.embedder,
       getDatabase().isVectorSearchReady(),
-      this.config
+      this.config,
+      this.memory.messages
     );
 
     this.adminHandler = new AdminHandler(
       this.bridge,
       this.config.telegram,
       this.agent,
+      this.configPath,
       modulePermissions,
       this.toolRegistry
     );
+    this.messagePipeline = new MessagePipeline(this.getMessagePipelineDependencies());
+  }
+
+  private getMessagePipelineDependencies() {
+    return {
+      config: this.config,
+      bridge: this.bridge,
+      agent: this.agent,
+      messageHandler: this.messageHandler,
+      adminHandler: this.adminHandler,
+      scheduledTaskHandler: this.scheduledTaskHandler,
+      modules: this.modules,
+      inlineRouter: this.inlineRouter,
+    };
   }
 
   /**
@@ -269,6 +265,7 @@ export class TeletonApp {
   /** Stop agent subsystems and close database. For bootstrap mode. */
   async stopAgentSubsystems(): Promise<void> {
     await this.lifecycle.stop();
+    await this.memory.dispose();
     try {
       closeDatabase();
     } catch (error: unknown) {
@@ -344,1323 +341,151 @@ ${blue}  ┌──────────────────────�
    */
   private async startAgent(): Promise<void> {
     // Reload config from disk (mode switch writes YAML before restart)
+    const previousMode = this.config.telegram.mode;
+    const previousEmbeddingProvider = this.config.embedding.provider;
+    const previousEmbeddingModel = this.config.embedding.model;
     const freshConfig = loadConfig(this.configPath);
-    const modeChanged = freshConfig.telegram.mode !== this.config.telegram.mode;
-    this.config = freshConfig;
+    const modeChanged = freshConfig.telegram.mode !== previousMode;
+    const embeddingChanged =
+      freshConfig.embedding.provider !== previousEmbeddingProvider ||
+      freshConfig.embedding.model !== previousEmbeddingModel;
+    const stableConfig = this.config as unknown as Record<string, unknown>;
+    for (const key of Object.keys(stableConfig)) delete stableConfig[key];
+    Object.assign(stableConfig, freshConfig);
+    this.providerRuntime.updateConfig(this.config);
 
     if (modeChanged) {
-      log.info(`Mode changed to "${this.config.telegram.mode}", recreating bridge & registry`);
-
-      // Recreate bridge for the new mode
+      log.info(`Mode changed to "${this.config.telegram.mode}", recreating Telegram bridge`);
       this.bridge = createBridge(this.config);
       this.sdkDeps.bridge = this.bridge;
+      this.inlineMiddlewareBridge = null;
+    }
 
-      // Update tool registry mode (filters tools for user vs bot)
-      this.toolRegistry.setMode(this.config.telegram.mode);
-      if (this.config.telegram.allow_from?.length) {
-        this.toolRegistry.setAllowFrom(this.config.telegram.allow_from);
+    if (embeddingChanged) {
+      await this.memory.dispose();
+      Object.assign(this.memory, this.createMemorySystem());
+      if (this.config.embedding.provider !== "none") {
+        getDatabase().invalidateTelegramMessageEmbeddings();
       }
-
-      // Swap bridge ref in handlers that hold it
-      this.messageHandler.setBridge(this.bridge);
-
-      // Recreate handlers that don't support hot-swap
-      const db = getDatabase().getDb();
-      const modulePermissions = new ModulePermissions(db);
-      this.toolRegistry.setPermissions(modulePermissions);
-      this.adminHandler = new AdminHandler(
-        this.bridge,
-        this.config.telegram,
-        this.agent,
-        modulePermissions,
-        this.toolRegistry
-      );
-      this.heartbeatRunner = new HeartbeatRunner(this.agent, this.bridge, this.config);
-      this.scheduledTaskHandler = new ScheduledTaskHandler(this.agent, this.bridge, this.config);
-
-      // New bridge = new message listeners needed
-      this.messageHandlersRegistered = false;
-      this.callbackHandlerRegistered = false;
+      setKnowledgeIndexer(this.memory.knowledge);
     }
 
-    // Truncate stale external plugins from previous run (keep builtins only)
-    this.modules.length = this.builtinModuleCount;
-
-    const builtinNames = this.modules.map((m) => m.name);
-    const moduleNames = this.modules
-      .filter((m) => m.tools(this.config).length > 0)
-      .map((m) => m.name);
-
-    // Load plugins, MCP servers, and configure tool registry
-    this.mcpConnections =
-      Object.keys(this.config.mcp.servers).length > 0 ? await loadMcpServers(this.config.mcp) : [];
-    const orchestrator = new PluginOrchestrator(
-      this.toolRegistry,
-      this.config,
-      this.sdkDeps,
-      this.memory.embedder
-    );
-    const {
-      pluginNames,
-      pluginToolCount,
-      mcpServerNames: _mcpServerNames,
-      hookRegistry,
-      externalModules,
-      toolCount,
-    } = await orchestrator.loadAll(builtinNames, moduleNames, this.mcpConnections);
-    for (const mod of externalModules) this.modules.push(mod);
-    if (pluginToolCount > 0 || toolCount !== this.toolCount) {
-      this.toolCount = toolCount;
-    }
-
-    // Startup maintenance (migrations, prune, indexing, warmup)
-    const maintenance = new StartupMaintenance(
-      getDatabase().getDb(),
-      this.config,
-      this.configPath,
-      { embedder: this.memory.embedder, knowledge: this.memory.knowledge }
-    );
-    const { indexResult, ftsResult } = await maintenance.run();
-
-    // Index tools for Tool RAG
-    const toolIndex = this.toolRegistry.getToolIndex();
-    if (toolIndex) {
-      const t0 = Date.now();
-      const indexedCount = await toolIndex.indexAll(this.toolRegistry.getAll());
-      log.info(`Tool RAG: ${indexedCount} tools indexed (${Date.now() - t0}ms)`);
-    }
-
-    // Initialize context builder for RAG search in agent
-    this.agent.initializeContextBuilder(this.memory.embedder, getDatabase().isVectorSearchReady());
-
-    // Register provider-specific models (Cocoon / local LLM)
-    await this.initializeProviders();
-
-    // Connect to Telegram
-    await this.bridge.connect();
-    if (!this.bridge.isAvailable()) {
-      throw new Error("Failed to connect to Telegram");
-    }
-    eventBus.emit("bridge:connected", { mode: this.config.telegram.mode });
-    await this.resolveOwnerInfo();
-    const ownUserId = this.bridge.getOwnUserId();
-    if (ownUserId) {
-      this.messageHandler.setOwnUserId(ownUserId.toString());
-    }
-
-    const username = await this.bridge.getUsername();
-    const walletAddress = getWalletAddress();
-
-    // Set up inline router and rate limiter
-    const inlineRouter = new InlineRouter();
-    const rateLimiter = new PluginRateLimiter();
-
-    // Start module background jobs (after bridge connect)
-    const pluginContext = await this.startModules();
-
-    // Wire mode-specific SDK deps, handlers, and polling
-    const firstStart = !this.messageHandlersRegistered;
-    this.wireBotMode(inlineRouter, rateLimiter, firstStart);
-
-    // Create hook runner if any plugins registered hooks
-    if (hookRegistry.hasAnyHooks()) {
-      const hookRunner = createHookRunner(hookRegistry, { logger: log });
-      this.agent.setHookRunner(hookRunner);
-      this.hookRunner = hookRunner;
-      const activeHooks: HookName[] = [
-        "tool:before",
-        "tool:after",
-        "tool:error",
-        "prompt:before",
-        "prompt:after",
-        "session:start",
-        "session:end",
-        "message:receive",
-        "response:before",
-        "response:after",
-        "response:error",
-        "agent:start",
-        "agent:stop",
-      ];
-      const active = activeHooks.filter((n) => hookRegistry.hasHooks(n));
-      log.info(`🪝 Hook runner created (${active.join(", ")})`);
-    }
-
-    this.wirePluginEventHooks();
-
-    // Start plugin hot-reload watcher (dev mode)
-    if (this.config.dev.hot_reload) {
-      this.pluginWatcher = new PluginWatcher({
-        config: this.config,
-        registry: this.toolRegistry,
-        sdkDeps: this.sdkDeps,
-        modules: this.modules,
-        pluginContext,
-        loadedModuleNames: builtinNames,
-      });
-      this.pluginWatcher.start();
-    }
-
-    // Display startup summary
-    const provider = (this.config.agent.provider || "anthropic") as SupportedProvider;
-    log.info(`SOUL.md loaded`);
-    log.info(`Knowledge: ${indexResult.indexed} files, ${ftsResult.knowledge} chunks indexed`);
-    log.info(`Telegram: @${username} connected`);
-    log.info(`TON Blockchain: connected`);
-    if (this.config.tonapi_key) {
-      log.info(`TonAPI key configured`);
-    }
-    log.info(`DEXs: STON.fi, DeDust connected`);
-    log.info(`Wallet: ${walletAddress || "not configured"}`);
-    log.info(`Model: ${provider}/${this.config.agent.model}`);
-    log.info(`Admins: ${this.config.telegram.admin_ids.join(", ")}`);
-    log.info(
-      `Policy: DM ${this.config.telegram.dm_policy}, Groups ${this.config.telegram.group_policy}, Debounce ${this.config.telegram.debounce_ms}ms\n`
-    );
-    log.info("Teleton Agent is running! Press Ctrl+C to stop.");
-
-    // Hook: agent:start
-    this.startTime = Date.now();
-    this.messagesProcessed = 0;
-    if (this.hookRunner) {
-      let version = "0.0.0";
-      try {
-        const { createRequire } = await import("module");
-        const req = createRequire(import.meta.url);
-        version = (req("../package.json") as { version: string }).version;
-      } catch {
-        /* ignore */
-      }
-      const agentStartEvent: AgentStartEvent = {
-        version,
-        provider,
-        model: this.config.agent.model,
-        pluginCount: pluginNames.length,
-        toolCount: this.toolCount,
-        timestamp: Date.now(),
-      };
-      await this.hookRunner.runObservingHook("agent:start", agentStartEvent);
-    }
-
-    // Start heartbeat timer if enabled
-    if (this.config.heartbeat.enabled) {
-      const adminChatId = this.config.telegram.admin_ids[0];
-      if (adminChatId) {
-        this.heartbeatRunner.start(adminChatId, this.config.heartbeat.interval_ms);
-      }
-    }
-
-    // Initialize message debouncer
-    this.debouncer = new MessageDebouncer(
-      { debounceMs: this.config.telegram.debounce_ms },
-      (msg) => {
-        if (!msg.isGroup) return false;
-        if (msg.id < 0) return false; // paid replay — process immediately
-        if (msg.text.startsWith("/")) {
-          const adminCmd = this.adminHandler.parseCommand(msg.text);
-          if (adminCmd && this.adminHandler.isAdmin(msg.senderId)) return false;
-        }
-        return true;
-      },
-      async (messages) => {
-        for (const message of messages) {
-          await this.handleSingleMessage(message);
-        }
-      },
-      (error, messages) => {
-        log.error({ err: error }, `Error processing batch of ${messages.length} messages`);
-      }
-    );
-
-    // Register common message handler ONCE (survive agent restart via WebUI)
-    if (!this.messageHandlersRegistered) {
-      this.bridge.onNewMessage(async (message) => {
-        try {
-          // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- debouncer always initialized before handlers register
-          await this.debouncer!.enqueue(message);
-        } catch (error) {
-          log.error({ err: error }, "Error enqueueing message");
-        }
-      });
-      this.messageHandlersRegistered = true;
-    }
+    this.rebuildRuntimeGeneration();
+    this.preparePluginBotRuntime();
+    this.messagePipeline.update(this.getMessagePipelineDependencies());
+    await this.agentLifecycleController.start({
+      config: this.config,
+      configPath: this.configPath,
+      agent: this.agent,
+      bridge: this.bridge,
+      messageHandler: this.messageHandler,
+      messagePipeline: this.messagePipeline,
+      toolRegistry: this.toolRegistry,
+      modules: this.modules,
+      memory: this.memory,
+      sdkDeps: this.sdkDeps,
+      providerRuntime: this.providerRuntime,
+      heartbeatRunner: this.heartbeatRunner,
+    });
   }
 
-  // ─── Mode-specific wiring ──────────────────────────────────────────────
+  private createMemorySystem(): MemorySystem {
+    const embeddingProvider = this.config.embedding.provider;
+    return initializeMemory({
+      database: {
+        path: join(TELETON_ROOT, "memory.db"),
+        enableVectorSearch: embeddingProvider !== "none",
+        vectorDimensions: 384,
+      },
+      embeddings: {
+        provider: embeddingProvider,
+        model: this.config.embedding.model,
+        apiKey: embeddingProvider === "anthropic" ? this.config.agent.api_key : undefined,
+      },
+      workspaceDir: join(TELETON_ROOT),
+    });
+  }
 
-  /**
-   * Wire bot-mode SDK deps, callback handler, and Grammy polling.
-   */
-  private wireBotMode(
-    inlineRouter: InlineRouter,
-    rateLimiter: PluginRateLimiter,
-    firstStart: boolean
-  ): void {
-    this.sdkDeps.inlineRouter = inlineRouter;
-    this.sdkDeps.gramjsBot = null;
-    this.sdkDeps.rateLimiter = rateLimiter;
-    log.info("Bot mode: using main Grammy bridge (no DealBot)");
+  /** Build a complete runtime generation so restarts cannot retain stale tools or handlers. */
+  private rebuildRuntimeGeneration(): void {
+    const db = getDatabase().getDb();
+    const registry = this.toolRegistry;
+    registry.reset(this.config.telegram.mode);
+    registerAllTools(registry);
+    registry.setAllowFrom(this.config.telegram.allow_from ?? []);
+    registry.setAdminIds(this.config.telegram.admin_ids);
+    const modulePermissions = new ModulePermissions(db);
+    registry.setPermissions(modulePermissions);
+
+    const nextModules = loadModules(registry, this.config, db);
+    this.modules.splice(0, this.modules.length, ...nextModules);
+
+    this.agent.updateConfig(this.config);
+    this.agent.setToolRegistry(registry);
+    this.agent.initializeContextBuilder(this.memory.embedder, this.memory.context);
+
+    this.messageHandler = new MessageHandler(
+      this.bridge,
+      this.config.telegram,
+      this.agent,
+      db,
+      this.memory.embedder,
+      getDatabase().isVectorSearchReady(),
+      this.config,
+      this.memory.messages
+    );
+    this.adminHandler = new AdminHandler(
+      this.bridge,
+      this.config.telegram,
+      this.agent,
+      this.configPath,
+      modulePermissions,
+      registry
+    );
+    this.heartbeatRunner = new HeartbeatRunner(this.agent, this.bridge, this.config);
+    this.scheduledTaskHandler = new ScheduledTaskHandler(this.agent, this.bridge, this.config);
+  }
+
+  private preparePluginBotRuntime(): void {
+    this.inlineRouter.clearPlugins();
+    this.inlineRouter.setCallbackObserver(null);
+    this.pluginRateLimiter = new PluginRateLimiter();
 
     if (isBotBridge(this.bridge)) {
-      this.bridge.setCallbackHandler((msg) => {
-        // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- debouncer initialized before wireBotMode
-        void this.debouncer!.enqueue(msg);
-      });
+      this.sdkDeps.inlineRouter = this.inlineRouter;
+      this.sdkDeps.gramjsBot = null;
+      this.sdkDeps.grammyBot = this.bridge.getBot();
+      this.sdkDeps.rateLimiter = this.pluginRateLimiter;
 
-      // Stars payment handlers
-      this.wireStarsPayments(this.bridge);
-
-      if (firstStart) {
-        this.bridge.startPolling();
+      if (this.inlineMiddlewareBridge !== this.bridge) {
+        this.bridge.useMiddleware(this.inlineRouter.middleware());
+        this.inlineMiddlewareBridge = this.bridge;
       }
-      void this.bridge.syncCommands();
+      return;
     }
+
+    this.sdkDeps.inlineRouter = null;
+    this.sdkDeps.gramjsBot = null;
+    this.sdkDeps.grammyBot = null;
+    this.sdkDeps.rateLimiter = null;
   }
 
-  /**
-   * Wire Stars payment handlers — successful_payment and buy_one_answer callback.
-   * Accesses plugin DB directly at /data/plugins/data/hackernews.db.
-   */
-  private wireStarsPayments(bridge: GrammyBotBridge): void {
-    const PLUGIN_DB_PATH = `${process.env.TELETON_HOME || "/data"}/plugins/data/hackernews.db`;
-    const bot = bridge.getBot();
-    let _dbMigrated = false;
-    function ensureMigration(db: Database.Database): void {
-      if (_dbMigrated) return;
-      // Enable WAL mode + busy timeout to prevent SQLITE_BUSY with concurrent connections
-      try {
-        db.pragma("journal_mode = WAL");
-      } catch {
-        /* */
-      }
-      try {
-        db.pragma("busy_timeout = 5000");
-      } catch {
-        /* */
-      }
-      try {
-        const cols = db.prepare("PRAGMA table_info(stars_credits)").all() as { name: string }[];
-        if (!cols.some((c) => c.name === "chat_id")) {
-          db.exec(
-            "DROP TABLE IF EXISTS stars_credits; CREATE TABLE stars_credits (user_id TEXT NOT NULL, chat_id TEXT NOT NULL DEFAULT '', credits INTEGER NOT NULL DEFAULT 0, last_purchase_at INTEGER, PRIMARY KEY (user_id, chat_id))"
-          );
-          db.exec(
-            "DROP TABLE IF EXISTS pending_messages; CREATE TABLE pending_messages (user_id TEXT NOT NULL, chat_id TEXT NOT NULL, message_text TEXT NOT NULL DEFAULT '', deep_link_param TEXT, paywall_message_id INTEGER, created_at INTEGER NOT NULL, PRIMARY KEY (user_id, chat_id))"
-          );
-          log.info("[PaymentGate] Migrated DB to composite PK");
-        }
-      } catch {
-        /* table may not exist yet — plugin migrate() will create it */
-      }
-      // Invoice tracking for conversion analytics
-      try {
-        db.exec(
-          "CREATE TABLE IF NOT EXISTS invoice_events (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL, chat_id TEXT NOT NULL, event TEXT NOT NULL, amount INTEGER NOT NULL, created_at INTEGER NOT NULL)"
-        );
-      } catch {
-        /* */
-      }
-      _dbMigrated = true;
-    }
-
-    // Generate invoice links on first call (lazy)
-    const invoiceLinks: { basic?: string; pro?: string } = {};
-    const getInvoiceLinks = async () => {
-      if (invoiceLinks.basic) return invoiceLinks;
-      try {
-        invoiceLinks.basic = await bot.api.createInvoiceLink(
-          "Echo Basic",
-          "10 requests per day",
-          "sub_basic",
-          "",
-          "XTR",
-          [{ label: "Monthly", amount: 200 }],
-          { subscription_period: 2592000 }
-        );
-        invoiceLinks.pro = await bot.api.createInvoiceLink(
-          "Echo Pro",
-          "30 requests per day",
-          "sub_pro",
-          "",
-          "XTR",
-          [{ label: "Monthly", amount: 400 }],
-          { subscription_period: 2592000 }
-        );
-        log.info(`[stars] Invoice links generated: basic=${invoiceLinks.basic?.slice(0, 40)}...`);
-      } catch (err) {
-        log.error({ err }, "[stars] Failed to generate invoice links");
-      }
-      return invoiceLinks;
-    };
-
-    // Pre-checkout logging — fired when user clicks "Pay" in the Stars wallet
-    // (AFTER they saw the invoice and tapped the actual confirm button). Logging
-    // this distinguishes "abandoned at invoice card" (sent, no pre_checkout)
-    // from "abandoned in Stars wallet" (pre_checkout, no paid).
-    bridge.setPreCheckoutHandler(async (userId, totalAmount, payload) => {
-      let db: Database.Database | null = null;
-      try {
-        const Database = (await import("better-sqlite3")).default;
-        db = new Database(PLUGIN_DB_PATH);
-        ensureMigration(db);
-        db.prepare(
-          "INSERT INTO invoice_events (user_id, chat_id, event, amount, created_at) VALUES (?, ?, 'pre_checkout', ?, ?)"
-        ).run(String(userId), String(userId), totalAmount, Math.floor(Date.now() / 1000));
-        log.info(`[stars] pre_checkout from ${userId}: ${totalAmount}★ payload=${payload}`);
-      } catch (err) {
-        log.error({ err }, "[stars] failed to log pre_checkout");
-      } finally {
-        try {
-          db?.close();
-        } catch {
-          /* */
-        }
-      }
-    });
-
-    // Successful payment handler
-    bridge.setPaymentHandler(async (userId, payment) => {
-      let db: Database.Database | null = null;
-      try {
-        const Database = (await import("better-sqlite3")).default;
-        db = new Database(PLUGIN_DB_PATH);
-        ensureMigration(db);
-      } catch (err) {
-        log.error({ err }, "[stars] Cannot open plugin DB");
-        return;
-      }
-
-      try {
-        const payload = payment.invoice_payload;
-        const chargeId = payment.telegram_payment_charge_id;
-
-        if (payment.is_first_recurring) {
-          // New subscription
-          const tier = payload === "sub_pro" ? "pro" : "basic";
-          const dailyLimit = tier === "pro" ? 30 : 10;
-          const expiresAt =
-            payment.subscription_expiration_date || Math.floor(Date.now() / 1000) + 2592000;
-
-          // Cancel other active subscriptions for this user
-          const existing = db
-            .prepare(
-              "SELECT telegram_charge_id FROM stars_subscriptions WHERE user_id = ? AND expires_at > ?"
-            )
-            .all(String(userId), Math.floor(Date.now() / 1000));
-          for (const sub of existing) {
-            try {
-              await bot.api.editUserStarSubscription(
-                userId,
-                (sub as { telegram_charge_id: string }).telegram_charge_id,
-                true
-              );
-              log.info(`[stars] Cancelled old subscription for user ${userId}`);
-            } catch {
-              /* may already be cancelled */
-            }
-          }
-
-          db.prepare(
-            `INSERT INTO stars_subscriptions (user_id, tier, daily_limit, expires_at, telegram_charge_id, invoice_payload)
-             VALUES (?, ?, ?, ?, ?, ?)`
-          ).run(String(userId), tier, dailyLimit, expiresAt, chargeId, payload);
-
-          // Reset usage counter so user gets full daily limit
-          db.prepare("DELETE FROM usage_tracking WHERE user_id = ?").run(String(userId));
-
-          log.info(`[stars] New ${tier} subscription for user ${userId}, expires ${expiresAt}`);
-        } else if (payment.is_recurring) {
-          // Renewal
-          const expiresAt =
-            payment.subscription_expiration_date || Math.floor(Date.now() / 1000) + 2592000;
-          db.prepare(
-            "UPDATE stars_subscriptions SET expires_at = ?, telegram_charge_id = ? WHERE user_id = ? AND invoice_payload = ?"
-          ).run(expiresAt, chargeId, String(userId), payload);
-          log.info(`[stars] Renewed subscription for user ${userId}, new expires ${expiresAt}`);
-        } else {
-          // One-off purchase (credit pack) — determine credits from payload
-          const packCredits: Record<string, number> = {
-            pack_1: 1,
-            pack_3: 3,
-            pack_5: 5,
-            single_answer: 1, // backward compat
-          };
-          const creditsToAdd = packCredits[payload] || 1;
-          log.info(
-            `[stars] Credit pack "${payload}" for user ${userId}: +${creditsToAdd} credits (${payment.total_amount}★)`
-          );
-          try {
-            db.prepare(
-              "INSERT INTO invoice_events (user_id, chat_id, event, amount, created_at) VALUES (?, ?, 'paid', ?, ?)"
-            ).run(
-              String(userId),
-              String(userId),
-              payment.total_amount || 0,
-              Math.floor(Date.now() / 1000)
-            );
-          } catch {
-            /* */
-          }
-        }
-
-        // Find pending message (may have multiple — DM + group). Use most recent.
-        const pending = db
-          .prepare(
-            "SELECT * FROM pending_messages WHERE user_id = ? ORDER BY created_at DESC LIMIT 1"
-          )
-          .get(String(userId)) as
-          | {
-              chat_id: string;
-              message_text: string;
-              deep_link_param: string | null;
-              paywall_message_id: number | null;
-            }
-          | undefined;
-
-        // For one-off purchase: credit the specific chat where pending lives
-        const packCreditsMap: Record<string, number> = {
-          pack_1: 1,
-          pack_3: 3,
-          pack_5: 5,
-          single_answer: 1,
-          buy_one_answer: 1,
-        };
-        const creditsN =
-          !payment.is_first_recurring && !payment.is_recurring ? packCreditsMap[payload] || 1 : 0;
-        if (creditsN > 0 && pending) {
-          const now = Math.floor(Date.now() / 1000);
-          db.prepare(
-            `INSERT INTO stars_credits (user_id, chat_id, credits, last_purchase_at)
-             VALUES (?, ?, ?, ?)
-             ON CONFLICT(user_id, chat_id) DO UPDATE SET credits = credits + ?, last_purchase_at = ?`
-          ).run(String(userId), pending.chat_id, creditsN, now, creditsN, now);
-        } else if (creditsN > 0) {
-          // No pending — credit to DM (chat_id = userId in Telegram DMs)
-          const now = Math.floor(Date.now() / 1000);
-          db.prepare(
-            `INSERT INTO stars_credits (user_id, chat_id, credits, last_purchase_at)
-             VALUES (?, ?, ?, ?)
-             ON CONFLICT(user_id, chat_id) DO UPDATE SET credits = credits + ?, last_purchase_at = ?`
-          ).run(String(userId), String(userId), creditsN, now, creditsN, now);
-        }
-        if (pending?.paywall_message_id) {
-          try {
-            await bot.api.deleteMessage(Number(pending.chat_id), pending.paywall_message_id);
-          } catch {
-            /* */
-          }
-        }
-        const invoice = pendingInvoices.get(userId);
-        if (invoice) {
-          try {
-            await bot.api.deleteMessage(invoice.chatId, invoice.messageId);
-          } catch {
-            /* */
-          }
-          pendingInvoices.delete(userId);
-        }
-
-        // Replay pending message
-        if (pending) {
-          db.prepare("DELETE FROM pending_messages WHERE user_id = ? AND chat_id = ?").run(
-            String(userId),
-            pending.chat_id
-          );
-          // Reset group notify throttle so next group message shows paywall again
-          db.prepare("DELETE FROM pending_messages WHERE user_id = ?").run(
-            `group_notify_${userId}`
-          );
-          const replayText = pending.deep_link_param
-            ? `/start ${pending.deep_link_param}`
-            : pending.message_text;
-
-          // Call handleSingleMessage directly — bypass debouncer to avoid
-          // group debounce/chatQueue issues with synthetic messages
-          const isGroupChat = pending.chat_id.startsWith("-");
-          const replayId = -(Date.now() % 1000000); // unique negative id for dedup
-          const syntheticMsg: TelegramMessage = {
-            id: replayId,
-            text: replayText,
-            senderId: userId,
-            chatId: pending.chat_id,
-            isGroup: isGroupChat,
-            isChannel: false,
-            isBot: false,
-            mentionsMe: true,
-            timestamp: new Date(),
-            hasMedia: false,
-          };
-          log.info(
-            `[stars] Replaying pending message for user ${userId}: "${replayText.slice(0, 50)}"`
-          );
-          // Use await for replay so chatQueue can serialize properly
-          // (void caused fire-and-forget which deadlocked chatQueue)
-          try {
-            await this.handleSingleMessage(syntheticMsg);
-          } catch (replayErr) {
-            log.error({ err: replayErr }, `[stars] Replay failed for user ${userId}`);
-          }
-        }
-      } catch (err) {
-        log.error({ err }, `[stars] Payment handler error for user ${userId}`);
-      } finally {
-        try {
-          db?.close();
-        } catch (err) {
-          log.warn({ err }, "[stars] DB close failed");
-        }
-      }
-    });
-
-    // Credit pack callback handler
-    const TEST_USER_IDS = new Set([130552640, 5435055002]);
-    const pendingInvoices = new Map<number, { chatId: number; messageId: number }>();
-
-    // Pack definitions: { payload, credits, stars, testStars }
-    const CREDIT_PACKS: Record<string, { credits: number; stars: number; testStars: number }> = {
-      pack_1: { credits: 1, stars: 10, testStars: 1 },
-      pack_3: { credits: 3, stars: 20, testStars: 2 },
-      pack_5: { credits: 5, stars: 30, testStars: 3 },
-      buy_one_answer: { credits: 1, stars: 10, testStars: 1 }, // backward compat
-    };
-
-    bridge.setPaymentCallbackHandler(async (ctx) => {
-      const chatId = ctx.callbackQuery?.message?.chat.id;
-      const userId = ctx.from?.id;
-      const data = ctx.callbackQuery?.data;
-      if (!chatId || !userId || !data) return;
-
-      const pack = CREDIT_PACKS[data];
-      if (!pack) return;
-
-      const isTest = TEST_USER_IDS.has(userId);
-      const amount = isTest ? pack.testStars : pack.stars;
-      const label = pack.credits === 1 ? "1 Answer" : `${pack.credits} Answers`;
-
-      try {
-        const sent = await bot.api.sendInvoice(
-          chatId,
-          label,
-          `Get ${pack.credits} answer${pack.credits > 1 ? "s" : ""} to your questions`,
-          data, // payload = pack_1, pack_3, pack_5
-          "XTR",
-          [{ label, amount }]
-        );
-        pendingInvoices.set(userId, { chatId, messageId: sent.message_id });
-
-        // Track invoice sent
-        try {
-          const Database = (await import("better-sqlite3")).default;
-          const db = new Database(PLUGIN_DB_PATH);
-          db.prepare(
-            "INSERT INTO invoice_events (user_id, chat_id, event, amount, created_at) VALUES (?, ?, 'sent', ?, ?)"
-          ).run(String(userId), String(chatId), amount, Math.floor(Date.now() / 1000));
-          db.close();
-        } catch {
-          /* */
-        }
-      } catch (err) {
-        log.error({ err }, "[stars] Failed to send invoice");
-      }
-    });
-
-    // Service commands — handled directly via Grammy, before message reaches agent
-    bot.command("cancel", async (ctx) => {
-      const userId = ctx.from?.id;
-      if (!userId) return;
-      let db: Database.Database | null = null;
-      try {
-        const Database = (await import("better-sqlite3")).default;
-        db = new Database(PLUGIN_DB_PATH);
-        const now = Math.floor(Date.now() / 1000);
-        const activeSub = db
-          .prepare(
-            "SELECT tier, telegram_charge_id, expires_at FROM stars_subscriptions WHERE user_id = ? AND expires_at > ? ORDER BY created_at DESC LIMIT 1"
-          )
-          .get(String(userId), now) as
-          | { tier: string; telegram_charge_id: string; expires_at: number }
-          | undefined;
-
-        if (!activeSub) {
-          await ctx.reply("You don't have an active subscription.");
-          return;
-        }
-
-        await bot.api.editUserStarSubscription(userId, activeSub.telegram_charge_id, true);
-        const expiresDate = new Date(activeSub.expires_at * 1000).toLocaleDateString("en-US", {
-          month: "long",
-          day: "numeric",
-          year: "numeric",
-        });
-        await ctx.reply(
-          `Your ${activeSub.tier.charAt(0).toUpperCase() + activeSub.tier.slice(1)} subscription has been cancelled. It stays active until ${expiresDate}. You can re-subscribe anytime.`
-        );
-        log.info(`[stars] User ${userId} cancelled ${activeSub.tier} subscription`);
-      } catch (err) {
-        log.error({ err }, `[stars] /cancel error for user ${userId}`);
-        await ctx
-          .reply("Failed to cancel subscription. Please try again or contact /paysupport.")
-          .catch(() => {});
-      } finally {
-        try {
-          db?.close();
-        } catch {
-          /* */
-        }
-      }
-    });
-
-    bot.command("terms", async (ctx) => {
-      await ctx.reply(
-        "Echo Bot — Terms of Service\n\n" +
-          "• Echo is an AI research assistant. Responses are AI-generated and may contain errors.\n" +
-          "• Subscription payments are processed via Telegram Stars. Refunds are handled on a case-by-case basis.\n" +
-          "• TON payment channels use on-chain smart contracts. Unused funds are refundable via cooperative close.\n" +
-          "• Data we store: user ID, usage counters, payment records, and language preference. Data is used solely for billing, rate limiting, and service delivery. No personal data is shared with third parties.\n" +
-          "• By making a purchase, you agree to these terms.\n" +
-          "• For payment issues, use /paysupport."
-      );
-    });
-
-    bot.command("paysupport", async (ctx) => {
-      await ctx.reply(
-        "For payment issues:\n\n" +
-          "• Stars subscription: Use /cancel to cancel, or contact @cthellla\n" +
-          "• TON payment channel: Open the Mini App to manage your channel\n" +
-          "• Refund requests: Contact @cthellla with your Telegram user ID\n\n" +
-          "⚠️ Telegram support cannot help with purchases made via this bot. All payment issues are handled directly by the bot developer."
-      );
-    });
-
-    // Expose deleteMessage for plugin use in bot mode
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (globalThis as any).__botDeleteMessage = (chatId: number, msgId: number) =>
-      bot.api.deleteMessage(chatId, msgId);
-
-    // Cache invoice links (async, non-blocking)
-    void getInvoiceLinks().then((links) => {
-      // Store in env for plugin to use in paywall buttons
-      if (links.basic) process.env.STARS_BASIC_LINK = links.basic;
-      if (links.pro) process.env.STARS_PRO_LINK = links.pro;
-    });
-
-    // ── PaymentGate: pre-message filter ────────────────────────────
-    // Runs BEFORE debouncer/agent. Returns true to block the message.
-    const FREE_LIMIT = parseInt(process.env.HN_FREE_LIMIT || "3");
-    const FREE_WINDOW_SEC = parseInt(process.env.HN_FREE_WINDOW_SEC || "86400");
-    const adminIds = (process.env.ADMIN_IDS || "").split(",").map(Number).filter(Boolean);
-    const miniAppUrl =
-      process.env.PAYMENT_MINIAPP_URL ||
-      `https://t.me/${process.env.SUBSCRIPTION_BOT_USERNAME || "hn_premium_bot"}/pay`;
-
-    const paymentApiUrl = process.env.PAYMENT_API_URL || "http://payment_api:3000";
-    const paymentApiKey = process.env.PAYMENT_API_KEY || "";
-
-    async function checkTonBalance(
-      uid: number
-    ): Promise<{ hasChannel: boolean; canAfford?: boolean }> {
-      try {
-        const res = await fetch(`${paymentApiUrl}/api/internal/balance/${uid}`, {
-          headers: { "X-API-Key": paymentApiKey },
-          signal: AbortSignal.timeout(5000),
-        });
-        if (!res.ok) return { hasChannel: false };
-        return (await res.json()) as { hasChannel: boolean; canAfford?: boolean };
-      } catch {
-        return { hasChannel: false };
-      }
-    }
-
-    bridge.setPreMessageFilter(async (userId, chatId, text, _ctx, isGroup, mentionsMe) => {
-      // Service deep links — don't rate-limit
-      if (text?.startsWith("/start pay")) return true; // miniapp deep link, silently drop
-
-      // Admins always pass
-      if (adminIds.includes(userId)) return false;
-
-      let db: Database.Database | null = null;
-      try {
-        const Database = (await import("better-sqlite3")).default;
-        db = new Database(PLUGIN_DB_PATH);
-        ensureMigration(db);
-
-        const uid = String(userId);
-        const now = Math.floor(Date.now() / 1000);
-
-        // Priority 1: Stars subscription (within daily limit)
-        const starsSub = db
-          .prepare(
-            "SELECT daily_limit FROM stars_subscriptions WHERE user_id = ? AND expires_at > ? ORDER BY created_at DESC LIMIT 1"
-          )
-          .get(uid, now) as { daily_limit: number } | undefined;
-        if (starsSub) {
-          const cutoff = now - 86400;
-          const used = (
-            db
-              .prepare(
-                "SELECT COUNT(*) as cnt FROM usage_tracking WHERE user_id = ? AND created_at > ?"
-              )
-              .get(uid, cutoff) as { cnt: number }
-          ).cnt;
-          if (used < starsSub.daily_limit) return false; // within limit
-          // Stars limit exhausted — fall through to TON
-        }
-
-        // Priority 2: TON payment channel (fallback for exhausted Stars, or standalone premium)
-        const tonBal = await checkTonBalance(userId);
-        if (tonBal.hasChannel && tonBal.canAfford) return false; // premium, plugin bills in response:after
-
-        // Priority 3: Stars credits (per-chat)
-        const credits =
-          (
-            db
-              .prepare("SELECT credits FROM stars_credits WHERE user_id = ? AND chat_id = ?")
-              .get(uid, chatId) as { credits: number } | undefined
-          )?.credits || 0;
-        if (credits > 0) return false; // has credits, plugin will decrement
-
-        // Groups: only process if bot is mentioned/replied to (otherwise analyzeMessage will filter out)
-        if (isGroup && !mentionsMe) {
-          return false; // not mentioned, skip PaymentGate
-        }
-
-        // Groups: free users allowed (free model), same as DM
-        if (isGroup) {
-          return false;
-        }
-
-        // Priority 4: Free tier (DM only)
-        const cutoff = now - FREE_WINDOW_SEC;
-        const freeUsed = (
-          db
-            .prepare(
-              "SELECT COUNT(*) as cnt FROM usage_tracking WHERE user_id = ? AND created_at > ?"
-            )
-            .get(uid, cutoff) as { cnt: number }
-        ).cnt;
-        if (freeUsed < FREE_LIMIT) return false; // within free tier
-
-        // Over all limits — send paywall and BLOCK
-        // Delete old paywall (anti-spam)
-        const pending = db
-          .prepare(
-            "SELECT paywall_message_id FROM pending_messages WHERE user_id = ? AND chat_id = ?"
-          )
-          .get(uid, chatId) as { paywall_message_id: number | null } | undefined;
-        if (pending?.paywall_message_id) {
-          try {
-            await bot.api.deleteMessage(Number(chatId), pending.paywall_message_id);
-          } catch {
-            /* may be deleted */
-          }
-        }
-
-        // Save pending message
-        const deepLinkParam = (text || "").match(/^\/start\s+(\S+)/)?.[1] || null;
-        db.prepare(
-          "INSERT OR REPLACE INTO pending_messages (user_id, chat_id, message_text, deep_link_param, paywall_message_id, created_at) VALUES (?, ?, ?, ?, NULL, ?)"
-        ).run(uid, chatId, text || "", deepLinkParam, now);
-
-        // Detect language for localized paywall
-        const userLang = (
-          db.prepare("SELECT lang FROM user_lang WHERE user_id = ?").get(uid) as
-            | { lang: string }
-            | undefined
-        )?.lang;
-        const paywallI18n: Record<
-          string,
-          { text: string; btn: string; title: string; desc: string }
-        > = {
-          ru: {
-            text: "Бесплатный запрос на сегодня использован.\nОплатите ⭐ за ответ ниже, или откройте TON-канал для безлимита:",
-            btn: "💎 Безлимит с TON",
-            title: "Один ответ",
-            desc: "Ответ на ваш последний вопрос",
-          },
-          ar: {
-            text: "تم استخدام طلبك المجاني لهذا اليوم.\nادفع ⭐ للحصول على إجابة أدناه، أو افتح قناة TON للاستخدام غير المحدود:",
-            btn: "💎 غير محدود مع TON",
-            title: "إجابة واحدة",
-            desc: "احصل على إجابة لسؤالك الأخير",
-          },
-          de: {
-            text: "Deine kostenlose Anfrage für heute ist aufgebraucht.\nBezahle ⭐ für eine Antwort unten, oder eröffne einen TON-Kanal für unbegrenzte Nutzung:",
-            btn: "💎 Unbegrenzt mit TON",
-            title: "Eine Antwort",
-            desc: "Antwort auf deine letzte Frage",
-          },
-          fr: {
-            text: "Votre requête gratuite du jour est épuisée.\nPayez ⭐ pour une réponse ci-dessous, ou ouvrez un canal TON pour un usage illimité :",
-            btn: "💎 Illimité avec TON",
-            title: "Une réponse",
-            desc: "Réponse à votre dernière question",
-          },
-        };
-        const defaultI18n = {
-          text: "Your free request for today is used.\nPay ⭐ for an answer below, or open a TON channel for unlimited use:",
-          btn: "💎 Unlimited with TON",
-          title: "One Answer",
-          desc: "Get an answer to your last question",
-        };
-        const i18n = (userLang && paywallI18n[userLang]) || defaultI18n;
-
-        // Credit packs: answers / stars (test users get 1/2/3★)
-        const isTest = TEST_USER_IDS.has(userId);
-        const packs = isTest
-          ? [
-              { id: "pack_1", n: 1, stars: 1 },
-              { id: "pack_3", n: 3, stars: 2 },
-              { id: "pack_5", n: 5, stars: 3 },
-            ]
-          : [
-              { id: "pack_1", n: 1, stars: 10 },
-              { id: "pack_3", n: 3, stars: 20 },
-              { id: "pack_5", n: 5, stars: 30 },
-            ];
-
-        // Send paywall with credit pack buttons + TON alternative
-        const sent = await bot.api.sendMessage(Number(chatId), i18n.text, {
-          reply_markup: {
-            inline_keyboard: [
-              [
-                {
-                  text: `⭐ ${packs[0].n} answer — ${packs[0].stars}★`,
-                  callback_data: packs[0].id,
-                },
-                {
-                  text: `⭐ ${packs[1].n} answers — ${packs[1].stars}★ (-33%)`,
-                  callback_data: packs[1].id,
-                },
-              ],
-              [
-                {
-                  text: `⭐ ${packs[2].n} answers — ${packs[2].stars}★ (-40%)`,
-                  callback_data: packs[2].id,
-                },
-                { text: i18n.btn, url: miniAppUrl },
-              ],
-            ],
-          },
-        });
-
-        try {
-          db.prepare(
-            "INSERT INTO invoice_events (user_id, chat_id, event, amount, created_at) VALUES (?, ?, 'shown', 0, ?)"
-          ).run(uid, chatId, now);
-        } catch {
-          /* */
-        }
-
-        // Save paywall message ID for delete+send pattern
-        db.prepare(
-          "UPDATE pending_messages SET paywall_message_id = ? WHERE user_id = ? AND chat_id = ?"
-        ).run(sent.message_id, uid, chatId);
-
-        log.info(`[PaymentGate] Paywall sent to ${userId}, message blocked`);
-        return true; // BLOCK
-      } catch (err) {
-        log.error({ err }, "[PaymentGate] Error, allowing message through");
-        return false; // fail open
-      } finally {
-        try {
-          db?.close();
-        } catch {
-          /* */
-        }
-      }
-    });
-  }
-
-  /**
-   * Register provider-specific models (Cocoon Network / local LLM).
-   */
-  private async initializeProviders(): Promise<void> {
-    if (this.config.agent.provider === "cocoon") {
-      try {
-        const { registerCocoonModels } = await import("./agent/client.js");
-        const port = this.config.cocoon?.port ?? 10000;
-        const models = await registerCocoonModels(port);
-        if (models.length === 0) {
-          throw new Error(`No models found on port ${port}`);
-        }
-        log.info(`Cocoon Network ready — ${models.length} model(s) on port ${port}`);
-      } catch (error: unknown) {
-        log.error(
-          `Cocoon Network unavailable on port ${this.config.cocoon?.port ?? 10000}: ${getErrorMessage(error)}`
-        );
-        log.error("Start the Cocoon client first: cocoon start");
-        throw new Error(`Cocoon Network unavailable: ${getErrorMessage(error)}`);
-      }
-    }
-
-    if (this.config.agent.provider === "local" && !this.config.agent.base_url) {
-      throw new Error(
-        "Local provider requires base_url in config (e.g. http://localhost:11434/v1)"
-      );
-    }
-    if (this.config.agent.provider === "local" && this.config.agent.base_url) {
-      try {
-        const { registerLocalModels } = await import("./agent/client.js");
-        const models = await registerLocalModels(this.config.agent.base_url);
-        if (models.length > 0) {
-          log.info(`Discovered ${models.length} local model(s): ${models.join(", ")}`);
-          if (!this.config.agent.model || this.config.agent.model === "auto") {
-            this.config.agent.model = models[0];
-            log.info(`Using local model: ${models[0]}`);
-          }
-        } else {
-          log.warn("No models found on local LLM server — is it running?");
-        }
-      } catch (error: unknown) {
-        log.error(
-          `Local LLM server unavailable at ${this.config.agent.base_url}: ${getErrorMessage(error)}`
-        );
-        log.error("Start the LLM server first (e.g. ollama serve)");
-        throw new Error(`Local LLM server unavailable: ${getErrorMessage(error)}`);
-      }
-    }
-  }
-
-  /**
-   * Start module background jobs with timeout. Skips deals module in bot mode.
-   */
-  private async startModules(): Promise<PluginContext> {
-    const moduleDb = getDatabase().getDb();
-    const pluginContext: PluginContext = {
-      bridge: this.bridge,
-      db: moduleDb,
-      config: this.config,
-    };
-    const startedModules: typeof this.modules = [];
-    try {
-      for (const mod of this.modules) {
-        if (isBotBridge(this.bridge) && mod.name === "deals") {
-          log.info("Bot mode: skipping deals module (uses separate Grammy polling)");
-          continue;
-        }
-        await Promise.race([
-          mod.start?.(pluginContext),
-          new Promise<never>((_, reject) =>
-            setTimeout(
-              () => reject(new Error(`Plugin "${mod.name}" start() timed out after 30s`)),
-              PLUGIN_START_TIMEOUT_MS
-            )
-          ),
-        ]);
-        startedModules.push(mod);
-      }
-    } catch (error) {
-      log.error({ err: error }, "Module start failed, cleaning up started modules");
-      for (const mod of startedModules.reverse()) {
-        try {
-          await Promise.race([
-            mod.stop?.(),
-            new Promise<never>((_, reject) =>
-              setTimeout(
-                () => reject(new Error(`Plugin "${mod.name}" stop() timed out after 30s`)),
-                PLUGIN_STOP_TIMEOUT_MS
-              )
-            ),
-          ]);
-        } catch (innerError: unknown) {
-          log.error({ err: innerError }, `Module "${mod.name}" cleanup failed`);
-        }
-      }
-      throw error;
-    }
-    return pluginContext;
-  }
-
-  /**
-   * Resolve owner name and username from Telegram API if not already configured.
-   * Persists resolved values to the config file so this only happens once.
-   */
-  private async resolveOwnerInfo(): Promise<void> {
-    try {
-      // Skip if both are already set
-      if (this.config.telegram.owner_name && this.config.telegram.owner_username) {
-        return;
-      }
-
-      // Can't resolve without an owner ID
-      if (!this.config.telegram.owner_id) {
-        return;
-      }
-
-      if (!isUserBridge(this.bridge)) return;
-      const entity = await this.bridge.getClient().getEntity(String(this.config.telegram.owner_id));
-
-      // Check that the entity is a User (has firstName)
-      if (!entity || !("firstName" in entity)) {
-        return;
-      }
-
-      const user = entity as Api.User;
-      const firstName = user.firstName || "";
-      const lastName = user.lastName || "";
-      const fullName = lastName ? `${firstName} ${lastName}` : firstName;
-      const username = user.username || "";
-
-      let updated = false;
-
-      if (!this.config.telegram.owner_name && fullName) {
-        this.config.telegram.owner_name = fullName;
-        updated = true;
-      }
-
-      if (!this.config.telegram.owner_username && username) {
-        this.config.telegram.owner_username = username;
-        updated = true;
-      }
-
-      if (updated) {
-        // Persist to disk
-        const raw = readRawConfig(this.configPath);
-        if (this.config.telegram.owner_name) {
-          setNestedValue(raw, "telegram.owner_name", this.config.telegram.owner_name);
-        }
-        if (this.config.telegram.owner_username) {
-          setNestedValue(raw, "telegram.owner_username", this.config.telegram.owner_username);
-        }
-        writeRawConfig(raw, this.configPath);
-
-        const displayName = this.config.telegram.owner_name || "Unknown";
-        const displayUsername = this.config.telegram.owner_username
-          ? ` (@${this.config.telegram.owner_username})`
-          : "";
-        log.info(`Owner resolved: ${displayName}${displayUsername}`);
-      }
-    } catch (error) {
-      log.warn(`Could not resolve owner info: ${getErrorMessage(error)}`);
-    }
-  }
-
-  /**
-   * Handle a single message (extracted for debouncer callback)
-   */
-  private async handleSingleMessage(message: TelegramMessage): Promise<void> {
-    if (message.id < 0) {
-      log.info(`[Replay] handleSingleMessage entered for ${message.senderId} in ${message.chatId}`);
-    }
-    this.messagesProcessed++;
-    try {
-      // Check if this is a scheduled task (from self)
-      const ownUserId = this.bridge.getOwnUserId();
-      if (
-        ownUserId &&
-        message.senderId === Number(ownUserId) &&
-        message.text.startsWith("[TASK:")
-      ) {
-        await this.scheduledTaskHandler.execute(message);
-        return;
-      }
-
-      // Check if this is an admin command
-      const adminCmd = this.adminHandler.parseCommand(message.text);
-      if (adminCmd && this.adminHandler.isAdmin(message.senderId)) {
-        // /start passes through to agent (Telegram deep link: /start <story_id>)
-        if (adminCmd.command === "start") {
-          // Keep original text so agent sees "/start 12345" and can extract the param
-          // Fall through to handleMessage below
-        } else if (adminCmd.command === "boot") {
-          const bootstrapContent = this.adminHandler.getBootstrapContent();
-          if (bootstrapContent) {
-            message.text = bootstrapContent;
-            // Fall through to handleMessage below
-          } else {
-            await this.bridge.sendMessage({
-              chatId: message.chatId,
-              text: "❌ Bootstrap template not found.",
-              replyToId: message.id,
-            });
-            return;
-          }
-        } else if (adminCmd.command === "tldr") {
-          // /tldr passes through to the agent so the model can pick up the matching skill
-          // Keep original text so agent sees "/tldr <url>" and can extract args
-          // Fall through to handleMessage below
-        } else if (adminCmd.command === "task") {
-          // /task passes through to the agent with task creation context
-          const taskDescription = adminCmd.args.join(" ");
-          if (!taskDescription) {
-            await this.bridge.sendMessage({
-              chatId: message.chatId,
-              text: "❌ Usage: /task <description>",
-              replyToId: message.id,
-            });
-            return;
-          }
-          message.text =
-            `[ADMIN TASK]\n` +
-            `Create a scheduled task using the telegram_create_scheduled_task tool.\n\n` +
-            `Guidelines:\n` +
-            `- If the description mentions a specific time or delay, use it as scheduleDate\n` +
-            `- Otherwise, schedule 1 minute from now for immediate execution\n` +
-            `- For simple operations (check a price, send a message), use a tool_call payload\n` +
-            `- For complex multi-step tasks, use an agent_task payload with detailed instructions\n` +
-            `- Always include a reason explaining why this task is being created\n\n` +
-            `Task: "${taskDescription}"`;
-          // Fall through to handleMessage below
-        } else {
-          const response = await this.adminHandler.handleCommand(
-            adminCmd,
-            message.chatId,
-            message.senderId,
-            message.isGroup
-          );
-
-          await this.bridge.sendMessage({
-            chatId: message.chatId,
-            text: response,
-            replyToId: message.id,
-          });
-
-          return;
-        }
-      }
-
-      // Skip if paused (admin commands still work above)
-      if (this.adminHandler.isPaused()) return;
-
-      // Handle as regular message
-      await this.messageHandler.handleMessage(message);
-    } catch (error) {
-      log.error({ err: error }, "Error handling message");
-    }
-  }
-
-  /**
-   * Collect plugin onMessage/onCallbackQuery hooks and register them.
-   * Uses dynamic dispatch over this.modules so newly installed/uninstalled
-   * plugins are picked up without re-registering handlers.
-   */
-  private wirePluginEventHooks(): void {
-    // Message hooks: single dynamic dispatcher that iterates this.modules
-    this.messageHandler.setPluginMessageHooks([
-      async (event: PluginMessageEvent) => {
-        let mergedContext = "";
-        for (const mod of this.modules) {
-          const withHooks = mod as PluginModuleWithHooks;
-          if (withHooks.onMessage) {
-            try {
-              const result = await withHooks.onMessage(event);
-              if (typeof result === "string") return result; // string reply = immediate intercept
-              if (
-                result &&
-                typeof result === "object" &&
-                "block" in result &&
-                (result as { block: boolean }).block
-              ) {
-                return result; // block = stop processing
-              }
-              if (result && typeof result === "object" && "context" in result) {
-                const ctx = (result as { context: string }).context;
-                if (ctx) mergedContext += (mergedContext ? "\n" : "") + ctx;
-              }
-            } catch (error: unknown) {
-              log.error(`❌ [${mod.name}] onMessage error: ${getErrorMessage(error)}`);
-            }
-          }
-        }
-        if (mergedContext) return { context: mergedContext };
-      },
-    ]);
-
-    const hookCount = this.modules.filter((m) => (m as PluginModuleWithHooks).onMessage).length;
-    if (hookCount > 0) {
-      log.info(`${hookCount} plugin onMessage hook(s) registered`);
-    }
-
-    // Callback query handler: register ONCE, dispatch dynamically
-    if (!this.callbackHandlerRegistered && isUserBridge(this.bridge)) {
-      const userBridge = this.bridge;
-      userBridge.getClient().addCallbackQueryHandler(async (update: unknown) => {
-        if (!update || typeof update !== "object") {
-          return;
-        }
-        const callbackUpdate = update as {
-          queryId?: unknown;
-          data?: { toString(): string } | string;
-          peer?: {
-            channelId?: { toString(): string };
-            chatId?: { toString(): string };
-            userId?: { toString(): string };
-          };
-          msgId?: unknown;
-          userId?: unknown;
-        };
-        const queryId = callbackUpdate.queryId;
-        const data =
-          typeof callbackUpdate.data === "string"
-            ? callbackUpdate.data
-            : callbackUpdate.data?.toString() || "";
-        const parts = data.split(":");
-        const action = parts[0];
-        const params = parts.slice(1);
-
-        const chatId =
-          callbackUpdate.peer?.channelId?.toString() ??
-          callbackUpdate.peer?.chatId?.toString() ??
-          callbackUpdate.peer?.userId?.toString() ??
-          "";
-        const messageId =
-          typeof callbackUpdate.msgId === "number"
-            ? callbackUpdate.msgId
-            : Number(callbackUpdate.msgId || 0);
-        const userId = Number(callbackUpdate.userId);
-
-        const answer = async (text?: string, alert = false): Promise<void> => {
-          try {
-            await userBridge.getClient().answerCallbackQuery(queryId, { message: text, alert });
-          } catch (error: unknown) {
-            log.error(`❌ Failed to answer callback query: ${getErrorMessage(error)}`);
-          }
-        };
-
-        const event: PluginCallbackEvent = {
-          data,
-          action,
-          params,
-          chatId,
-          messageId,
-          userId,
-          answer,
-        };
-
-        for (const mod of this.modules) {
-          const withHooks = mod as PluginModuleWithHooks;
-          if (withHooks.onCallbackQuery) {
-            try {
-              await withHooks.onCallbackQuery(event);
-            } catch (error: unknown) {
-              log.error(`❌ [${mod.name}] onCallbackQuery error: ${getErrorMessage(error)}`);
-            }
-          }
-        }
-      });
-      this.callbackHandlerRegistered = true;
-
-      const cbCount = this.modules.filter(
-        (m) => (m as PluginModuleWithHooks).onCallbackQuery
-      ).length;
-      if (cbCount > 0) {
-        log.info(`${cbCount} plugin onCallbackQuery hook(s) registered`);
-      }
-    } else if (!this.callbackHandlerRegistered && this.bridge.getMode() === "bot") {
-      // In bot mode, callback queries are handled by GrammyBotBridge's callback_query:data handler
-      // TODO: dispatch plugin onCallbackQuery hooks from Grammy callback handler
-      this.callbackHandlerRegistered = true;
-    }
-  }
-
-  /**
-   * Stop the agent
-   */
+  /** Stop the application and all managed resources. */
   async stop(): Promise<void> {
     log.info("Stopping Teleton AI...");
 
     // Stop agent subsystems via lifecycle
     await this.lifecycle.stop(() => this.stopAgent());
+
+    // Stop skills watcher (fork-only)
+    if (this.skillsHandle) {
+      try {
+        await this.skillsHandle.stop();
+      } catch (error: unknown) {
+        log.error({ err: error }, "Skills watcher stop failed");
+      }
+      this.skillsHandle = null;
+    }
 
     // Stop WebUI server (if running)
     if (this.webuiServer) {
@@ -1681,6 +506,7 @@ ${blue}  ┌──────────────────────�
     }
 
     // Close database last (shared with WebUI)
+    await this.memory.dispose();
     try {
       closeDatabase();
     } catch (error: unknown) {
@@ -1693,92 +519,7 @@ ${blue}  ┌──────────────────────�
    * Called by lifecycle.stop() — do NOT call directly.
    */
   private async stopAgent(): Promise<void> {
-    // Stop heartbeat timer
-    this.heartbeatRunner.stop();
-
-    // Stop skills watcher
-    if (this.skillsHandle) {
-      try {
-        await this.skillsHandle.stop();
-      } catch (error: unknown) {
-        log.error({ err: error }, "Skills watcher stop failed");
-      }
-      this.skillsHandle = null;
-    }
-
-    // Hook: agent:stop — fire BEFORE disconnecting anything
-    if (this.hookRunner) {
-      try {
-        const agentStopEvent: AgentStopEvent = {
-          reason: "manual",
-          uptimeMs: this.startTime > 0 ? Date.now() - this.startTime : 0,
-          messagesProcessed: this.messagesProcessed,
-          timestamp: Date.now(),
-        };
-        await this.hookRunner.runObservingHook("agent:stop", agentStopEvent);
-      } catch (error: unknown) {
-        log.error({ err: error }, "agent:stop hook failed");
-      }
-    }
-
-    // Stop plugin watcher first
-    if (this.pluginWatcher) {
-      try {
-        await this.pluginWatcher.stop();
-      } catch (error: unknown) {
-        log.error({ err: error }, "Plugin watcher stop failed");
-      }
-    }
-
-    // Close MCP connections
-    if (this.mcpConnections.length > 0) {
-      try {
-        await closeMcpServers(this.mcpConnections);
-      } catch (error: unknown) {
-        log.error({ err: error }, "MCP close failed");
-      }
-    }
-
-    // Each step is isolated so a failure in one doesn't skip the rest
-    if (this.debouncer) {
-      try {
-        await this.debouncer.flushAll();
-      } catch (error: unknown) {
-        log.error({ err: error }, "Debouncer flush failed");
-      }
-    }
-
-    // Drain in-flight message processing before disconnecting
-    try {
-      await this.messageHandler.drain();
-    } catch (error: unknown) {
-      log.error({ err: error }, "Message queue drain failed");
-    }
-
-    for (const mod of this.modules) {
-      try {
-        await Promise.race([
-          mod.stop?.(),
-          new Promise<never>((_, reject) =>
-            setTimeout(
-              () => reject(new Error(`Plugin "${mod.name}" stop() timed out after 30s`)),
-              PLUGIN_STOP_TIMEOUT_MS
-            )
-          ),
-        ]);
-      } catch (error: unknown) {
-        log.error({ err: error }, `Module "${mod.name}" stop failed`);
-      }
-    }
-
-    this.callbackHandlerRegistered = false;
-    // messageHandlersRegistered stays true — Grammy Bot instance retains its middleware tree
-    // across stop/start cycles; re-registering would throw "registering listeners from within listeners"
-    try {
-      await this.bridge.disconnect();
-    } catch (error: unknown) {
-      log.error({ err: error }, "Bridge disconnect failed");
-    }
+    await this.agentLifecycleController.stop();
   }
 }
 

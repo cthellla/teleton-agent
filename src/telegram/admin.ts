@@ -1,9 +1,9 @@
 import type { TelegramConfig } from "../config/schema.js";
+import { ReasoningEffort } from "../config/schema.js";
 import type { AgentRuntime } from "../agent/runtime.js";
 import type { ITelegramBridge } from "./bridge-interface.js";
 import { getWalletAddress, getWalletBalance } from "../ton/wallet-service.js";
 import { Address } from "@ton/core";
-import { DEALS_CONFIG } from "../deals/config.js";
 import { loadTemplate } from "../workspace/manager.js";
 import { isVerbose, setVerbose, createLogger } from "../utils/logger.js";
 
@@ -11,6 +11,8 @@ const log = createLogger("Telegram");
 import type { ModulePermissions, ModuleLevel } from "../agent/tools/module-permissions.js";
 import type { ToolRegistry } from "../agent/tools/registry.js";
 import { writePluginSecret, deletePluginSecret, listPluginSecretKeys } from "../sdk/secrets.js";
+import { readRawConfig, writeRawConfig, setNestedValue } from "../config/configurable-keys.js";
+import { getErrorMessage } from "../utils/errors.js";
 
 export interface AdminCommand {
   command: string;
@@ -30,23 +32,30 @@ export class AdminHandler {
   private paused = false;
   private permissions: ModulePermissions | null;
   private registry: ToolRegistry | null;
+  private configPath: string;
 
   constructor(
     bridge: ITelegramBridge,
     config: TelegramConfig,
     agent: AgentRuntime,
+    configPath: string,
     permissions?: ModulePermissions,
     registry?: ToolRegistry
   ) {
     this.bridge = bridge;
     this.config = config;
     this.agent = agent;
+    this.configPath = configPath;
     this.permissions = permissions ?? null;
     this.registry = registry ?? null;
   }
 
   isAdmin(userId: number): boolean {
     return this.config.admin_ids.includes(userId);
+  }
+
+  updateConfig(config: TelegramConfig): void {
+    this.config = config;
   }
 
   isPaused(): boolean {
@@ -103,14 +112,14 @@ export class AdminHandler {
         return this.handleResumeCommand();
       case "wallet":
         return await this.handleWalletCommand();
-      case "strategy":
-        return this.handleStrategyCommand(command);
       case "stop":
         return await this.handleStopCommand();
       case "verbose":
         return this.handleVerboseCommand();
       case "rag":
         return this.handleRagCommand(command);
+      case "guest":
+        return this.handleGuestCommand(command);
       case "modules":
         return this.handleModulesCommand(command, isGroup ?? false);
       case "plugin":
@@ -135,6 +144,7 @@ export class AdminHandler {
     status += `🧠 Provider: ${cfg.agent.provider}\n`;
     status += `🤖 Model: ${cfg.agent.model}\n`;
     status += `🔄 Max iterations: ${cfg.agent.max_agentic_iterations}\n`;
+    status += `⏱️ Turn budget: ${Math.round(cfg.agent.max_turn_duration_ms / 1000)}s\n`;
     status += `📬 DM policy: ${this.config.dm_policy}\n`;
     status += `👥 Group policy: ${this.config.group_policy}\n`;
 
@@ -156,13 +166,32 @@ export class AdminHandler {
     }
   }
 
+  private persistConfigValue(
+    path: string,
+    value: unknown,
+    applyRuntime: () => void
+  ): string | null {
+    try {
+      const raw = readRawConfig(this.configPath);
+      setNestedValue(raw, path, value);
+      writeRawConfig(raw, this.configPath);
+    } catch (error) {
+      return `❌ Error saving config: ${getErrorMessage(error)}`;
+    }
+    applyRuntime();
+    return null;
+  }
+
   private handleLoopCommand(command: AdminCommand): string {
-    const n = parseInt(command.args[0], 10);
-    if (isNaN(n) || n < 1 || n > 50) {
+    const n = Number(command.args[0]);
+    if (!Number.isInteger(n) || n < 1 || n > 50) {
       const current = this.agent.getConfig().agent.max_agentic_iterations || 5;
       return `🔄 Current loop: **${current}** iterations\n\nUsage: /loop <1-50>`;
     }
-    this.agent.getConfig().agent.max_agentic_iterations = n;
+    const error = this.persistConfigValue("agent.max_agentic_iterations", n, () => {
+      this.agent.getConfig().agent.max_agentic_iterations = n;
+    });
+    if (error) return error;
     return `🔄 Max iterations set to **${n}**`;
   }
 
@@ -174,22 +203,25 @@ export class AdminHandler {
     }
     const newModel = command.args[0];
     const oldModel = cfg.agent.model;
-    cfg.agent.model = newModel;
+    const error = this.persistConfigValue("agent.model", newModel, () => {
+      cfg.agent.model = newModel;
+    });
+    if (error) return error;
     return `🧠 Model: **${oldModel}** → **${newModel}**`;
   }
 
   private handleReasoningCommand(command: AdminCommand): string {
     const cfg = this.agent.getConfig();
-    const valid = ["off", "low", "medium", "high"] as const;
+    const valid = ReasoningEffort.options;
     if (command.args.length === 0) {
       return `💭 Reasoning effort: **${cfg.agent.reasoning_effort ?? "low"}**\n\nControls thinking depth for reasoning models (o3, R1, etc).\nUsage: /reasoning <${valid.join("|")}>\n• off — skip reasoning (may not work with reasoning-only models)\n• low/medium/high — thinking depth`;
     }
     const value = command.args[0].toLowerCase();
-    if (!valid.includes(value as typeof valid[number])) {
+    if (!valid.includes(value as (typeof valid)[number])) {
       return `❌ Invalid value. Must be one of: ${valid.join(", ")}`;
     }
-    const old = cfg.agent.reasoning_effort ?? "low";
-    cfg.agent.reasoning_effort = value as typeof valid[number];
+    const old = cfg.agent.reasoning_effort ?? "medium";
+    cfg.agent.reasoning_effort = value as (typeof valid)[number];
     return `💭 Reasoning: **${old}** → **${value}**`;
   }
 
@@ -209,7 +241,12 @@ export class AdminHandler {
         return `❌ Invalid DM policy. Valid: ${VALID_DM_POLICIES.join(", ")}`;
       }
       const old = this.config.dm_policy;
-      this.config.dm_policy = value as typeof this.config.dm_policy;
+      const next = value as typeof this.config.dm_policy;
+      const error = this.persistConfigValue("telegram.dm_policy", next, () => {
+        this.config.dm_policy = next;
+        this.agent.getConfig().telegram.dm_policy = next;
+      });
+      if (error) return error;
       return `📬 DM policy: **${old}** → **${value}**`;
     }
 
@@ -218,7 +255,12 @@ export class AdminHandler {
         return `❌ Invalid group policy. Valid: ${VALID_GROUP_POLICIES.join(", ")}`;
       }
       const old = this.config.group_policy;
-      this.config.group_policy = value as typeof this.config.group_policy;
+      const next = value as typeof this.config.group_policy;
+      const error = this.persistConfigValue("telegram.group_policy", next, () => {
+        this.config.group_policy = next;
+        this.agent.getConfig().telegram.group_policy = next;
+      });
+      if (error) return error;
       return `👥 Group policy: **${old}** → **${value}**`;
     }
 
@@ -235,42 +277,6 @@ export class AdminHandler {
     if (!this.paused) return "▶️ Already running.";
     this.paused = false;
     return "▶️ Agent resumed.";
-  }
-
-  private handleStrategyCommand(command: AdminCommand): string {
-    if (command.args.length === 0) {
-      const buy = Math.round(DEALS_CONFIG.strategy.buyMaxMultiplier * 100);
-      const sell = Math.round(DEALS_CONFIG.strategy.sellMinMultiplier * 100);
-      return (
-        `📊 **Trading Strategy**\n\n` +
-        `Buy: max **${buy}%** of floor\n` +
-        `Sell: min **${sell}%** of floor\n\n` +
-        `Usage:\n/strategy buy <percent>\n/strategy sell <percent>`
-      );
-    }
-
-    const [target, valueStr] = command.args;
-    const value = parseInt(valueStr, 10);
-
-    if (target === "buy") {
-      if (isNaN(value) || value < 50 || value > 150) {
-        return "❌ Buy threshold must be between 50 and 150";
-      }
-      const old = Math.round(DEALS_CONFIG.strategy.buyMaxMultiplier * 100);
-      DEALS_CONFIG.strategy.buyMaxMultiplier = value / 100;
-      return `📊 Buy threshold: **${old}%** → **${value}%** of floor`;
-    }
-
-    if (target === "sell") {
-      if (isNaN(value) || value < 100 || value > 200) {
-        return "❌ Sell threshold must be between 100 and 200";
-      }
-      const old = Math.round(DEALS_CONFIG.strategy.sellMinMultiplier * 100);
-      DEALS_CONFIG.strategy.sellMinMultiplier = value / 100;
-      return `📊 Sell threshold: **${old}%** → **${value}%** of floor`;
-    }
-
-    return `❌ Unknown target: ${target}. Use "buy" or "sell".`;
   }
 
   private async handleStopCommand(): Promise<string> {
@@ -325,19 +331,40 @@ export class AdminHandler {
     }
 
     if (sub === "topk") {
-      const n = parseInt(command.args[1], 10);
-      if (isNaN(n) || n < 5 || n > 200) {
+      const n = Number(command.args[1]);
+      if (!Number.isInteger(n) || n < 5 || n > 200) {
         return `🔍 Current top_k: **${cfg.tool_rag.top_k}**\n\nUsage: /rag topk <5-200>`;
       }
       const old = cfg.tool_rag.top_k;
-      cfg.tool_rag.top_k = n;
+      const error = this.persistConfigValue("tool_rag.top_k", n, () => {
+        cfg.tool_rag.top_k = n;
+      });
+      if (error) return error;
       return `🔍 Tool RAG top_k: **${old}** → **${n}**`;
     }
 
     // Toggle ON/OFF
     const next = !cfg.tool_rag.enabled;
-    cfg.tool_rag.enabled = next;
+    const error = this.persistConfigValue("tool_rag.enabled", next, () => {
+      cfg.tool_rag.enabled = next;
+    });
+    if (error) return error;
     return next ? "🔍 Tool RAG **ON**" : "🔇 Tool RAG **OFF**";
+  }
+
+  private handleGuestCommand(command: AdminCommand): string {
+    const cfg = this.agent.getConfig();
+    const sub = command.args[0]?.toLowerCase();
+    if (sub !== "on" && sub !== "off") {
+      const state = cfg.telegram.guest_mode ? "ON" : "OFF";
+      return `👤 Guest mode: **${state}**\n\nUsage: /guest on|off`;
+    }
+    const enabled = sub === "on";
+    const error = this.persistConfigValue("telegram.guest_mode", enabled, () => {
+      cfg.telegram.guest_mode = enabled;
+    });
+    if (error) return error;
+    return enabled ? "👤 Guest mode **ON**" : "👤 Guest mode **OFF**";
   }
 
   private handleModulesCommand(command: AdminCommand, isGroup: boolean): string {
@@ -561,9 +588,6 @@ Set max agentic iterations
 **/policy** <dm|group> <value>
 Change access policy
 
-**/strategy** [buy|sell <percent>]
-View or change trading thresholds
-
 **/modules** [set|info|reset]
 Manage per-group module permissions
 
@@ -578,6 +602,9 @@ Toggle verbose debug logging
 
 **/rag** [status|topk <n>]
 Toggle Tool RAG or view status
+
+**/guest** on|off
+Toggle guest mode (answer queries in non-member chats)
 
 **/pause** / **/resume**
 Pause or resume the agent

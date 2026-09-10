@@ -10,54 +10,48 @@ import {
 } from "./transcribe-audio.js";
 import type { ToolEntry } from "../../types.js";
 
-export { telegramSendPhotoTool, telegramSendPhotoExecutor };
-export { telegramSendVoiceTool, telegramSendVoiceExecutor };
-export { telegramSendStickerTool, telegramSendStickerExecutor };
-export { telegramSendGifTool, telegramSendGifExecutor };
-export { telegramDownloadMediaTool, telegramDownloadMediaExecutor };
-export { visionAnalyzeTool, visionAnalyzeExecutor };
-export { telegramTranscribeAudioTool, telegramTranscribeAudioExecutor };
-
 export const tools: ToolEntry[] = [
   {
     tool: telegramSendPhotoTool,
     executor: telegramSendPhotoExecutor,
+    mode: "both",
     tags: ["media"],
   },
   {
     tool: telegramSendVoiceTool,
     executor: telegramSendVoiceExecutor,
-    requiredMode: "user",
+    mode: "user",
     tags: ["media"],
   },
   {
     tool: telegramSendStickerTool,
     executor: telegramSendStickerExecutor,
-    requiredMode: "user",
+    mode: "user",
     tags: ["media"],
   },
   {
     tool: telegramSendGifTool,
     executor: telegramSendGifExecutor,
-    requiredMode: "user",
+    mode: "user",
     tags: ["media"],
   },
   {
     tool: telegramDownloadMediaTool,
     executor: telegramDownloadMediaExecutor,
-    requiredMode: "user",
+    mode: "user",
     tags: ["media"],
   },
   {
     tool: visionAnalyzeTool,
     executor: visionAnalyzeExecutor,
-    requiredMode: "user",
+    minimumAccess: "admin",
+    mode: "user",
     tags: ["media"],
   },
   {
     tool: telegramTranscribeAudioTool,
     executor: telegramTranscribeAudioExecutor,
-    requiredMode: "user",
+    mode: "user",
     tags: ["media"],
   },
 ];

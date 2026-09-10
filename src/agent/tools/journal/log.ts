@@ -6,10 +6,12 @@
 import { Type } from "@sinclair/typebox";
 import { getDatabase } from "../../../memory/database.js";
 import { JournalStore } from "../../../memory/journal-store.js";
-import type { Tool, ToolExecutor, ToolResult } from "../types.js";
+import type { JournalType, JournalOutcome } from "../../../memory/journal-store.js";
+import type { Tool, ToolExecutor } from "../types.js";
+import { formatAssetFlow, formatTxHash } from "./format.js";
 
 interface JournalLogParams {
-  type: "trade" | "gift" | "middleman" | "kol";
+  type: JournalType;
   action: string;
   asset_from?: string;
   asset_to?: string;
@@ -19,7 +21,7 @@ interface JournalLogParams {
   counterparty?: string;
   platform?: string;
   reasoning: string;
-  outcome?: "pending" | "profit" | "loss" | "neutral" | "cancelled";
+  outcome?: JournalOutcome;
   tx_hash?: string;
 }
 
@@ -62,7 +64,10 @@ export const journalLogTool: Tool = {
           Type.Literal("neutral"),
           Type.Literal("cancelled"),
         ],
-        { description: "Outcome status (default: 'pending')" }
+        {
+          description:
+            "P&L result (default: 'pending'). Must be EXACTLY one of: 'pending' (still open), 'profit', 'loss', 'neutral' (break-even), 'cancelled'. This is the profit/loss outcome, NOT a completion status — do not use 'closed'/'completed'/'success'/'done'. Leave as 'pending' for in-progress operations and close them later with journal_update.",
+        }
       )
     ),
     tx_hash: Type.Optional(
@@ -71,10 +76,7 @@ export const journalLogTool: Tool = {
   }),
 };
 
-export const journalLogExecutor: ToolExecutor<JournalLogParams> = async (
-  params,
-  context
-): Promise<ToolResult> => {
+export const journalLogExecutor: ToolExecutor<JournalLogParams> = async (params, context) => {
   const db = getDatabase().getDb();
   const store = new JournalStore(db);
 
@@ -104,12 +106,9 @@ export const journalLogExecutor: ToolExecutor<JournalLogParams> = async (
     `**Action**: ${entry.action}`,
   ];
 
-  if (entry.asset_from || entry.asset_to) {
-    const fromStr = entry.asset_from
-      ? `${entry.amount_from?.toFixed(4) ?? "?"} ${entry.asset_from}`
-      : "—";
-    const toStr = entry.asset_to ? `${entry.amount_to?.toFixed(4) ?? "?"} ${entry.asset_to}` : "—";
-    lines.push(`**Assets**: ${fromStr} → ${toStr}`);
+  const assetFlow = formatAssetFlow(entry);
+  if (assetFlow) {
+    lines.push(`**Assets**: ${assetFlow}`);
   }
 
   if (entry.price_ton) {
@@ -128,7 +127,7 @@ export const journalLogExecutor: ToolExecutor<JournalLogParams> = async (
   lines.push(`**Reasoning**: ${entry.reasoning}`);
 
   if (entry.tx_hash) {
-    lines.push(`**TX**: \`${entry.tx_hash.slice(0, 16)}...\``);
+    lines.push(`**TX**: ${formatTxHash(entry.tx_hash)}`);
   }
 
   lines.push(``, `_Logged at ${new Date(entry.created_at * 1000).toISOString()}_`);

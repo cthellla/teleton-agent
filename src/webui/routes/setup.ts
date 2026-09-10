@@ -16,11 +16,7 @@ import {
   validateApiKeyFormat,
   type SupportedProvider,
 } from "../../config/providers.js";
-import {
-  getClaudeCodeApiKey,
-  isClaudeCodeTokenValid,
-} from "../../providers/claude-code-credentials.js";
-import { ConfigSchema, DealsConfigSchema } from "../../config/schema.js";
+import { ConfigSchema, DEFAULT_TOOL_RAG_ALWAYS_INCLUDE } from "../../config/schema.js";
 import { ensureWorkspace, isNewWorkspace } from "../../workspace/manager.js";
 import { TELETON_ROOT } from "../../workspace/paths.js";
 import {
@@ -34,7 +30,8 @@ import { fetchWithTimeout } from "../../utils/fetch.js";
 import { TELEGRAM_MAX_MESSAGE_LENGTH } from "../../constants/limits.js";
 import { TelegramAuthManager } from "../setup-auth.js";
 import { createLogger } from "../../utils/logger.js";
-import { getErrorMessage } from "../../utils/errors.js";
+import { apiError, telegramAuthError } from "../http.js";
+import { assertGrokBuildReady } from "../../providers/grok-build-credentials.js";
 
 const log = createLogger("Setup");
 
@@ -82,7 +79,7 @@ export function createSetupRoutes(options?: { keyHash?: string }): Hono {
         },
       });
     } catch (error: unknown) {
-      return c.json({ success: false, error: getErrorMessage(error) }, 500);
+      return apiError(c, error, 500);
     }
   });
 
@@ -96,8 +93,8 @@ export function createSetupRoutes(options?: { keyHash?: string }): Hono {
       toolLimit: p.toolLimit,
       keyPrefix: p.keyPrefix,
       consoleUrl: p.consoleUrl,
-      requiresApiKey: p.id !== "cocoon" && p.id !== "local" && p.id !== "claude-code",
-      autoDetectsKey: p.id === "claude-code",
+      credentialMode: p.credentialMode,
+      requiresApiKey: p.credentialMode === "api-key",
       requiresBaseUrl: p.id === "local",
     }));
     return c.json({ success: true, data: providers });
@@ -119,27 +116,6 @@ export function createSetupRoutes(options?: { keyHash?: string }): Hono {
     return c.json({ success: true, data: result });
   });
 
-  // ── GET /detect-claude-code-key ───────────────────────────────────
-  app.get("/detect-claude-code-key", (c) => {
-    try {
-      const key = getClaudeCodeApiKey();
-      const masked = maskKey(key);
-      return c.json({
-        success: true,
-        data: {
-          found: true,
-          maskedKey: masked,
-          valid: isClaudeCodeTokenValid(),
-        },
-      });
-    } catch {
-      return c.json({
-        success: true,
-        data: { found: false, maskedKey: null, valid: false },
-      });
-    }
-  });
-
   // ── POST /validate/api-key ────────────────────────────────────────
   app.post("/validate/api-key", async (c) => {
     try {
@@ -147,7 +123,7 @@ export function createSetupRoutes(options?: { keyHash?: string }): Hono {
       const error = validateApiKeyFormat(body.provider as SupportedProvider, body.apiKey);
       return c.json({ success: true, data: { valid: !error, error } });
     } catch (error: unknown) {
-      return c.json({ success: false, error: getErrorMessage(error) }, 400);
+      return apiError(c, error, 400);
     }
   });
 
@@ -186,7 +162,7 @@ export function createSetupRoutes(options?: { keyHash?: string }): Hono {
         });
       }
     } catch (error: unknown) {
-      return c.json({ success: false, error: getErrorMessage(error) }, 400);
+      return apiError(c, error, 400);
     }
   });
 
@@ -216,7 +192,7 @@ export function createSetupRoutes(options?: { keyHash?: string }): Hono {
         data: { created: !isNewWorkspace(workspace) === false, path: workspace.root },
       });
     } catch (error: unknown) {
-      return c.json({ success: false, error: getErrorMessage(error) }, 500);
+      return apiError(c, error, 500);
     }
   });
 
@@ -238,7 +214,7 @@ export function createSetupRoutes(options?: { keyHash?: string }): Hono {
         data: { address: wallet.address, mnemonic: wallet.mnemonic },
       });
     } catch (error: unknown) {
-      return c.json({ success: false, error: getErrorMessage(error) }, 500);
+      return apiError(c, error, 500);
     }
   });
 
@@ -256,7 +232,7 @@ export function createSetupRoutes(options?: { keyHash?: string }): Hono {
       log.info("TON wallet imported via setup UI");
       return c.json({ success: true, data: { address: wallet.address } });
     } catch (error: unknown) {
-      return c.json({ success: false, error: getErrorMessage(error) }, 400);
+      return apiError(c, error, 400);
     }
   });
 
@@ -276,20 +252,7 @@ export function createSetupRoutes(options?: { keyHash?: string }): Hono {
       const result = await authManager.sendCode(body.apiId, body.apiHash, body.phone);
       return c.json({ success: true, data: result });
     } catch (error: unknown) {
-      const tgError = error as { errorMessage?: string; seconds?: number; message?: string };
-      if (tgError.seconds) {
-        return c.json(
-          {
-            success: false,
-            error: `Rate limited. Please wait ${tgError.seconds} seconds.`,
-          },
-          429
-        );
-      }
-      return c.json(
-        { success: false, error: tgError.errorMessage || tgError.message || String(error) },
-        500
-      );
+      return telegramAuthError(c, error);
     }
   });
 
@@ -304,20 +267,7 @@ export function createSetupRoutes(options?: { keyHash?: string }): Hono {
       const result = await authManager.verifyCode(body.authSessionId, body.code);
       return c.json({ success: true, data: result });
     } catch (error: unknown) {
-      const tgError = error as { errorMessage?: string; seconds?: number; message?: string };
-      if (tgError.seconds) {
-        return c.json(
-          {
-            success: false,
-            error: `Rate limited. Please wait ${tgError.seconds} seconds.`,
-          },
-          429
-        );
-      }
-      return c.json(
-        { success: false, error: tgError.errorMessage || tgError.message || String(error) },
-        500
-      );
+      return telegramAuthError(c, error);
     }
   });
 
@@ -332,20 +282,7 @@ export function createSetupRoutes(options?: { keyHash?: string }): Hono {
       const result = await authManager.verifyPassword(body.authSessionId, body.password);
       return c.json({ success: true, data: result });
     } catch (error: unknown) {
-      const tgError = error as { errorMessage?: string; seconds?: number; message?: string };
-      if (tgError.seconds) {
-        return c.json(
-          {
-            success: false,
-            error: `Rate limited. Please wait ${tgError.seconds} seconds.`,
-          },
-          429
-        );
-      }
-      return c.json(
-        { success: false, error: tgError.errorMessage || tgError.message || String(error) },
-        500
-      );
+      return telegramAuthError(c, error);
     }
   });
 
@@ -363,20 +300,7 @@ export function createSetupRoutes(options?: { keyHash?: string }): Hono {
       }
       return c.json({ success: true, data: result });
     } catch (error: unknown) {
-      const tgError = error as { errorMessage?: string; seconds?: number; message?: string };
-      if (tgError.seconds) {
-        return c.json(
-          {
-            success: false,
-            error: `Rate limited. Please wait ${tgError.seconds} seconds.`,
-          },
-          429
-        );
-      }
-      return c.json(
-        { success: false, error: tgError.errorMessage || tgError.message || String(error) },
-        500
-      );
+      return telegramAuthError(c, error);
     }
   });
 
@@ -391,17 +315,7 @@ export function createSetupRoutes(options?: { keyHash?: string }): Hono {
       const result = await authManager.startQrSession(body.apiId, body.apiHash);
       return c.json({ success: true, data: result });
     } catch (error: unknown) {
-      const tgError = error as { errorMessage?: string; seconds?: number; message?: string };
-      if (tgError.seconds) {
-        return c.json(
-          { success: false, error: `Rate limited. Please wait ${tgError.seconds} seconds.` },
-          429
-        );
-      }
-      return c.json(
-        { success: false, error: tgError.errorMessage || tgError.message || String(error) },
-        500
-      );
+      return telegramAuthError(c, error);
     }
   });
 
@@ -416,17 +330,7 @@ export function createSetupRoutes(options?: { keyHash?: string }): Hono {
       const result = await authManager.refreshQrToken(body.authSessionId);
       return c.json({ success: true, data: result });
     } catch (error: unknown) {
-      const tgError = error as { errorMessage?: string; seconds?: number; message?: string };
-      if (tgError.seconds) {
-        return c.json(
-          { success: false, error: `Rate limited. Please wait ${tgError.seconds} seconds.` },
-          429
-        );
-      }
-      return c.json(
-        { success: false, error: tgError.errorMessage || tgError.message || String(error) },
-        500
-      );
+      return telegramAuthError(c, error);
     }
   });
 
@@ -439,7 +343,7 @@ export function createSetupRoutes(options?: { keyHash?: string }): Hono {
       await authManager.cancelSession(body.authSessionId);
       return c.json({ success: true });
     } catch (error: unknown) {
-      return c.json({ success: false, error: getErrorMessage(error) }, 500);
+      return apiError(c, error, 500);
     }
   });
 
@@ -455,7 +359,7 @@ export function createSetupRoutes(options?: { keyHash?: string }): Hono {
         dimensions: provider.dimensions,
       });
     } catch (error: unknown) {
-      return c.json({ success: false, error: getErrorMessage(error) }, 500);
+      return apiError(c, error, 500);
     }
   });
 
@@ -475,6 +379,7 @@ export function createSetupRoutes(options?: { keyHash?: string }): Hono {
   app.post("/config/save", async (c) => {
     try {
       const input = await c.req.json();
+      if (input?.agent?.provider === "grok-build") assertGrokBuildReady();
       const workspace = await ensureWorkspace({ ensureTemplates: true });
 
       // Resolve provider default model (same as CLI)
@@ -531,10 +436,6 @@ export function createSetupRoutes(options?: { keyHash?: string }): Hono {
           history_limit: 100,
         },
         embedding: { provider: "local" as const },
-        deals: DealsConfigSchema.parse({
-          enabled: true,
-          ...(input.deals ?? {}),
-        }),
         webui: {
           enabled: input.webui?.enabled ?? false,
           port: 7777,
@@ -547,15 +448,7 @@ export function createSetupRoutes(options?: { keyHash?: string }): Hono {
         tool_rag: {
           enabled: false,
           top_k: 25,
-          always_include: [
-            "telegram_send_message",
-            "telegram_reply_message",
-            "telegram_send_photo",
-            "telegram_send_document",
-            "journal_*",
-            "workspace_*",
-            "web_*",
-          ],
+          always_include: [...DEFAULT_TOOL_RAG_ALWAYS_INCLUDE],
           skip_unlimited_providers: false,
         },
         capabilities: {
@@ -569,7 +462,7 @@ export function createSetupRoutes(options?: { keyHash?: string }): Hono {
         },
         mcp: { servers: {} },
         plugins: {},
-        ...(input.cocoon ? { cocoon: input.cocoon } : {}),
+        ...(input.gocoon ? { gocoon: input.gocoon } : {}),
         ...(input.tonapi_key ? { tonapi_key: input.tonapi_key } : {}),
         ...(input.toncenter_api_key ? { toncenter_api_key: input.toncenter_api_key } : {}),
         ...(input.tavily_api_key ? { tavily_api_key: input.tavily_api_key } : {}),
@@ -592,7 +485,7 @@ export function createSetupRoutes(options?: { keyHash?: string }): Hono {
       log.info(`Configuration saved: ${configPath}`);
       return c.json({ success: true, data: { path: configPath } });
     } catch (error: unknown) {
-      return c.json({ success: false, error: getErrorMessage(error) }, 400);
+      return apiError(c, error, 400);
     }
   });
 

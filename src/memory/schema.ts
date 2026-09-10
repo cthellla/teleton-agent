@@ -4,6 +4,137 @@ import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("Memory");
 
+// ── Shared DDL ─────────────────────────────────────────────────────────
+// Single source for table DDL that is otherwise duplicated verbatim between
+// ensureSchema (fresh DB) and a historical migration (existing DB). Only tables
+// whose inline and migration DDL were already byte-identical are factored here.
+// Tables whose two definitions diverge (exec_audit) or whose migration replaces
+// rather than creates (tg_messages FTS triggers: DROP+CREATE vs CREATE IF NOT
+// EXISTS) are deliberately left inline to avoid changing applied-migration
+// semantics on existing databases.
+
+const DDL_TASK_DEPENDENCIES = `
+    CREATE TABLE IF NOT EXISTS task_dependencies (
+      task_id TEXT NOT NULL,
+      depends_on_task_id TEXT NOT NULL,
+      PRIMARY KEY (task_id, depends_on_task_id),
+      FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+      FOREIGN KEY (depends_on_task_id) REFERENCES tasks(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_task_deps_task ON task_dependencies(task_id);
+    CREATE INDEX IF NOT EXISTS idx_task_deps_parent ON task_dependencies(depends_on_task_id);
+`;
+
+const DDL_EMBEDDING_CACHE = `
+    CREATE TABLE IF NOT EXISTS embedding_cache (
+      hash TEXT NOT NULL,
+      model TEXT NOT NULL,
+      provider TEXT NOT NULL,
+      embedding BLOB NOT NULL,
+      dims INTEGER NOT NULL,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+      accessed_at INTEGER NOT NULL DEFAULT (unixepoch()),
+      PRIMARY KEY (hash, model, provider)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_embedding_cache_accessed ON embedding_cache(accessed_at);
+`;
+
+const DDL_PLUGIN_CONFIG = `
+    CREATE TABLE IF NOT EXISTS plugin_config (
+      plugin_name TEXT PRIMARY KEY,
+      priority INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+`;
+
+const DDL_USER_HOOK_CONFIG = `
+    CREATE TABLE IF NOT EXISTS user_hook_config (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+`;
+
+const DDL_AGENT_RUNTIME = `
+    CREATE TABLE IF NOT EXISTS agent_turn_traces (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      chat_id TEXT NOT NULL,
+      started_at INTEGER NOT NULL,
+      completed_at INTEGER,
+      status TEXT NOT NULL CHECK(status IN ('running', 'completed', 'error', 'budget_exhausted')),
+      provider TEXT NOT NULL,
+      model TEXT NOT NULL,
+      requested_model TEXT,
+      endpoint_fingerprint TEXT,
+      selected_tools_json TEXT NOT NULL DEFAULT '[]',
+      tools_json TEXT NOT NULL DEFAULT '[]',
+      iterations INTEGER NOT NULL DEFAULT 0,
+      tool_calls INTEGER NOT NULL DEFAULT 0,
+      input_tokens INTEGER NOT NULL DEFAULT 0,
+      output_tokens INTEGER NOT NULL DEFAULT 0,
+      total_cost REAL NOT NULL DEFAULT 0,
+      stop_reason TEXT,
+      error_message TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_agent_turn_traces_chat
+      ON agent_turn_traces(chat_id, started_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_agent_turn_traces_session
+      ON agent_turn_traces(session_id, started_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_agent_turn_traces_started
+      ON agent_turn_traces(started_at DESC);
+
+    CREATE TABLE IF NOT EXISTS tool_result_artifacts (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      chat_id TEXT NOT NULL,
+      tool_name TEXT NOT NULL,
+      content TEXT NOT NULL,
+      size_bytes INTEGER NOT NULL,
+      created_at INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_tool_result_artifacts_expiry
+      ON tool_result_artifacts(expires_at);
+
+    CREATE TABLE IF NOT EXISTS action_executions (
+      turn_id TEXT NOT NULL,
+      tool_name TEXT NOT NULL,
+      args_hash TEXT NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('running', 'succeeded', 'failed', 'unknown')),
+      result_json TEXT,
+      started_at INTEGER NOT NULL,
+      completed_at INTEGER,
+      PRIMARY KEY (turn_id, tool_name, args_hash)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_action_executions_started
+      ON action_executions(started_at DESC);
+`;
+
+/**
+ * Idempotent ALTER TABLE ... ADD COLUMN: swallows the "duplicate column name"
+ * error so migrations can re-run. Single definition shared by all migrations.
+ */
+function addColumnIfNotExists(
+  db: Database.Database,
+  table: string,
+  column: string,
+  type: string
+): void {
+  try {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+  } catch (error: unknown) {
+    if (!(error instanceof Error) || !error.message.includes("duplicate column name")) {
+      throw error;
+    }
+  }
+}
+
 function compareSemver(a: string, b: string): number {
   const parseVersion = (v: string) => {
     const parts = v.split("-")[0].split(".").map(Number);
@@ -126,7 +257,10 @@ export function ensureSchema(db: Database.Database): void {
       scheduled_for INTEGER,
       payload TEXT,
       reason TEXT,
-      scheduled_message_id INTEGER
+      scheduled_message_id INTEGER,
+      origin_sender_id INTEGER,
+      origin_chat_id TEXT,
+      origin_is_group INTEGER CHECK(origin_is_group IN (0, 1))
     );
 
     CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
@@ -134,17 +268,11 @@ export function ensureSchema(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_tasks_scheduled ON tasks(scheduled_for) WHERE scheduled_for IS NOT NULL;
     CREATE INDEX IF NOT EXISTS idx_tasks_created_by ON tasks(created_by) WHERE created_by IS NOT NULL;
 
-    -- Task Dependencies (for chained tasks)
-    CREATE TABLE IF NOT EXISTS task_dependencies (
-      task_id TEXT NOT NULL,
-      depends_on_task_id TEXT NOT NULL,
-      PRIMARY KEY (task_id, depends_on_task_id),
-      FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
-      FOREIGN KEY (depends_on_task_id) REFERENCES tasks(id) ON DELETE CASCADE
-    );
+    -- Agent loop observability, paged tool artifacts, and action idempotency.
+    ${DDL_AGENT_RUNTIME}
 
-    CREATE INDEX IF NOT EXISTS idx_task_deps_task ON task_dependencies(task_id);
-    CREATE INDEX IF NOT EXISTS idx_task_deps_parent ON task_dependencies(depends_on_task_id);
+    -- Task Dependencies (for chained tasks)
+    ${DDL_TASK_DEPENDENCIES}
 
     -- ============================================
     -- TELEGRAM FEED
@@ -189,11 +317,13 @@ export function ensureSchema(db: Database.Database): void {
 
     -- Messages
     CREATE TABLE IF NOT EXISTS tg_messages (
-      id TEXT PRIMARY KEY,
+      id TEXT NOT NULL,
       chat_id TEXT NOT NULL,
       sender_id TEXT,
       text TEXT,
       embedding TEXT,
+      embedding_status TEXT NOT NULL DEFAULT 'pending'
+        CHECK(embedding_status IN ('pending', 'ready', 'failed', 'disabled')),
       reply_to_id TEXT,
       forward_from_id TEXT,
       is_from_agent INTEGER DEFAULT 0,
@@ -202,6 +332,7 @@ export function ensureSchema(db: Database.Database): void {
       media_type TEXT,
       timestamp INTEGER NOT NULL,
       indexed_at INTEGER NOT NULL DEFAULT (unixepoch()),
+      PRIMARY KEY (chat_id, id),
       FOREIGN KEY (chat_id) REFERENCES tg_chats(id) ON DELETE CASCADE,
       FOREIGN KEY (sender_id) REFERENCES tg_users(id) ON DELETE SET NULL
     );
@@ -209,7 +340,7 @@ export function ensureSchema(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_tg_messages_chat ON tg_messages(chat_id, timestamp DESC);
     CREATE INDEX IF NOT EXISTS idx_tg_messages_sender ON tg_messages(sender_id, timestamp DESC);
     CREATE INDEX IF NOT EXISTS idx_tg_messages_timestamp ON tg_messages(timestamp DESC);
-    CREATE INDEX IF NOT EXISTS idx_tg_messages_reply ON tg_messages(reply_to_id) WHERE reply_to_id IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_tg_messages_reply ON tg_messages(chat_id, reply_to_id) WHERE reply_to_id IS NOT NULL;
     CREATE INDEX IF NOT EXISTS idx_tg_messages_from_agent ON tg_messages(is_from_agent, timestamp DESC) WHERE is_from_agent = 1;
 
     -- Full-text search for messages
@@ -236,25 +367,15 @@ export function ensureSchema(db: Database.Database): void {
     CREATE TRIGGER IF NOT EXISTS tg_messages_fts_update AFTER UPDATE ON tg_messages WHEN old.text IS NOT NULL OR new.text IS NOT NULL BEGIN
       DELETE FROM tg_messages_fts WHERE rowid = old.rowid;
       INSERT INTO tg_messages_fts(rowid, text, id, chat_id, sender_id, timestamp)
-      VALUES (new.rowid, new.text, new.id, new.chat_id, new.sender_id, new.timestamp);
+      SELECT new.rowid, new.text, new.id, new.chat_id, new.sender_id, new.timestamp
+      WHERE new.text IS NOT NULL;
     END;
 
     -- ============================================
     -- EMBEDDING CACHE
     -- ============================================
 
-    CREATE TABLE IF NOT EXISTS embedding_cache (
-      hash TEXT NOT NULL,
-      model TEXT NOT NULL,
-      provider TEXT NOT NULL,
-      embedding BLOB NOT NULL,
-      dims INTEGER NOT NULL,
-      created_at INTEGER NOT NULL DEFAULT (unixepoch()),
-      accessed_at INTEGER NOT NULL DEFAULT (unixepoch()),
-      PRIMARY KEY (hash, model, provider)
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_embedding_cache_accessed ON embedding_cache(accessed_at);
+    ${DDL_EMBEDDING_CACHE}
 
     -- =====================================================
     -- EXEC AUDIT (Command Execution History)
@@ -284,21 +405,13 @@ export function ensureSchema(db: Database.Database): void {
     -- PLUGIN CONFIG (Plugin Priority Order)
     -- =====================================================
 
-    CREATE TABLE IF NOT EXISTS plugin_config (
-      plugin_name TEXT PRIMARY KEY,
-      priority INTEGER NOT NULL DEFAULT 0,
-      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-    );
+    ${DDL_PLUGIN_CONFIG}
 
     -- =====================================================
     -- USER HOOK CONFIG (Keyword Blocklist + Context Triggers)
     -- =====================================================
 
-    CREATE TABLE IF NOT EXISTS user_hook_config (
-      key TEXT PRIMARY KEY,
-      value TEXT NOT NULL,
-      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-    );
+    ${DDL_USER_HOOK_CONFIG}
 
     -- =====================================================
     -- JOURNAL (Trading & Business Operations)
@@ -308,20 +421,39 @@ export function ensureSchema(db: Database.Database): void {
 }
 
 export function ensureVectorTables(db: Database.Database, dimensions: number): boolean {
-  const existingDims = db
-    .prepare(
-      `
-    SELECT sql FROM sqlite_master
-    WHERE type='table' AND name='knowledge_vec'
-  `
-    )
-    .get() as { sql?: string } | undefined;
+  const vectorTableSql = (name: string): string => {
+    const row = db
+      .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?")
+      .get(name) as { sql?: string } | undefined;
+    return row?.sql?.toLowerCase().replace(/\s+/g, " ") ?? "";
+  };
+
+  const knowledgeSql = vectorTableSql("knowledge_vec");
+  const messageSql = vectorTableSql("tg_messages_vec");
 
   let dimensionsChanged = false;
-  if (existingDims?.sql && !existingDims.sql.includes(`[${dimensions}]`)) {
+  if (
+    (knowledgeSql && !knowledgeSql.includes(`[${dimensions}]`)) ||
+    (messageSql && !messageSql.includes(`[${dimensions}]`))
+  ) {
     db.exec(`DROP TABLE IF EXISTS knowledge_vec`);
     db.exec(`DROP TABLE IF EXISTS tg_messages_vec`);
     dimensionsChanged = true;
+  } else if (
+    messageSql &&
+    (!messageSql.includes("chat_id text partition key") ||
+      !messageSql.includes("message_id text") ||
+      !messageSql.includes("timestamp integer"))
+  ) {
+    // vec0 virtual tables cannot be safely renamed: their shadow tables keep
+    // the original name. Recreate the table in place, then repopulate it from
+    // the canonical BLOBs after invalid rows have been normalized.
+    db.prepare(
+      `INSERT INTO meta (key, value, updated_at)
+       VALUES ('tg_messages_vector_rebuild_required', '1', unixepoch())
+       ON CONFLICT(key) DO UPDATE SET value = '1', updated_at = unixepoch()`
+    ).run();
+    db.exec(`DROP TABLE tg_messages_vec`);
   }
 
   db.exec(`
@@ -332,11 +464,120 @@ export function ensureVectorTables(db: Database.Database, dimensions: number): b
 
     CREATE VIRTUAL TABLE IF NOT EXISTS tg_messages_vec USING vec0(
       id TEXT PRIMARY KEY,
+      chat_id TEXT partition key,
+      message_id TEXT,
+      timestamp INTEGER,
       embedding FLOAT[${dimensions}] distance_metric=cosine
     );
   `);
 
+  if (!dimensionsChanged) {
+    const missingMetadata = (
+      db
+        .prepare(
+          `SELECT COUNT(*) AS count FROM tg_messages_vec
+           WHERE chat_id IS NULL OR message_id IS NULL OR timestamp IS NULL`
+        )
+        .get() as { count: number }
+    ).count;
+    if (missingMetadata > 0) {
+      db.prepare(
+        `INSERT INTO meta (key, value, updated_at)
+         VALUES ('tg_messages_vector_rebuild_required', '1', unixepoch())
+         ON CONFLICT(key) DO UPDATE SET value = '1', updated_at = unixepoch()`
+      ).run();
+    }
+  }
+
   return dimensionsChanged;
+}
+
+/** Normalize legacy/corrupt message embeddings before rebuilding the vec0 table. */
+export function normalizeInvalidTelegramMessageEmbeddings(
+  db: Database.Database,
+  dimensions: number
+): number {
+  const expectedBytes = dimensions * Float32Array.BYTES_PER_ELEMENT;
+  let changes = 0;
+
+  db.transaction(() => {
+    changes = db
+      .prepare(
+        `UPDATE tg_messages
+         SET embedding = NULL,
+             embedding_status = CASE
+               WHEN text IS NULL OR length(trim(text)) = 0 THEN 'disabled'
+               ELSE 'pending'
+             END,
+             indexed_at = unixepoch()
+         WHERE embedding_status = 'ready'
+           AND (
+             embedding IS NULL
+             OR typeof(embedding) != 'blob'
+             OR length(embedding) != ?
+           )`
+      )
+      .run(expectedBytes).changes;
+
+    const rebuildRequired =
+      changes > 0 ||
+      (
+        db
+          .prepare("SELECT value FROM meta WHERE key = 'tg_messages_vector_rebuild_required'")
+          .get() as { value?: string } | undefined
+      )?.value === "1";
+
+    if (rebuildRequired) {
+      const nonFiniteRows: Array<{ chat_id: string; id: string }> = [];
+      const candidates = db
+        .prepare(
+          `SELECT chat_id, id, embedding FROM tg_messages
+           WHERE embedding_status = 'ready'
+             AND typeof(embedding) = 'blob'
+             AND length(embedding) = ?`
+        )
+        .iterate(expectedBytes) as Iterable<{
+        chat_id: string;
+        id: string;
+        embedding: Buffer;
+      }>;
+
+      for (const row of candidates) {
+        let finite = true;
+        for (let offset = 0; offset < row.embedding.length; offset += 4) {
+          if (!Number.isFinite(row.embedding.readFloatLE(offset))) {
+            finite = false;
+            break;
+          }
+        }
+        if (!finite) nonFiniteRows.push({ chat_id: row.chat_id, id: row.id });
+      }
+
+      const reset = db.prepare(
+        `UPDATE tg_messages
+         SET embedding = NULL,
+             embedding_status = CASE
+               WHEN text IS NULL OR length(trim(text)) = 0 THEN 'disabled'
+               ELSE 'pending'
+             END,
+             indexed_at = unixepoch()
+         WHERE chat_id = ? AND id = ?`
+      );
+      for (const row of nonFiniteRows) {
+        changes += reset.run(row.chat_id, row.id).changes;
+      }
+    }
+
+    if (changes > 0) {
+      db.prepare(
+        `INSERT INTO meta (key, value, updated_at)
+         VALUES ('tg_messages_vector_rebuild_required', '1', unixepoch())
+         ON CONFLICT(key) DO UPDATE SET value = '1', updated_at = unixepoch()`
+      ).run();
+    }
+  })();
+
+  return changes;
 }
 
 export function getSchemaVersion(db: Database.Database): string | null {
@@ -356,7 +597,7 @@ export function setSchemaVersion(db: Database.Database, version: string): void {
   ).run(version);
 }
 
-export const CURRENT_SCHEMA_VERSION = "1.18.0";
+export const CURRENT_SCHEMA_VERSION = "1.25.0";
 
 export function runMigrations(db: Database.Database): void {
   const currentVersion = getSchemaVersion(db);
@@ -393,18 +634,7 @@ export function runMigrations(db: Database.Database): void {
         `CREATE INDEX IF NOT EXISTS idx_tasks_scheduled ON tasks(scheduled_for) WHERE scheduled_for IS NOT NULL`
       );
 
-      db.exec(`
-        CREATE TABLE IF NOT EXISTS task_dependencies (
-          task_id TEXT NOT NULL,
-          depends_on_task_id TEXT NOT NULL,
-          PRIMARY KEY (task_id, depends_on_task_id),
-          FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
-          FOREIGN KEY (depends_on_task_id) REFERENCES tasks(id) ON DELETE CASCADE
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_task_deps_task ON task_dependencies(task_id);
-        CREATE INDEX IF NOT EXISTS idx_task_deps_parent ON task_dependencies(depends_on_task_id);
-      `);
+      db.exec(DDL_TASK_DEPENDENCIES);
 
       log.info("Migration 1.1.0 complete: Scheduled tasks support added");
     } catch (error) {
@@ -417,28 +647,19 @@ export function runMigrations(db: Database.Database): void {
       log.info("Running migration 1.2.0: Extend sessions table for SQLite backend");
 
       // Add missing columns to sessions table
-      const addColumnIfNotExists = (table: string, column: string, type: string) => {
-        try {
-          db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
-        } catch (error: unknown) {
-          if (!(error instanceof Error) || !error.message.includes("duplicate column name")) {
-            throw error;
-          }
-        }
-      };
-
       addColumnIfNotExists(
+        db,
         "sessions",
         "updated_at",
         "INTEGER NOT NULL DEFAULT (unixepoch() * 1000)"
       );
-      addColumnIfNotExists("sessions", "last_message_id", "INTEGER");
-      addColumnIfNotExists("sessions", "last_channel", "TEXT");
-      addColumnIfNotExists("sessions", "last_to", "TEXT");
-      addColumnIfNotExists("sessions", "context_tokens", "INTEGER");
-      addColumnIfNotExists("sessions", "model", "TEXT");
-      addColumnIfNotExists("sessions", "provider", "TEXT");
-      addColumnIfNotExists("sessions", "last_reset_date", "TEXT");
+      addColumnIfNotExists(db, "sessions", "last_message_id", "INTEGER");
+      addColumnIfNotExists(db, "sessions", "last_channel", "TEXT");
+      addColumnIfNotExists(db, "sessions", "last_to", "TEXT");
+      addColumnIfNotExists(db, "sessions", "context_tokens", "INTEGER");
+      addColumnIfNotExists(db, "sessions", "model", "TEXT");
+      addColumnIfNotExists(db, "sessions", "provider", "TEXT");
+      addColumnIfNotExists(db, "sessions", "last_reset_date", "TEXT");
 
       const sessions = db.prepare("SELECT started_at FROM sessions LIMIT 1").all() as Array<{
         started_at: number;
@@ -461,19 +682,7 @@ export function runMigrations(db: Database.Database): void {
     log.info("Running migration 1.9.0: Upgrade embedding_cache to BLOB storage");
     try {
       db.exec(`DROP TABLE IF EXISTS embedding_cache`);
-      db.exec(`
-        CREATE TABLE IF NOT EXISTS embedding_cache (
-          hash TEXT NOT NULL,
-          model TEXT NOT NULL,
-          provider TEXT NOT NULL,
-          embedding BLOB NOT NULL,
-          dims INTEGER NOT NULL,
-          created_at INTEGER NOT NULL DEFAULT (unixepoch()),
-          accessed_at INTEGER NOT NULL DEFAULT (unixepoch()),
-          PRIMARY KEY (hash, model, provider)
-        );
-        CREATE INDEX IF NOT EXISTS idx_embedding_cache_accessed ON embedding_cache(accessed_at);
-      `);
+      db.exec(DDL_EMBEDDING_CACHE);
       log.info("Migration 1.9.0 complete: embedding_cache upgraded to BLOB storage");
     } catch (error) {
       log.error({ err: error }, "Migration 1.9.0 failed");
@@ -597,18 +806,8 @@ export function runMigrations(db: Database.Database): void {
   if (!currentVersion || versionLessThan(currentVersion, "1.13.0")) {
     log.info("Running migration 1.13.0: Add token usage columns to sessions");
     try {
-      const addColumnIfNotExists = (table: string, column: string, type: string) => {
-        try {
-          db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
-        } catch (error: unknown) {
-          if (!(error instanceof Error) || !error.message.includes("duplicate column name")) {
-            throw error;
-          }
-        }
-      };
-
-      addColumnIfNotExists("sessions", "input_tokens", "INTEGER DEFAULT 0");
-      addColumnIfNotExists("sessions", "output_tokens", "INTEGER DEFAULT 0");
+      addColumnIfNotExists(db, "sessions", "input_tokens", "INTEGER DEFAULT 0");
+      addColumnIfNotExists(db, "sessions", "output_tokens", "INTEGER DEFAULT 0");
 
       log.info("Migration 1.13.0 complete: Token usage columns added to sessions");
     } catch (error) {
@@ -620,13 +819,7 @@ export function runMigrations(db: Database.Database): void {
   if (!currentVersion || versionLessThan(currentVersion, "1.14.0")) {
     log.info("Running migration 1.14.0: Add plugin_config table for plugin priority");
     try {
-      db.exec(`
-        CREATE TABLE IF NOT EXISTS plugin_config (
-          plugin_name TEXT PRIMARY KEY,
-          priority INTEGER NOT NULL DEFAULT 0,
-          updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-        );
-      `);
+      db.exec(DDL_PLUGIN_CONFIG);
       log.info("Migration 1.14.0 complete: plugin_config table created");
     } catch (error) {
       log.error({ err: error }, "Migration 1.14.0 failed");
@@ -637,13 +830,7 @@ export function runMigrations(db: Database.Database): void {
   if (!currentVersion || versionLessThan(currentVersion, "1.15.0")) {
     log.info("Running migration 1.15.0: Add user_hook_config table");
     try {
-      db.exec(`
-        CREATE TABLE IF NOT EXISTS user_hook_config (
-          key TEXT PRIMARY KEY,
-          value TEXT NOT NULL,
-          updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-        );
-      `);
+      db.exec(DDL_USER_HOOK_CONFIG);
       log.info("Migration 1.15.0 complete: user_hook_config table created");
     } catch (error) {
       log.error({ err: error }, "Migration 1.15.0 failed");
@@ -685,21 +872,11 @@ export function runMigrations(db: Database.Database): void {
       "Running migration 1.17.0: Add importance, access tracking, and lifecycle columns to knowledge"
     );
     try {
-      const addColumnIfNotExists = (table: string, column: string, type: string) => {
-        try {
-          db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
-        } catch (error: unknown) {
-          if (!(error instanceof Error) || !error.message.includes("duplicate column name")) {
-            throw error;
-          }
-        }
-      };
-
-      addColumnIfNotExists("knowledge", "importance", "REAL DEFAULT 0.5");
-      addColumnIfNotExists("knowledge", "access_count", "INTEGER DEFAULT 0");
-      addColumnIfNotExists("knowledge", "last_accessed_at", "INTEGER");
-      addColumnIfNotExists("knowledge", "status", "TEXT DEFAULT 'active'");
-      addColumnIfNotExists("knowledge", "memory_type", "TEXT DEFAULT 'semantic'");
+      addColumnIfNotExists(db, "knowledge", "importance", "REAL DEFAULT 0.5");
+      addColumnIfNotExists(db, "knowledge", "access_count", "INTEGER DEFAULT 0");
+      addColumnIfNotExists(db, "knowledge", "last_accessed_at", "INTEGER");
+      addColumnIfNotExists(db, "knowledge", "status", "TEXT DEFAULT 'active'");
+      addColumnIfNotExists(db, "knowledge", "memory_type", "TEXT DEFAULT 'semantic'");
 
       db.exec(`CREATE INDEX IF NOT EXISTS idx_knowledge_status ON knowledge(status)`);
 
@@ -750,6 +927,254 @@ export function runMigrations(db: Database.Database): void {
       log.error({ err: error }, "Migration 1.18.0 failed");
       throw error;
     }
+  }
+
+  if (!currentVersion || versionLessThan(currentVersion, "1.19.0")) {
+    log.info(
+      "Running migration 1.19.0: Add tool_config.scope_level (per-tool access: all/allowlist/admin/off)"
+    );
+    try {
+      const tableExists = db
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='tool_config'")
+        .get();
+
+      if (tableExists) {
+        db.transaction(() => {
+          // Additive: keep the legacy enabled/scope columns intact (rollback to
+          // pre-1.19 code still reads a coherent table) and add scope_level.
+          addColumnIfNotExists(
+            db,
+            "tool_config",
+            "scope_level",
+            "TEXT NOT NULL DEFAULT 'all' CHECK(scope_level IN ('all', 'allowlist', 'admin', 'off'))"
+          );
+          // Backfill from the legacy (enabled, scope) pair. enabled=0 wins → off.
+          // The old context dimension (dm-only/group-only) collapses to 'all' —
+          // channel gating now lives in the global DM/Group policies. Full
+          // recompute (no WHERE) so a re-run is idempotent.
+          db.exec(`
+            UPDATE tool_config SET
+              scope_level = CASE
+                WHEN enabled = 0 THEN 'off'
+                WHEN scope = 'admin-only' THEN 'admin'
+                WHEN scope = 'allowlist' THEN 'allowlist'
+                WHEN scope = 'disabled' THEN 'off'
+                ELSE 'all'
+              END;
+          `);
+        })();
+      } else {
+        db.exec(`
+          CREATE TABLE IF NOT EXISTS tool_config (
+            tool_name TEXT PRIMARY KEY,
+            enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0, 1)),
+            scope TEXT CHECK(scope IN ('always', 'open', 'dm-only', 'group-only', 'admin-only', 'allowlist', 'disabled')),
+            scope_level TEXT NOT NULL DEFAULT 'all' CHECK(scope_level IN ('all', 'allowlist', 'admin', 'off')),
+            updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+            updated_by INTEGER
+          );
+        `);
+      }
+      log.info("Migration 1.19.0 complete: tool_config.scope_level added");
+    } catch (error) {
+      log.error({ err: error }, "Migration 1.19.0 failed");
+      throw error;
+    }
+  }
+
+  if (!currentVersion || versionLessThan(currentVersion, "1.20.0")) {
+    log.info("Running migration 1.20.0: Persist scheduled task creator authority");
+    try {
+      const tableExists = db
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='tasks'")
+        .get();
+      if (tableExists) {
+        addColumnIfNotExists(db, "tasks", "origin_sender_id", "INTEGER");
+        addColumnIfNotExists(db, "tasks", "origin_chat_id", "TEXT");
+        addColumnIfNotExists(
+          db,
+          "tasks",
+          "origin_is_group",
+          "INTEGER CHECK(origin_is_group IN (0, 1))"
+        );
+      }
+      log.info("Migration 1.20.0 complete: Scheduled task authority persisted");
+    } catch (error) {
+      log.error({ err: error }, "Migration 1.20.0 failed");
+      throw error;
+    }
+  }
+
+  if (!currentVersion || versionLessThan(currentVersion, "1.21.0")) {
+    log.info("Running migration 1.21.0: Add agent runtime resilience tables");
+    try {
+      db.exec(DDL_AGENT_RUNTIME);
+      log.info("Migration 1.21.0 complete: Runtime trace, artifact, and action tables created");
+    } catch (error) {
+      log.error({ err: error }, "Migration 1.21.0 failed");
+      throw error;
+    }
+  }
+
+  if (!currentVersion || versionLessThan(currentVersion, "1.22.0")) {
+    log.info("Running migration 1.22.0: Scope Telegram message IDs by chat");
+    try {
+      const columns = db.prepare("PRAGMA table_info(tg_messages)").all() as Array<{
+        name: string;
+        pk: number;
+      }>;
+      const primaryKey = columns
+        .filter((column) => column.pk > 0)
+        .sort((a, b) => a.pk - b.pk)
+        .map((column) => column.name);
+
+      if (primaryKey.join(",") !== "chat_id,id") {
+        db.transaction(() => {
+          db.exec(`
+            DROP TRIGGER IF EXISTS tg_messages_fts_insert;
+            DROP TRIGGER IF EXISTS tg_messages_fts_delete;
+            DROP TRIGGER IF EXISTS tg_messages_fts_update;
+            DROP TABLE IF EXISTS tg_messages_fts;
+
+            CREATE TABLE tg_messages_new (
+              id TEXT NOT NULL,
+              chat_id TEXT NOT NULL,
+              sender_id TEXT,
+              text TEXT,
+              embedding TEXT,
+              embedding_status TEXT NOT NULL DEFAULT 'pending'
+                CHECK(embedding_status IN ('pending', 'ready', 'failed', 'disabled')),
+              reply_to_id TEXT,
+              forward_from_id TEXT,
+              is_from_agent INTEGER DEFAULT 0,
+              is_edited INTEGER DEFAULT 0,
+              has_media INTEGER DEFAULT 0,
+              media_type TEXT,
+              timestamp INTEGER NOT NULL,
+              indexed_at INTEGER NOT NULL DEFAULT (unixepoch()),
+              PRIMARY KEY (chat_id, id),
+              FOREIGN KEY (chat_id) REFERENCES tg_chats(id) ON DELETE CASCADE,
+              FOREIGN KEY (sender_id) REFERENCES tg_users(id) ON DELETE SET NULL
+            );
+
+            INSERT INTO tg_messages_new (
+              id, chat_id, sender_id, text, embedding, embedding_status,
+              reply_to_id, forward_from_id, is_from_agent, is_edited,
+              has_media, media_type, timestamp, indexed_at
+            )
+            SELECT
+              id, chat_id, sender_id, text, embedding,
+              CASE WHEN embedding IS NULL THEN 'pending' ELSE 'ready' END,
+              reply_to_id, forward_from_id, is_from_agent, is_edited,
+              has_media, media_type, timestamp, indexed_at
+            FROM tg_messages;
+
+            DROP TABLE tg_messages;
+            ALTER TABLE tg_messages_new RENAME TO tg_messages;
+
+            CREATE INDEX idx_tg_messages_chat ON tg_messages(chat_id, timestamp DESC);
+            CREATE INDEX idx_tg_messages_sender ON tg_messages(sender_id, timestamp DESC);
+            CREATE INDEX idx_tg_messages_timestamp ON tg_messages(timestamp DESC);
+            CREATE INDEX idx_tg_messages_reply ON tg_messages(chat_id, reply_to_id)
+              WHERE reply_to_id IS NOT NULL;
+            CREATE INDEX idx_tg_messages_from_agent ON tg_messages(is_from_agent, timestamp DESC)
+              WHERE is_from_agent = 1;
+
+            CREATE VIRTUAL TABLE tg_messages_fts USING fts5(
+              text,
+              id UNINDEXED,
+              chat_id UNINDEXED,
+              sender_id UNINDEXED,
+              timestamp UNINDEXED,
+              content='tg_messages',
+              content_rowid='rowid'
+            );
+
+            CREATE TRIGGER tg_messages_fts_insert AFTER INSERT ON tg_messages
+              WHEN new.text IS NOT NULL BEGIN
+              INSERT INTO tg_messages_fts(rowid, text, id, chat_id, sender_id, timestamp)
+              VALUES (new.rowid, new.text, new.id, new.chat_id, new.sender_id, new.timestamp);
+            END;
+            CREATE TRIGGER tg_messages_fts_delete AFTER DELETE ON tg_messages
+              WHEN old.text IS NOT NULL BEGIN
+              DELETE FROM tg_messages_fts WHERE rowid = old.rowid;
+            END;
+            CREATE TRIGGER tg_messages_fts_update AFTER UPDATE ON tg_messages
+              WHEN old.text IS NOT NULL OR new.text IS NOT NULL BEGIN
+              DELETE FROM tg_messages_fts WHERE rowid = old.rowid;
+              INSERT INTO tg_messages_fts(rowid, text, id, chat_id, sender_id, timestamp)
+              SELECT new.rowid, new.text, new.id, new.chat_id, new.sender_id, new.timestamp
+              WHERE new.text IS NOT NULL;
+            END;
+
+            INSERT INTO tg_messages_fts(rowid, text, id, chat_id, sender_id, timestamp)
+            SELECT rowid, text, id, chat_id, sender_id, timestamp
+            FROM tg_messages WHERE text IS NOT NULL;
+
+            INSERT INTO meta (key, value, updated_at)
+            VALUES ('tg_messages_vector_rebuild_required', '1', unixepoch())
+            ON CONFLICT(key) DO UPDATE SET value = '1', updated_at = unixepoch();
+          `);
+        })();
+      } else if (!columns.some((column) => column.name === "embedding_status")) {
+        addColumnIfNotExists(
+          db,
+          "tg_messages",
+          "embedding_status",
+          "TEXT NOT NULL DEFAULT 'pending' CHECK(embedding_status IN ('pending', 'ready', 'failed', 'disabled'))"
+        );
+      }
+      log.info("Migration 1.22.0 complete: Telegram message IDs are chat-scoped");
+    } catch (error) {
+      log.error({ err: error }, "Migration 1.22.0 failed");
+      throw error;
+    }
+  }
+
+  if (!currentVersion || versionLessThan(currentVersion, "1.23.0")) {
+    log.info("Running migration 1.23.0: Trace requested and resolved model identity");
+    try {
+      db.exec(DDL_AGENT_RUNTIME);
+      addColumnIfNotExists(db, "agent_turn_traces", "requested_model", "TEXT");
+      addColumnIfNotExists(db, "agent_turn_traces", "endpoint_fingerprint", "TEXT");
+      db.exec("UPDATE agent_turn_traces SET requested_model = model WHERE requested_model IS NULL");
+      log.info("Migration 1.23.0 complete: Model trace identity added");
+    } catch (error) {
+      log.error({ err: error }, "Migration 1.23.0 failed");
+      throw error;
+    }
+  }
+
+  if (!currentVersion || versionLessThan(currentVersion, "1.24.0")) {
+    log.info("Running migration 1.24.0: Prepare chat-partitioned Telegram vector index");
+    // The vec0 extension is loaded after regular schema migrations. Its table
+    // shape and data rebuild are handled idempotently by ensureVectorTables().
+    log.info("Migration 1.24.0 complete: Vector index migration scheduled");
+  }
+
+  if (!currentVersion || versionLessThan(currentVersion, "1.25.0")) {
+    log.info("Running migration 1.25.0: Regenerate Telegram document embeddings");
+    // Message vectors used embedQuery before 1.25.0. Providers such as Voyage
+    // distinguish query and document input types, so retaining those vectors
+    // would mix incompatible semantics in one index. Preserve message text and
+    // let the bounded background backfill regenerate document embeddings.
+    db.transaction(() => {
+      db.prepare(
+        `UPDATE tg_messages
+         SET embedding = NULL,
+             embedding_status = CASE
+               WHEN text IS NULL OR length(trim(text)) = 0 THEN 'disabled'
+               ELSE 'pending'
+             END,
+             indexed_at = unixepoch()`
+      ).run();
+      db.prepare(
+        `INSERT INTO meta (key, value, updated_at)
+         VALUES ('tg_messages_vector_rebuild_required', '1', unixepoch())
+         ON CONFLICT(key) DO UPDATE SET value = '1', updated_at = unixepoch()`
+      ).run();
+    })();
+    log.info("Migration 1.25.0 complete: Telegram document embeddings scheduled");
   }
 
   setSchemaVersion(db, CURRENT_SCHEMA_VERSION);

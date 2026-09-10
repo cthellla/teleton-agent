@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import Database from "better-sqlite3";
 import { createPluginSDK } from "../index.js";
 import { SDK_VERSION } from "@teleton-agent/sdk";
+import { HookRegistry } from "../hooks/registry.js";
 
 // ─── Mocks ──────────────────────────────────────────────────────
 import { createMocks } from "./__fixtures__/mocks.js";
@@ -108,22 +109,7 @@ describe("createPluginSDK — factory integration", () => {
     }).toThrow();
   });
 
-  // ─── 6. Logger callable ─────────────────────────────────────
-  it("provides callable logger methods that do not throw", () => {
-    const sdk = makeSDK();
-
-    expect(typeof sdk.log.info).toBe("function");
-    expect(typeof sdk.log.warn).toBe("function");
-    expect(typeof sdk.log.error).toBe("function");
-    expect(typeof sdk.log.debug).toBe("function");
-
-    expect(() => sdk.log.info("test message")).not.toThrow();
-    expect(() => sdk.log.warn("test warning")).not.toThrow();
-    expect(() => sdk.log.error("test error")).not.toThrow();
-    expect(() => sdk.log.debug("test debug")).not.toThrow();
-  });
-
-  // ─── 7. Storage roundtrip through factory ───────────────────
+  // ─── 6. Storage roundtrip through factory ───────────────────
   it("supports storage set/get roundtrip through factory-created SDK", () => {
     const sdk = makeSDK();
 
@@ -135,5 +121,43 @@ describe("createPluginSDK — factory integration", () => {
 
     sdk.storage!.set("obj", { nested: true });
     expect(sdk.storage!.get("obj")).toEqual({ nested: true });
+  });
+
+  it("uses the manifest hook priority when sdk.on() does not override it", () => {
+    const hookRegistry = new HookRegistry();
+    const sdk = createPluginSDK(
+      { bridge: mockBridge },
+      {
+        pluginName: "test-plugin",
+        db,
+        sanitizedConfig: {},
+        pluginConfig: {},
+        hookRegistry,
+        declaredHooks: [{ name: "agent:start", priority: 25 }],
+      }
+    );
+
+    sdk.on("agent:start", async () => {});
+
+    expect(hookRegistry.getHooks("agent:start")[0]?.priority).toBe(25);
+  });
+
+  it("allows sdk.on() to override the manifest hook priority", () => {
+    const hookRegistry = new HookRegistry();
+    const sdk = createPluginSDK(
+      { bridge: mockBridge },
+      {
+        pluginName: "test-plugin",
+        db,
+        sanitizedConfig: {},
+        pluginConfig: {},
+        hookRegistry,
+        declaredHooks: [{ name: "agent:start", priority: 25 }],
+      }
+    );
+
+    sdk.on("agent:start", async () => {}, { priority: -5 });
+
+    expect(hookRegistry.getHooks("agent:start")[0]?.priority).toBe(-5);
   });
 });

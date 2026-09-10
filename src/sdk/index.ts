@@ -4,6 +4,8 @@ import type {
   PluginSDK,
   PluginLogger,
   BotManifest,
+  SecretDeclaration,
+  PluginHookDeclaration,
   HookName,
   HookHandlerMap,
 } from "@teleton-agent/sdk";
@@ -137,12 +139,20 @@ export interface CreatePluginSDKOptions {
   pluginConfig: Record<string, unknown>;
   /** Bot manifest from plugin (if plugin declares bot capabilities) */
   botManifest?: BotManifest;
+  /** Secret declarations, including optional environment variable overrides. */
+  secretDeclarations?: Readonly<Record<string, SecretDeclaration>>;
   /** Hook registry for sdk.on() support */
   hookRegistry?: HookRegistry;
   /** Declared hooks from manifest (if present, enforces registration) */
-  declaredHooks?: Array<{ name: string; priority?: number; description?: string }>;
+  declaredHooks?: PluginHookDeclaration[];
   /** Plugin-level global priority (from plugin_config DB table). Default 0. */
   globalPriority?: number;
+  /**
+   * Fork-only: receives the plugin's CronManager (null when the plugin has no DB).
+   * The loader owns cron lifecycle, so it needs the handle without changing the
+   * SDK's public return shape.
+   */
+  onCronManager?: (cronManager: CronManager | null) => void;
 }
 
 /** Block ATTACH/DETACH to prevent cross-plugin DB access */
@@ -159,8 +169,18 @@ function isSqlBlocked(sql: string): boolean {
   return BLOCKED_SQL_RE.test(stripSqlComments(sql));
 }
 
-function createSafeDb(db: Database.Database): Database.Database {
-  return new Proxy(db, {
+const safePluginDbs = new WeakSet<object>();
+
+/**
+ * Restrict a plugin-facing database handle to its own SQLite connection.
+ *
+ * The helper is idempotent so the loader and SDK factory can both enforce the
+ * boundary without stacking proxies around the same handle.
+ */
+export function createSafePluginDb(db: Database.Database): Database.Database {
+  if (safePluginDbs.has(db)) return db;
+
+  const safeDb = new Proxy(db, {
     get(target, prop, receiver) {
       const value = Reflect.get(target, prop, receiver);
       if (prop === "exec") {
@@ -182,22 +202,22 @@ function createSafeDb(db: Database.Database): Database.Database {
       return typeof value === "function" ? value.bind(target) : value;
     },
   });
+
+  safePluginDbs.add(safeDb);
+  return safeDb;
 }
 
 export { CronManager } from "./cron.js";
 
-export interface CreatePluginSDKResult {
-  sdk: PluginSDK;
-  cronManager: CronManager | null;
-}
-
-export function createPluginSDK(deps: SDKDependencies, opts: CreatePluginSDKOptions): CreatePluginSDKResult {
+export function createPluginSDK(deps: SDKDependencies, opts: CreatePluginSDKOptions): PluginSDK {
   const log = createLogger(opts.pluginName);
 
-  const safeDb = opts.db ? createSafeDb(opts.db) : null;
-  const ton = Object.freeze(createTonSDK(log, safeDb));
+  const safeDb = opts.db ? createSafePluginDb(opts.db) : null;
+  const ton = Object.freeze(createTonSDK(log, safeDb, opts.pluginName));
   const telegram = Object.freeze(createTelegramSDK(deps.bridge, log));
-  const secrets = Object.freeze(createSecretsSDK(opts.pluginName, opts.pluginConfig, log));
+  const secrets = Object.freeze(
+    createSecretsSDK(opts.pluginName, opts.pluginConfig, log, opts.secretDeclarations)
+  );
   const storage = safeDb ? Object.freeze(createStorageSDK(safeDb)) : null;
 
   let cronSdk: import("@teleton-agent/sdk").CronSDK | null = null;
@@ -212,7 +232,7 @@ export function createPluginSDK(deps: SDKDependencies, opts: CreatePluginSDKOpti
   const frozenPluginConfig = Object.freeze(JSON.parse(JSON.stringify(opts.pluginConfig ?? {})));
 
   // Lazy bot SDK — deps.inlineRouter/gramjsBot/grammyBot may not be available
-  // at plugin load time (plugins load before DealBot starts). The getter
+  // at plugin load time (the bot is wired after plugins load). The getter
   // retries until deps are wired and a non-null BotSDK is created.
   // Plugins without a botManifest get null cached immediately (no retry).
   let cachedBot: ReturnType<typeof createBotSDK> | undefined;
@@ -264,14 +284,14 @@ export function createPluginSDK(deps: SDKDependencies, opts: CreatePluginSDKOpti
         return;
       }
       // Enforce manifest declarations: if hooks[] is declared, only allow listed hooks
+      const declaration = opts.declaredHooks?.find((hook) => hook.name === hookName);
       if (opts.declaredHooks) {
-        const declared = opts.declaredHooks.some((h) => h.name === hookName);
-        if (!declared) {
+        if (!declaration) {
           log.warn(`Hook "${hookName}" not declared in manifest — registration rejected`);
           return;
         }
       }
-      const rawPriority = Number(onOpts?.priority) || 0;
+      const rawPriority = Number(onOpts?.priority ?? declaration?.priority) || 0;
       const clampedPriority = Math.max(-1000, Math.min(1000, rawPriority));
       if (rawPriority !== clampedPriority) {
         log.debug(`Hook "${hookName}" priority ${rawPriority} clamped to ${clampedPriority}`);
@@ -291,7 +311,8 @@ export function createPluginSDK(deps: SDKDependencies, opts: CreatePluginSDKOpti
     },
   };
 
-  return { sdk: Object.freeze(sdk), cronManager };
+  opts.onCronManager?.(cronManager);
+  return Object.freeze(sdk);
 }
 
 function createLogger(pluginName: string): PluginLogger {
@@ -311,7 +332,7 @@ interface SemVer {
 }
 
 function parseSemver(v: string): SemVer | null {
-  const match = v.match(/(\d+)\.(\d+)\.(\d+)/);
+  const match = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.exec(v);
   if (!match) return null;
   return {
     major: parseInt(match[1]),
@@ -347,6 +368,9 @@ export function semverSatisfies(current: string, range: string): boolean {
     if (!req) {
       sdkLog.warn(`[SDK] Malformed sdkVersion range "${range}", rejecting`);
       return false;
+    }
+    if (req.major === 0 && req.minor === 0) {
+      return cur.major === 0 && cur.minor === 0 && cur.patch === req.patch;
     }
     if (req.major === 0) {
       return cur.major === 0 && cur.minor === req.minor && semverGte(cur, req);

@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import type { WebUIServerDeps, APIResponse } from "../types.js";
+import type { WebUIServerDeps, APIResponse, ConfigKeyData } from "../types.js";
 import {
   CONFIGURABLE_KEYS,
   getNestedValue,
@@ -8,7 +8,6 @@ import {
   readRawConfig,
   writeRawConfig,
 } from "../../config/configurable-keys.js";
-import type { ConfigKeyType, ConfigCategory } from "../../config/configurable-keys.js";
 import { getModelsForProvider } from "../../config/model-catalog.js";
 import {
   getProviderMetadata,
@@ -18,7 +17,7 @@ import {
 import { setTonapiKey } from "../../constants/api-endpoints.js";
 import { setToncenterApiKey, invalidateEndpointCache } from "../../ton/endpoint.js";
 import { invalidateTonClientCache } from "../../ton/wallet-service.js";
-import { getErrorMessage } from "../../utils/errors.js";
+import { apiError } from "../http.js";
 /** Side-effects to run when specific config keys change at runtime. */
 const CONFIG_SIDE_EFFECTS: Record<string, (value: string | undefined) => void> = {
   tonapi_key: (v) => setTonapiKey(v),
@@ -29,19 +28,23 @@ const CONFIG_SIDE_EFFECTS: Record<string, (value: string | undefined) => void> =
   },
 };
 
-interface ConfigKeyData {
-  key: string;
-  label: string;
-  set: boolean;
-  value: string | null;
-  sensitive: boolean;
-  type: ConfigKeyType;
-  category: ConfigCategory;
-  description: string;
-  hotReload: "instant" | "restart";
-  options?: string[];
-  optionLabels?: Record<string, string>;
-  itemType?: "string" | "number";
+function applyRuntimeValue(
+  deps: WebUIServerDeps,
+  key: string,
+  value: unknown,
+  hotReload: "instant" | "restart"
+): void {
+  if (hotReload !== "instant") return;
+  if (deps.reloadConfig && deps.applyConfigKey) {
+    const validated = deps.reloadConfig();
+    deps.applyConfigKey(key, getNestedValue(validated as unknown as Record<string, unknown>, key));
+    return;
+  }
+
+  // Backward-compatible path for embedded/test consumers without a config owner.
+  const runtimeConfig = deps.agent.getConfig() as unknown as Record<string, unknown>;
+  if (value === undefined) deleteNestedValue(runtimeConfig, key);
+  else setNestedValue(runtimeConfig, key, value);
 }
 
 export function createConfigRoutes(deps: WebUIServerDeps) {
@@ -82,13 +85,7 @@ export function createConfigRoutes(deps: WebUIServerDeps) {
       const response: APIResponse<ConfigKeyData[]> = { success: true, data };
       return c.json(response);
     } catch (error: unknown) {
-      return c.json(
-        {
-          success: false,
-          error: getErrorMessage(error),
-        } as APIResponse,
-        500
-      );
+      return apiError(c, error, 500);
     }
   });
 
@@ -160,9 +157,7 @@ export function createConfigRoutes(deps: WebUIServerDeps) {
         setNestedValue(raw, key, parsed);
         writeRawConfig(raw, deps.configPath);
 
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- runtime config is dynamic
-        const runtimeConfig = deps.agent.getConfig() as Record<string, any>;
-        setNestedValue(runtimeConfig, key, parsed);
+        applyRuntimeValue(deps, key, parsed, meta.hotReload);
 
         const result: ConfigKeyData = {
           key,
@@ -178,13 +173,7 @@ export function createConfigRoutes(deps: WebUIServerDeps) {
         };
         return c.json({ success: true, data: result } as APIResponse<ConfigKeyData>);
       } catch (error: unknown) {
-        return c.json(
-          {
-            success: false,
-            error: getErrorMessage(error),
-          } as APIResponse,
-          500
-        );
+        return apiError(c, error, 500);
       }
     }
 
@@ -207,7 +196,16 @@ export function createConfigRoutes(deps: WebUIServerDeps) {
     try {
       const parsed = meta.parse(value);
       const raw = readRawConfig(deps.configPath);
+      const previousValue = getNestedValue(raw, key);
       setNestedValue(raw, key, parsed);
+
+      // Provider and primary model are one restart-bound configuration change.
+      // Never derive the model from catalog order, and do not hot-reload it
+      // separately while the old provider is still active.
+      if (key === "agent.provider" && parsed !== previousValue) {
+        const providerMeta = getProviderMetadata(parsed as SupportedProvider);
+        setNestedValue(raw, "agent.model", providerMeta.defaultModel);
+      }
 
       // Auto-sync: setting owner_id also adds it to admin_ids
       if (key === "telegram.owner_id" && typeof parsed === "number") {
@@ -219,18 +217,24 @@ export function createConfigRoutes(deps: WebUIServerDeps) {
 
       writeRawConfig(raw, deps.configPath);
 
-      // Update runtime config for immediate effect
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- runtime config is dynamic
-      const runtimeConfig = deps.agent.getConfig() as Record<string, any>;
-      setNestedValue(runtimeConfig, key, parsed);
+      applyRuntimeValue(deps, key, parsed, meta.hotReload);
       CONFIG_SIDE_EFFECTS[key]?.(parsed as string);
 
       // Sync runtime admin_ids too
       if (key === "telegram.owner_id" && typeof parsed === "number") {
-        const rtAdminIds: number[] =
-          (getNestedValue(runtimeConfig, "telegram.admin_ids") as number[]) ?? [];
-        if (!rtAdminIds.includes(parsed)) {
-          setNestedValue(runtimeConfig, "telegram.admin_ids", [...rtAdminIds, parsed]);
+        if (deps.reloadConfig && deps.applyConfigKey) {
+          const validated = deps.reloadConfig();
+          deps.applyConfigKey(
+            "telegram.admin_ids",
+            getNestedValue(validated as unknown as Record<string, unknown>, "telegram.admin_ids")
+          );
+        } else {
+          const runtimeConfig = deps.agent.getConfig() as unknown as Record<string, unknown>;
+          const rtAdminIds =
+            (getNestedValue(runtimeConfig, "telegram.admin_ids") as number[]) ?? [];
+          if (!rtAdminIds.includes(parsed)) {
+            setNestedValue(runtimeConfig, "telegram.admin_ids", [...rtAdminIds, parsed]);
+          }
         }
       }
 
@@ -248,13 +252,7 @@ export function createConfigRoutes(deps: WebUIServerDeps) {
       };
       return c.json({ success: true, data: result } as APIResponse<ConfigKeyData>);
     } catch (error: unknown) {
-      return c.json(
-        {
-          success: false,
-          error: getErrorMessage(error),
-        } as APIResponse,
-        500
-      );
+      return apiError(c, error, 500);
     }
   });
 
@@ -292,10 +290,7 @@ export function createConfigRoutes(deps: WebUIServerDeps) {
       deleteNestedValue(raw, key);
       writeRawConfig(raw, deps.configPath);
 
-      // Clear from runtime config
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- runtime config is dynamic
-      const runtimeConfig = deps.agent.getConfig() as Record<string, any>;
-      deleteNestedValue(runtimeConfig, key);
+      applyRuntimeValue(deps, key, undefined, meta.hotReload);
       CONFIG_SIDE_EFFECTS[key]?.(undefined);
 
       const result: ConfigKeyData = {
@@ -313,13 +308,7 @@ export function createConfigRoutes(deps: WebUIServerDeps) {
       };
       return c.json({ success: true, data: result } as APIResponse<ConfigKeyData>);
     } catch (error: unknown) {
-      return c.json(
-        {
-          success: false,
-          error: getErrorMessage(error),
-        } as APIResponse,
-        500
-      );
+      return apiError(c, error, 500);
     }
   });
 
@@ -335,7 +324,7 @@ export function createConfigRoutes(deps: WebUIServerDeps) {
     const provider = c.req.param("provider");
     try {
       const meta = getProviderMetadata(provider as SupportedProvider);
-      const needsKey = provider !== "claude-code" && provider !== "cocoon" && provider !== "local";
+      const needsKey = meta.credentialMode === "api-key";
       return c.json({
         success: true,
         data: {
@@ -347,13 +336,7 @@ export function createConfigRoutes(deps: WebUIServerDeps) {
         },
       } as APIResponse);
     } catch (error: unknown) {
-      return c.json(
-        {
-          success: false,
-          error: getErrorMessage(error),
-        } as APIResponse,
-        400
-      );
+      return apiError(c, error, 400);
     }
   });
 
@@ -370,13 +353,7 @@ export function createConfigRoutes(deps: WebUIServerDeps) {
         data: { valid: !error, error: error ?? null },
       } as APIResponse);
     } catch (error: unknown) {
-      return c.json(
-        {
-          success: false,
-          error: getErrorMessage(error),
-        } as APIResponse,
-        400
-      );
+      return apiError(c, error, 400);
     }
   });
 

@@ -1,169 +1,35 @@
+import { randomUUID } from "crypto";
 import type { Config } from "../config/schema.js";
-import type { ITelegramBridge } from "../telegram/bridge-interface.js";
 import {
-  MAX_TOOL_RESULT_SIZE,
   COMPACTION_MAX_MESSAGES,
   COMPACTION_KEEP_RECENT,
   COMPACTION_MAX_TOKENS_RATIO,
   COMPACTION_SOFT_THRESHOLD_RATIO,
-  CONTEXT_MAX_RECENT_MESSAGES,
-  CONTEXT_MAX_RELEVANT_CHUNKS,
-  CONTEXT_OVERFLOW_SUMMARY_MESSAGES,
-  RATE_LIMIT_MAX_RETRIES,
-  RATE_LIMIT_MAX_BACKOFF_MS,
-  SERVER_ERROR_MAX_RETRIES,
-  NETWORK_ERROR_MAX_RETRIES,
-  EMPTY_RESPONSE_MAX_RETRIES,
-  TOOL_CONCURRENCY_LIMIT,
-  EMBEDDING_QUERY_MAX_CHARS,
 } from "../constants/limits.js";
-import { TELEGRAM_SEND_TOOLS } from "../constants/tools.js";
-import {
-  chatWithContext,
-  streamWithContext,
-  loadContextFromTranscript,
-  getProviderModel,
-  getEffectiveApiKey,
-  type ChatResponse,
-} from "./client.js";
-import { getProviderMetadata, type SupportedProvider } from "../config/providers.js";
-import { buildSystemPrompt, captureMemorySnapshot, clearMemorySnapshot } from "../soul/loader.js";
+import { getProviderModel } from "./client.js";
+import type { SupportedProvider } from "../config/providers.js";
 import { getDatabase } from "../memory/index.js";
-import { sanitizeForContext } from "../utils/sanitize.js";
-import { formatMessageEnvelope } from "../memory/envelope.js";
-import {
-  getOrCreateSession,
-  updateSession,
-  getSession,
-  resetSession,
-  shouldResetSession,
-  resetSessionWithPolicy,
-} from "../session/store.js";
-import { transcriptExists, archiveTranscript, appendToTranscript } from "../session/transcript.js";
-import type {
-  Context,
-  Tool as PiAiTool,
-  UserMessage,
-  ToolResultMessage,
-  ToolCall,
-} from "@mariozechner/pi-ai";
+import { resetSession } from "../session/store.js";
 import { CompactionManager, DEFAULT_COMPACTION_CONFIG } from "../memory/compaction.js";
-import { maskOldToolResults } from "../memory/observation-masking.js";
-import { ContextBuilder } from "../memory/search/context.js";
+import type { ContextBuilder } from "../memory/search/context.js";
 import type { EmbeddingProvider } from "../memory/embeddings/provider.js";
 import type { ToolRegistry } from "./tools/registry.js";
-import type { ToolContext } from "./tools/types.js";
-import { appendToDailyLog } from "../memory/daily-logs.js";
-import { saveSessionMemory } from "../session/memory-hook.js";
 import { createLogger } from "../utils/logger.js";
-import { getErrorMessage } from "../utils/errors.js";
 import type { createHookRunner } from "../sdk/hooks/runner.js";
 import type { UserHookEvaluator } from "./hooks/user-hook-evaluator.js";
-import type {
-  BeforeToolCallEvent,
-  AfterToolCallEvent,
-  BeforePromptBuildEvent,
-  MessageReceiveEvent,
-  ResponseBeforeEvent,
-  ResponseAfterEvent,
-  ResponseErrorEvent,
-  ToolErrorEvent,
-  PromptAfterEvent,
-} from "../sdk/hooks/types.js";
-import {
-  isContextOverflowError,
-  isTrivialMessage,
-  extractContextSummary,
-  parseRetryAfterMs,
-  isNetworkError,
-  isNetworkErrorMessage,
-  trimRagContext,
-} from "./runtime-utils.js";
-import { truncateToolResult } from "./tool-result-truncator.js";
-import { accumulateTokenUsage } from "./token-usage.js";
+import { AgentTurnTraceRecorder } from "./turn-trace.js";
+import { TurnCoordinator } from "./turn-coordinator.js";
+import type { AgentResponse, ProcessMessageOptions } from "./turn-types.js";
+import { finalizeAgentResponse } from "./response-finalizer.js";
+import { executeAgentLoop } from "./loop/executor.js";
+import { prepareTurn } from "./turn-preparation.js";
+
+export type { AgentResponse, ProcessMessageOptions } from "./turn-types.js";
 
 export { isContextOverflowError, isTrivialMessage } from "./runtime-utils.js";
 export { getTokenUsage } from "./token-usage.js";
 
 const log = createLogger("Agent");
-
-export interface ProcessMessageOptions {
-  chatId: string;
-  userMessage: string;
-  userName?: string;
-  timestamp?: number;
-  isGroup?: boolean;
-  pendingContext?: string | null;
-  toolContext?: Omit<ToolContext, "chatId" | "isGroup">;
-  senderUsername?: string;
-  senderLangCode?: string;
-  senderRank?: string;
-  hasMedia?: boolean;
-  mediaType?: string;
-  messageId?: number;
-  replyContext?: { senderName?: string; text: string; isAgent?: boolean };
-  isHeartbeat?: boolean;
-  streamToChat?: { chatId: string; bridge: ITelegramBridge; mode: "all" | "replace" | "off" };
-}
-
-export interface AgentResponse {
-  content: string;
-  toolCalls?: Array<{
-    name: string;
-    input: Record<string, unknown>;
-  }>;
-  streamed?: boolean;
-}
-
-/**
- * Generate a human-readable summary from tool execution results.
- * Used as a fallback when the LLM returns no text after tool calls.
- */
-function generateToolSummary(
-  results: Array<{ toolName: string; result: { success: boolean; data?: unknown; error?: string } }>
-): string {
-  const successes = results.filter((r) => r.result.success);
-  const failures = results.filter((r) => !r.result.success);
-
-  if (failures.length === 0) {
-    const names = successes.map((r) => r.toolName).join(", ");
-    return `✅ Completed ${successes.length} operation${successes.length !== 1 ? "s" : ""} (${names}).`;
-  } else if (successes.length === 0) {
-    const errors = failures
-      .map((r) => `${r.toolName}: ${r.result.error || "unknown error"}`)
-      .join("; ");
-    return `⚠️ ${failures.length} operation${failures.length !== 1 ? "s" : ""} failed: ${errors}`;
-  } else {
-    const errorDetails = failures
-      .map((r) => `${r.toolName}: ${r.result.error || "unknown error"}`)
-      .join("; ");
-    return (
-      `✅ ${successes.length} succeeded, ⚠️ ${failures.length} failed. ` + `Errors: ${errorDetails}`
-    );
-  }
-}
-
-/** Compact summary of tool params for the iteration log line. */
-function summarizeToolParams(toolName: string, params: Record<string, unknown>): string {
-  const MAX = 60;
-  let hint = "";
-
-  if (toolName === "exec_run" && typeof params.command === "string") {
-    hint = params.command;
-  } else if (toolName === "web_fetch" && typeof params.url === "string") {
-    hint = params.url;
-  } else if (toolName.startsWith("telegram_") && typeof params.message === "string") {
-    hint = params.message;
-  } else if (typeof params.query === "string") {
-    hint = params.query;
-  } else if (typeof params.section === "string") {
-    hint = params.section;
-  }
-
-  if (!hint) return "";
-  if (hint.length > MAX) hint = hint.slice(0, MAX) + "…";
-  return `(${hint})`;
-}
 
 export class AgentRuntime {
   private config: Config;
@@ -174,6 +40,11 @@ export class AgentRuntime {
   private embedder: EmbeddingProvider | null = null;
   private hookRunner?: ReturnType<typeof createHookRunner>;
   private userHookEvaluator?: UserHookEvaluator;
+  private readonly turnCoordinator = new TurnCoordinator({
+    maxConcurrent: 10,
+    maxPending: 100,
+    maxQueueWaitMs: 60_000,
+  });
 
   constructor(config: Config, soul?: string, toolRegistry?: ToolRegistry) {
     this.config = config;
@@ -183,6 +54,7 @@ export class AgentRuntime {
     if (this.toolRegistry && config.telegram?.allow_from?.length) {
       this.toolRegistry.setAllowFrom(config.telegram.allow_from);
     }
+    this.toolRegistry?.setAdminIds(config.telegram.admin_ids);
 
     const provider = (config.agent.provider || "anthropic") as SupportedProvider;
     try {
@@ -201,18 +73,42 @@ export class AgentRuntime {
     }
   }
 
-  setHookRunner(runner: ReturnType<typeof createHookRunner>): void {
+  setHookRunner(runner: ReturnType<typeof createHookRunner> | undefined): void {
     this.hookRunner = runner;
+  }
+
+  updateConfig(config: Config): void {
+    this.config = config;
+    this.toolRegistry?.setAllowFrom(config.telegram.allow_from ?? []);
+    this.toolRegistry?.setAdminIds(config.telegram.admin_ids);
+
+    const provider = (config.agent.provider || "anthropic") as SupportedProvider;
+    try {
+      const contextWindow = getProviderModel(provider, config.agent.model).contextWindow;
+      this.compactionManager.updateConfig({
+        maxTokens: Math.floor(contextWindow * COMPACTION_MAX_TOKENS_RATIO),
+        softThresholdTokens: Math.floor(contextWindow * COMPACTION_SOFT_THRESHOLD_RATIO),
+      });
+    } catch {
+      this.compactionManager.updateConfig(DEFAULT_COMPACTION_CONFIG);
+    }
+  }
+
+  setToolRegistry(registry: ToolRegistry): void {
+    this.toolRegistry = registry;
+    registry.setAllowFrom(this.config.telegram.allow_from ?? []);
+    registry.setAdminIds(this.config.telegram.admin_ids);
+    if (this.embedder) registry.setEmbedder(this.embedder);
   }
 
   setUserHookEvaluator(evaluator: UserHookEvaluator): void {
     this.userHookEvaluator = evaluator;
   }
 
-  initializeContextBuilder(embedder: EmbeddingProvider, vectorEnabled: boolean): void {
+  initializeContextBuilder(embedder: EmbeddingProvider, contextBuilder: ContextBuilder): void {
     this.embedder = embedder;
-    const db = getDatabase().getDb();
-    this.contextBuilder = new ContextBuilder(db, embedder, vectorEnabled);
+    this.toolRegistry?.setEmbedder(embedder);
+    this.contextBuilder = contextBuilder;
   }
 
   getToolRegistry(): ToolRegistry | null {
@@ -220,1079 +116,94 @@ export class AgentRuntime {
   }
 
   async processMessage(opts: ProcessMessageOptions): Promise<AgentResponse> {
-    const {
-      chatId,
-      userMessage,
-      userName,
-      timestamp,
-      isGroup,
-      pendingContext,
-      toolContext,
-      senderUsername,
-      senderRank,
-      hasMedia,
-      mediaType,
-      messageId,
-      replyContext,
-      isHeartbeat,
-    } = opts;
+    return this.turnCoordinator.run(opts.sessionKey ?? opts.chatId, () =>
+      this.processCoordinatedMessage(opts)
+    );
+  }
 
-    const effectiveIsGroup = isGroup ?? false;
+  private async processCoordinatedMessage(opts: ProcessMessageOptions): Promise<AgentResponse> {
     const processStartTime = Date.now();
-
+    const turnId =
+      opts.turnId ??
+      (opts.messageId !== undefined
+        ? `telegram:${opts.chatId}:${opts.messageId}`
+        : `turn:${randomUUID()}`);
+    let trace: AgentTurnTraceRecorder | undefined;
     try {
-      // User hooks: keyword blocklist + context injection (hot-reloadable, no restart)
-      let userHookContext = "";
-      if (this.userHookEvaluator) {
-        const hookResult = this.userHookEvaluator.evaluate(userMessage);
-        if (hookResult.blocked) {
-          log.info("Message blocked by keyword filter");
-          return { content: hookResult.blockMessage ?? "", toolCalls: [] };
-        }
-        if (hookResult.additionalContext) {
-          userHookContext = sanitizeForContext(hookResult.additionalContext);
-        }
-      }
-
-      // Hook: message:receive — plugins can block, mutate text, inject context
-      let effectiveMessage = userMessage;
-      let hookMessageContext = "";
-      if (this.hookRunner) {
-        const msgEvent: MessageReceiveEvent = {
-          chatId,
-          senderId: toolContext?.senderId ? String(toolContext.senderId) : chatId,
-          senderName: userName ?? "",
-          isGroup: effectiveIsGroup,
-          isReply: !!replyContext,
-          replyToMessageId: replyContext ? messageId : undefined,
-          messageId: messageId ?? 0,
-          timestamp: timestamp ?? Date.now(),
-          text: userMessage,
-          block: false,
-          blockReason: "",
-          additionalContext: "",
-        };
-        await this.hookRunner.runModifyingHook("message:receive", msgEvent);
-        if (msgEvent.block) {
-          log.info(`Message blocked by hook: ${msgEvent.blockReason || "no reason"}`);
-          return { content: "", toolCalls: [] };
-        }
-        effectiveMessage = sanitizeForContext(msgEvent.text);
-        if (msgEvent.additionalContext) {
-          hookMessageContext = sanitizeForContext(msgEvent.additionalContext);
-        }
-      }
-
-      let session = getOrCreateSession(chatId);
-      const now = timestamp ?? Date.now();
-
-      const resetPolicy = this.config.agent.session_reset_policy;
-      if (shouldResetSession(session, resetPolicy)) {
-        log.info(`Auto-resetting session based on policy`);
-
-        // Hook: session:end (before reset)
-        if (this.hookRunner) {
-          await this.hookRunner.runObservingHook("session:end", {
-            sessionId: session.sessionId,
-            chatId,
-            messageCount: session.messageCount,
-          });
-        }
-
-        if (transcriptExists(session.sessionId)) {
-          try {
-            log.info(`Saving memory before daily reset...`);
-            const oldContext = loadContextFromTranscript(session.sessionId);
-
-            await saveSessionMemory({
-              oldSessionId: session.sessionId,
-              newSessionId: "pending",
-              context: oldContext,
-              chatId,
-              apiKey: getEffectiveApiKey(this.config.agent.provider, this.config.agent.api_key),
-              provider: this.config.agent.provider as SupportedProvider,
-              utilityModel: this.config.agent.utility_model,
-            });
-
-            log.info(`Memory saved before reset`);
-          } catch (error) {
-            log.warn({ err: error }, `Failed to save memory before reset`);
-          }
-        }
-
-        session = resetSessionWithPolicy(chatId, resetPolicy);
-        clearMemorySnapshot(); // New session will capture a fresh snapshot
-      }
-
-      let context: Context = loadContextFromTranscript(session.sessionId);
-      const isNewSession = context.messages.length === 0;
-      if (!isNewSession) {
-        log.info(`Loading existing session: ${session.sessionId}`);
-      } else {
-        log.info(`Starting new session: ${session.sessionId}`);
-        // Capture a frozen memory snapshot for this session's lifetime.
-        // Subsequent writes update the disk file but NOT the system prompt,
-        // preserving the Anthropic prefix cache across all turns.
-        captureMemorySnapshot();
-      }
-
-      // Hook: session:start — fire concurrently with message formatting + embedding
-      const sessionStartPromise = this.hookRunner
-        ? this.hookRunner
-            .runObservingHook("session:start", {
-              sessionId: session.sessionId,
-              chatId,
-              isResume: !isNewSession,
-            })
-            .catch((err) => log.warn({ err }, "session:start hook failed"))
-        : undefined;
-
-      const previousTimestamp = session.updatedAt;
-
-      let formattedMessage = formatMessageEnvelope({
-        channel: "Telegram",
-        senderId: toolContext?.senderId ? String(toolContext.senderId) : chatId,
-        senderName: userName,
-        senderUsername: senderUsername,
-        senderRank,
-        timestamp: now,
-        previousTimestamp,
-        body: effectiveMessage,
-        isGroup: effectiveIsGroup,
-        hasMedia,
-        mediaType,
-        messageId,
-        replyContext,
-      });
-
-      if (pendingContext) {
-        formattedMessage = `${pendingContext}\n\n${formattedMessage}`;
-        log.debug(`Including ${pendingContext.split("\n").length - 1} pending messages`);
-      }
-
-      log.debug(`Formatted message: ${formattedMessage.substring(0, 100)}...`);
-
-      const preview = formattedMessage.slice(0, 50).replace(/\n/g, " ");
-      const who = senderUsername ? `@${senderUsername}` : userName;
-      const msgType = isGroup ? `Group ${chatId} ${who}` : `DM ${who}`;
-      log.info(`${msgType}: "${preview}${formattedMessage.length > 50 ? "..." : ""}"`);
-
-      let relevantContext = "";
-      const isNonTrivial = !isTrivialMessage(effectiveMessage);
-
-      // Start embedding computation concurrently with session:start hook
-      const embeddingPromise =
-        this.embedder && isNonTrivial
-          ? (async () => {
-              let searchQuery = effectiveMessage;
-              const recentUserMsgs = context.messages
-                .filter((m) => m.role === "user" && typeof m.content === "string")
-                .slice(-3)
-                .map((m) => {
-                  const text = m.content as string;
-                  const bodyMatch = text.match(/\] (.+)/s);
-                  return (bodyMatch ? bodyMatch[1] : text).trim();
-                })
-                .filter((t) => t.length > 0);
-              if (recentUserMsgs.length > 0) {
-                searchQuery = recentUserMsgs.join(" ") + " " + effectiveMessage;
-              }
-              // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- guarded by ternary
-              return this.embedder!.embedQuery(searchQuery.slice(0, EMBEDDING_QUERY_MAX_CHARS));
-            })()
-          : undefined;
-
-      // Await both session:start and embedding in parallel
-      const [, embeddingResult] = await Promise.all([
-        sessionStartPromise,
-        embeddingPromise?.catch((error) => {
-          log.warn({ err: error }, "Embedding computation failed");
-          return undefined;
-        }),
-      ]);
-      const queryEmbedding = embeddingResult ?? undefined;
-
-      // Run buildContext and prompt:before hook in parallel (they are independent)
-      const contextPromise =
-        this.contextBuilder && isNonTrivial
-          ? this.contextBuilder
-              .buildContext({
-                query: effectiveMessage,
-                chatId,
-                includeAgentMemory: true,
-                includeFeedHistory: true,
-                searchAllChats: !isGroup,
-                maxRecentMessages: CONTEXT_MAX_RECENT_MESSAGES,
-                maxRelevantChunks: CONTEXT_MAX_RELEVANT_CHUNKS,
-                queryEmbedding,
-              })
-              .catch((error) => {
-                log.warn({ err: error }, "Context building failed");
-                return null;
-              })
-          : Promise.resolve(null);
-
-      const promptBeforePromise = this.hookRunner
-        ? (async () => {
-            const promptEvent: BeforePromptBuildEvent = {
-              chatId,
-              sessionId: session.sessionId,
-              isGroup: effectiveIsGroup,
-              additionalContext: "",
-            };
-            // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- guarded by ternary
-            await this.hookRunner!.runModifyingHook("prompt:before", promptEvent);
-            return sanitizeForContext(promptEvent.additionalContext);
-          })()
-        : Promise.resolve("");
-
-      const [dbContext, hookAdditionalContext] = await Promise.all([
-        contextPromise,
-        promptBeforePromise,
-      ]);
-
-      if (dbContext) {
-        const contextParts: string[] = [];
-
-        if (dbContext.relevantKnowledge.length > 0) {
-          const sanitizedKnowledge = dbContext.relevantKnowledge.map((chunk) =>
-            sanitizeForContext(chunk)
-          );
-          contextParts.push(
-            `[Relevant knowledge from memory]\n${sanitizedKnowledge.join("\n---\n")}`
-          );
-        }
-
-        if (dbContext.relevantFeed.length > 0) {
-          const sanitizedFeed = dbContext.relevantFeed.map((msg) => sanitizeForContext(msg));
-          contextParts.push(`[Relevant messages from Telegram feed]\n${sanitizedFeed.join("\n")}`);
-        }
-
-        if (contextParts.length > 0) {
-          relevantContext = contextParts.join("\n\n");
-          log.debug(
-            `🔍 Found ${dbContext.relevantKnowledge.length} knowledge chunks, ${dbContext.relevantFeed.length} feed messages`
-          );
-        }
-      }
-
-      // Trim RAG context to configured budget to reduce token cost and response latency
-      const maxRagChars = this.config.agent.max_rag_chars;
-      if (maxRagChars !== undefined && relevantContext.length > maxRagChars) {
-        log.info(
-          `RAG context trimmed: ${relevantContext.length} → ${maxRagChars} chars (max_rag_chars limit)`
-        );
-      }
-      relevantContext = trimRagContext(relevantContext, maxRagChars);
-
-      const memoryStats = this.getMemoryStats();
-      const statsContext = `[Memory Status: ${memoryStats.totalMessages} messages across ${memoryStats.totalChats} chats, ${memoryStats.knowledgeChunks} knowledge chunks]`;
-
-      const additionalContext = relevantContext
-        ? `You are in a Telegram conversation with chat ID: ${chatId}. Maintain conversation continuity.\n\n${statsContext}\n\n${relevantContext}`
-        : `You are in a Telegram conversation with chat ID: ${chatId}. Maintain conversation continuity.\n\n${statsContext}`;
-
-      const compactionConfig = this.compactionManager.getConfig();
-      const needsMemoryFlush =
-        compactionConfig.enabled &&
-        compactionConfig.memoryFlushEnabled &&
-        context.messages.length > Math.floor((compactionConfig.maxMessages ?? 200) * 0.75);
-
-      const allHookContext = [userHookContext, hookAdditionalContext, hookMessageContext]
-        .filter(Boolean)
-        .join("\n\n");
-      const finalContext = additionalContext + (allHookContext ? `\n\n${allHookContext}` : "");
-
-      const isAdmin =
-        toolContext?.senderId !== undefined &&
-        (toolContext.config?.telegram.admin_ids.includes(toolContext.senderId) ?? false);
-
-      const systemPrompt = buildSystemPrompt({
+      const built = await prepareTurn({ ...opts, turnId }, processStartTime, {
+        config: this.config,
         soul: this.soul,
-        userName,
-        senderUsername,
-        senderLangCode: opts.senderLangCode,
-        senderId: toolContext?.senderId,
-        ownerName: this.config.telegram.owner_name,
-        ownerUsername: this.config.telegram.owner_username,
-        context: finalContext,
-        includeMemory: !effectiveIsGroup,
-        includeStrategy: !effectiveIsGroup,
-        memoryFlushWarning: needsMemoryFlush,
-        isHeartbeat,
-        agentModel: this.config.agent.model,
-        telegramMode: this.config.telegram.mode,
-        isAdmin,
+        compactionManager: this.compactionManager,
+        contextBuilder: this.contextBuilder,
+        embedder: this.embedder,
+        toolRegistry: this.toolRegistry,
+        hookRunner: this.hookRunner,
+        userHookEvaluator: this.userHookEvaluator,
+        getMemoryStats: () => this.getMemoryStats(),
+      });
+      if (built.kind === "early") return built.response;
+
+      trace = new AgentTurnTraceRecorder(getDatabase().getDb(), turnId);
+      trace.start({
+        sessionId: built.turn.session.sessionId,
+        chatId: built.turn.chatId,
+        startedAt: processStartTime,
+        provider: built.turn.provider,
+        model: built.turn.resolvedModel,
+        requestedModel: built.turn.requestedModel,
+        endpointFingerprint: built.turn.endpointFingerprint,
+        selectedTools: built.turn.tools?.map((tool) => tool.name) ?? [],
       });
 
-      // Hook: prompt:after — observing, analytics on prompt size
-      if (this.hookRunner) {
-        const promptAfterEvent: PromptAfterEvent = {
-          chatId,
-          sessionId: session.sessionId,
-          isGroup: effectiveIsGroup,
-          promptLength: systemPrompt.length,
-          sectionCount: (systemPrompt.match(/^#{1,3} /gm) || []).length,
-          ragContextLength: relevantContext.length,
-          hookContextLength: allHookContext.length,
-        };
-        await this.hookRunner.runObservingHook("prompt:after", promptAfterEvent);
-      }
-
-      const userMsg: UserMessage = {
-        role: "user",
-        content: formattedMessage,
-        timestamp: now,
-      };
-
-      context.messages.push(userMsg);
-
-      const preemptiveCompaction = await this.compactionManager.checkAndCompact(
-        session.sessionId,
-        context,
-        getEffectiveApiKey(this.config.agent.provider, this.config.agent.api_key),
-        chatId,
-        this.config.agent.provider as SupportedProvider,
-        this.config.agent.utility_model
-      );
-      if (preemptiveCompaction) {
-        log.info(`Preemptive compaction triggered, reloading session...`);
-        updateSession(chatId, { sessionId: preemptiveCompaction });
-        // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- session guaranteed to exist after compaction
-        session = getSession(chatId)!;
-        context = loadContextFromTranscript(session.sessionId);
-        context.messages.push(userMsg);
-        captureMemorySnapshot(); // Refresh snapshot for the new compacted session
-      }
-
-      appendToTranscript(session.sessionId, userMsg);
-
-      const provider = (this.config.agent.provider || "anthropic") as SupportedProvider;
-      const providerMeta = getProviderMetadata(provider);
-
-      let tools: PiAiTool[] | undefined;
-      {
-        const toolIndex = this.toolRegistry?.getToolIndex();
-        const useRAG =
-          toolIndex?.isIndexed &&
-          this.config.tool_rag?.enabled !== false &&
-          !isTrivialMessage(effectiveMessage) &&
-          !(
-            providerMeta.toolLimit === null &&
-            this.config.tool_rag?.skip_unlimited_providers !== false
-          );
-
-        if (useRAG && this.toolRegistry && queryEmbedding) {
-          tools = await this.toolRegistry.getForContextWithRAG(
-            effectiveMessage,
-            queryEmbedding,
-            effectiveIsGroup,
-            providerMeta.toolLimit,
-            chatId,
-            isAdmin,
-            toolContext?.senderId
-          );
-          log.info(`Tool RAG: ${tools.length}/${this.toolRegistry.count} tools selected`);
-        } else {
-          tools = this.toolRegistry?.getForContext(
-            effectiveIsGroup,
-            providerMeta.toolLimit,
-            chatId,
-            isAdmin,
-            toolContext?.senderId
-          );
-        }
-      }
-
-      const maxIterations = this.config.agent.max_agentic_iterations || 5;
-      let iteration = 0;
-      let overflowResets = 0;
-      let rateLimitRetries = 0;
-      let serverErrorRetries = 0;
-      let networkErrorRetries = 0;
-      let emptyResponseRetries = 0;
-      let modelDeprecatedRetried = false;
-      let finalResponse: ChatResponse | null = null;
-      const totalToolCalls: Array<{ name: string; input: Record<string, unknown> }> = [];
-      const allToolExecResults: Array<{
-        toolName: string;
-        result: { success: boolean; data?: unknown; error?: string };
-      }> = [];
-      const accumulatedTexts: string[] = [];
-      const accumulatedUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalCost: 0 };
-      const seenToolSignatures = new Set<string>();
-      let wasStreamed = false;
-      let streamAccumulatedText = ""; // For "all" mode: concatenate text across iterations
-
-      interface ToolPlan {
-        block: ToolCall;
-        blocked: boolean;
-        blockReason: string;
-        params: Record<string, unknown>;
-      }
-      interface ToolExecResult {
-        result: { success: boolean; data?: unknown; error?: string };
-        durationMs: number;
-        execError?: { message: string; stack?: string };
-      }
-
-      while (iteration < maxIterations) {
-        iteration++;
-        log.debug(`Agentic iteration ${iteration}/${maxIterations}`);
-
-        // Track where current iteration starts so masking won't truncate its results
-        const iterationStartIndex = context.messages.length;
-
-        const maskedMessages = maskOldToolResults(context.messages, {
-          toolRegistry: this.toolRegistry ?? undefined,
-          currentIterationStartIndex: iterationStartIndex,
-        });
-        const maskedContext: Context = { ...context, messages: maskedMessages };
-
-        // For complex tool chains (4+ calls), reinforce the "always respond with text"
-        // instruction since LLMs tend to skip text generation when context is large.
-        let effectiveSystemPrompt = systemPrompt;
-        if (totalToolCalls.length >= 4) {
-          effectiveSystemPrompt +=
-            "\n\n⚠️ IMPORTANT: You MUST generate a human-readable summary now. " +
-            "After all tool executions, always respond with: " +
-            "1) Brief confirmation of what was completed, " +
-            "2) Key results in plain language, " +
-            "3) Any next steps or questions for the user. Never return empty content.";
-          log.debug(
-            `Injecting response reinforcement (${totalToolCalls.length} tool calls so far)`
-          );
-        }
-
-        let response: ChatResponse;
-        let streamed = false;
-
-        const streamMode = opts.streamToChat?.mode;
-        const shouldStream =
-          opts.streamToChat?.bridge.streamResponse &&
-          streamMode !== undefined &&
-          streamMode !== "off";
-
-        try {
-          if (shouldStream) {
-            const { isBotBridge } = await import("../telegram/bridge-guards.js");
-
-            // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- guarded by shouldStream check
-            const bridge = opts.streamToChat!.bridge;
-            if (isBotBridge(bridge)) {
-              if (streamMode === "replace") {
-                // Reset draft for each iteration (new draft bubble)
-                // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- guarded by shouldStream
-                bridge.resetDraft(opts.streamToChat!.chatId);
-                streamAccumulatedText = "";
-              }
-
-              const { textStream, result } = streamWithContext(this.config.agent, {
-                systemPrompt: effectiveSystemPrompt,
-                context: maskedContext,
-                sessionId: session.sessionId,
-                persistTranscript: true,
-                tools,
-              });
-
-              // "all" mode: prepend accumulated text from previous iterations
-              const prefix = streamMode === "all" ? streamAccumulatedText : "";
-              async function* prefixedStream(): AsyncIterable<string> {
-                let first = true;
-                for await (const chunk of textStream) {
-                  if (first && prefix) {
-                    yield prefix + chunk;
-                    first = false;
-                  } else {
-                    yield chunk;
-                  }
-                }
-              }
-
-              // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- guarded by shouldStream check
-              const draftText = await bridge.streamDraft(
-                opts.streamToChat!.chatId,
-                prefixedStream()
-              );
-              if (streamMode === "all") {
-                if (draftText.length === 0 && streamAccumulatedText.length > 0) {
-                  // LLM produced only tool calls — clear the stale draft bubble
-                  // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- guarded by shouldStream
-                  await bridge.clearDraft(opts.streamToChat!.chatId);
-                }
-                streamAccumulatedText = draftText + "\n\n";
-              }
-
-              response = await result;
-            } else {
-              response = await chatWithContext(this.config.agent, {
-                systemPrompt: effectiveSystemPrompt,
-                context: maskedContext,
-                sessionId: session.sessionId,
-                persistTranscript: true,
-                tools,
-              });
-            }
-            streamed = true;
-          } else {
-            response = await chatWithContext(this.config.agent, {
-              systemPrompt: effectiveSystemPrompt,
-              context: maskedContext,
-              sessionId: session.sessionId,
-              persistTranscript: true,
-              tools,
-            });
-          }
-        } catch (llmError) {
-          // Catch thrown network errors (TimeoutError, AbortError, fetch failures)
-          if (isNetworkError(llmError)) {
-            networkErrorRetries++;
-            if (networkErrorRetries <= NETWORK_ERROR_MAX_RETRIES) {
-              const delay = 2000 * Math.pow(2, networkErrorRetries - 1);
-              log.warn(
-                `Network error (thrown), retrying in ${delay}ms (attempt ${networkErrorRetries}/${NETWORK_ERROR_MAX_RETRIES}): ${llmError instanceof Error ? llmError.message : llmError}`
-              );
-              await new Promise((r) => setTimeout(r, delay));
-              continue;
-            }
-          }
-          throw llmError;
-        }
-
-        const assistantMsg = response.message;
-        if (assistantMsg.stopReason === "error") {
-          const errorMsg = assistantMsg.errorMessage || "";
-
-          // Hook: response:error — fire on all LLM errors
-          if (this.hookRunner) {
-            const errorCode =
-              errorMsg.includes("429") || errorMsg.toLowerCase().includes("rate")
-                ? "RATE_LIMIT"
-                : isContextOverflowError(errorMsg)
-                  ? "CONTEXT_OVERFLOW"
-                  : errorMsg.includes("500") || errorMsg.includes("502") || errorMsg.includes("503")
-                    ? "PROVIDER_ERROR"
-                    : "UNKNOWN";
-            const responseErrorEvent: ResponseErrorEvent = {
-              chatId,
-              sessionId: session.sessionId,
-              isGroup: effectiveIsGroup,
-              error: errorMsg,
-              errorCode,
-              provider: provider,
-              model: this.config.agent.model,
-              retryCount: rateLimitRetries + serverErrorRetries,
-              durationMs: Date.now() - processStartTime,
-            };
-            await this.hookRunner.runObservingHook("response:error", responseErrorEvent);
-          }
-
-          if (isContextOverflowError(errorMsg)) {
-            overflowResets++;
-            if (overflowResets > 1) {
-              throw new Error(
-                "Context overflow persists after session reset. Message may be too large for the model's context window."
-              );
-            }
-            log.error(`Context overflow detected: ${errorMsg}`);
-
-            log.info(`Saving session memory before reset...`);
-            const summary = extractContextSummary(context, CONTEXT_OVERFLOW_SUMMARY_MESSAGES);
-            appendToDailyLog(summary);
-            log.info(`Memory saved to daily log`);
-
-            const archived = archiveTranscript(session.sessionId);
-            if (!archived) {
-              log.error(
-                `Failed to archive transcript ${session.sessionId}, proceeding with reset anyway`
-              );
-            }
-
-            log.info(`Resetting session due to context overflow...`);
-            session = resetSession(chatId);
-
-            context = { messages: [userMsg] };
-
-            appendToTranscript(session.sessionId, userMsg);
-
-            log.info(`Retrying with fresh context...`);
-            continue;
-          } else if (errorMsg.toLowerCase().includes("rate") || errorMsg.includes("429")) {
-            rateLimitRetries++;
-            if (rateLimitRetries <= RATE_LIMIT_MAX_RETRIES) {
-              // Respect Retry-After hint from the API if present
-              const retryAfterMs = parseRetryAfterMs(errorMsg);
-              const backoffDelay = Math.min(
-                1000 * Math.pow(2, rateLimitRetries - 1),
-                RATE_LIMIT_MAX_BACKOFF_MS
-              );
-              const delay = retryAfterMs ?? backoffDelay;
-              log.warn(
-                `Rate limited, retrying in ${delay}ms (attempt ${rateLimitRetries}/${RATE_LIMIT_MAX_RETRIES})...`
-              );
-              await new Promise((r) => setTimeout(r, delay));
-              continue;
-            }
-            log.error(`Rate limited after ${RATE_LIMIT_MAX_RETRIES} retries: ${errorMsg}`);
-            throw new Error(
-              `API rate limited after ${RATE_LIMIT_MAX_RETRIES} retries. Please try again later.`
-            );
-          } else if (isNetworkErrorMessage(errorMsg)) {
-            // Network error returned as stopReason:"error" (e.g. ZAI provider)
-            networkErrorRetries++;
-            if (networkErrorRetries <= NETWORK_ERROR_MAX_RETRIES) {
-              const delay = 2000 * Math.pow(2, networkErrorRetries - 1);
-              log.warn(
-                `Network error, retrying in ${delay}ms (attempt ${networkErrorRetries}/${NETWORK_ERROR_MAX_RETRIES})...`
-              );
-              await new Promise((r) => setTimeout(r, delay));
-              continue;
-            }
-            log.error(`Network error after ${NETWORK_ERROR_MAX_RETRIES} retries: ${errorMsg}`);
-            throw new Error(
-              `Network error after ${NETWORK_ERROR_MAX_RETRIES} retries. Please check connectivity.`
-            );
-          } else if (
-            errorMsg.includes("500") ||
-            errorMsg.includes("502") ||
-            errorMsg.includes("503") ||
-            errorMsg.includes("529") ||
-            errorMsg.includes("overloaded") ||
-            errorMsg.includes("Internal server error") ||
-            errorMsg.includes("api_error")
-          ) {
-            serverErrorRetries++;
-            if (serverErrorRetries <= SERVER_ERROR_MAX_RETRIES) {
-              const delay = 2000 * Math.pow(2, serverErrorRetries - 1);
-              log.warn(
-                `Server error, retrying in ${delay}ms (attempt ${serverErrorRetries}/${SERVER_ERROR_MAX_RETRIES})...`
-              );
-              await new Promise((r) => setTimeout(r, delay));
-              continue;
-            }
-            log.error(`Server error after ${SERVER_ERROR_MAX_RETRIES} retries: ${errorMsg}`);
-            throw new Error(
-              `API server error after ${SERVER_ERROR_MAX_RETRIES} retries. The provider may be experiencing issues.`
-            );
-          } else if (
-            errorMsg.includes("404") &&
-            (errorMsg.includes("deprecated") ||
-              errorMsg.includes("not found") ||
-              errorMsg.includes("does not exist"))
-          ) {
-            // Model deprecated/removed — switch to provider's default model and retry once
-            if (!modelDeprecatedRetried) {
-              modelDeprecatedRetried = true;
-              const fallbackModel = providerMeta.defaultModel;
-              log.warn(
-                `Model deprecated (${this.config.agent.model}), switching to fallback: ${fallbackModel}`
-              );
-              this.config.agent.model = fallbackModel;
-              continue;
-            }
-            log.error(`Fallback model also failed: ${errorMsg}`);
-            throw new Error(`API error: ${errorMsg || "Unknown error"}`);
-          } else {
-            log.error(`API error: ${errorMsg}`);
-            throw new Error(`API error: ${errorMsg || "Unknown error"}`);
-          }
-        }
-
-        // Accumulate usage across all iterations
-        const iterUsage = response.message.usage;
-        if (iterUsage) {
-          accumulatedUsage.input += iterUsage.input;
-          accumulatedUsage.output += iterUsage.output;
-          accumulatedUsage.cacheRead += iterUsage.cacheRead ?? 0;
-          accumulatedUsage.cacheWrite += iterUsage.cacheWrite ?? 0;
-          accumulatedUsage.totalCost += iterUsage.cost?.total ?? 0;
-        }
-
-        if (response.text) {
-          accumulatedTexts.push(response.text);
-        }
-
-        const toolCalls = response.message.content.filter((block) => block.type === "toolCall");
-
-        if (toolCalls.length === 0) {
-          // Retry if model returned empty response (0 output tokens) — likely API glitch
-          const iterOutput = response.message.usage?.output ?? 0;
-          if (!response.text && iterOutput === 0 && iteration < maxIterations) {
-            emptyResponseRetries++;
-            if (emptyResponseRetries <= EMPTY_RESPONSE_MAX_RETRIES) {
-              const delay = 2000 * emptyResponseRetries;
-              log.warn(
-                `Empty response with 0 output tokens, retrying in ${delay}ms (attempt ${emptyResponseRetries}/${EMPTY_RESPONSE_MAX_RETRIES})...`
-              );
-              await new Promise((r) => setTimeout(r, delay));
-              continue;
-            }
-            log.warn(
-              `Empty response persists after ${EMPTY_RESPONSE_MAX_RETRIES} retries, accepting`
-            );
-          }
-          log.info(`${iteration}/${maxIterations} → done`);
-          finalResponse = response;
-          wasStreamed = streamed;
-          break;
-        }
-
-        if (!this.toolRegistry || !toolContext) {
-          log.error("Cannot execute tools: registry or context missing");
-          break;
-        }
-
-        log.debug(`Executing ${toolCalls.length} tool call(s)`);
-
-        context.messages.push(response.message);
-
-        const iterationToolNames: string[] = [];
-
-        const fullContext: ToolContext = {
-          ...toolContext,
-          chatId,
-          isGroup: effectiveIsGroup,
-        };
-
-        // Phase 1: Run tool:before hooks sequentially (hooks may cross-reference)
-        const toolPlans: ToolPlan[] = [];
-
-        for (const block of toolCalls) {
-          if (block.type !== "toolCall") continue;
-
-          let toolParams = (block.arguments ?? {}) as Record<string, unknown>;
-          let blocked = false;
-          let blockReason = "";
-
-          if (this.hookRunner) {
-            const beforeEvent: BeforeToolCallEvent = {
-              toolName: block.name,
-              params: structuredClone(toolParams),
-              chatId,
-              isGroup: effectiveIsGroup,
-              block: false,
-              blockReason: "",
-            };
-            await this.hookRunner.runModifyingHook("tool:before", beforeEvent);
-            if (beforeEvent.block) {
-              blocked = true;
-              blockReason = beforeEvent.blockReason || "Blocked by plugin hook";
-            } else {
-              toolParams = structuredClone(beforeEvent.params) as Record<string, unknown>;
-            }
-          }
-
-          toolPlans.push({ block, blocked, blockReason, params: toolParams });
-        }
-
-        // Phase 2: Execute tools with concurrency limit (blocked tools resolve instantly)
-        const execResults: ToolExecResult[] = new Array(toolPlans.length);
-        {
-          let cursor = 0;
-          const runWorker = async (): Promise<void> => {
-            while (cursor < toolPlans.length) {
-              const idx = cursor++;
-              const plan = toolPlans[idx];
-
-              if (plan.blocked) {
-                execResults[idx] = {
-                  result: { success: false, error: plan.blockReason },
-                  durationMs: 0,
-                };
-                continue;
-              }
-
-              const startTime = Date.now();
-              try {
-                // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- registry checked at line 687
-                const result = await this.toolRegistry!.execute(
-                  { ...plan.block, arguments: plan.params },
-                  fullContext
-                );
-                execResults[idx] = { result, durationMs: Date.now() - startTime };
-              } catch (execErr) {
-                const errMsg = getErrorMessage(execErr);
-                const errStack = execErr instanceof Error ? execErr.stack : undefined;
-                execResults[idx] = {
-                  result: { success: false, error: errMsg },
-                  durationMs: Date.now() - startTime,
-                  execError: { message: errMsg, stack: errStack },
-                };
-              }
-            }
-          };
-          const workers = Math.min(TOOL_CONCURRENCY_LIMIT, toolPlans.length);
-          await Promise.all(Array.from({ length: workers }, () => runWorker()));
-        }
-
-        // Phase 3: Process results in original order (hooks, context, transcript)
-        const observingHookPromises: Promise<void>[] = [];
-        for (let i = 0; i < toolPlans.length; i++) {
-          const plan = toolPlans[i];
-          const { block } = plan;
-          const exec = execResults[i];
-
-          // Hook: tool:error (if execution threw) — fire-and-forget (observing)
-          if (exec.execError && this.hookRunner) {
-            const errorEvent: ToolErrorEvent = {
-              toolName: block.name,
-              params: structuredClone(plan.params),
-              error: exec.execError.message,
-              stack: exec.execError.stack,
-              chatId,
-              isGroup: effectiveIsGroup,
-              durationMs: exec.durationMs,
-            };
-            observingHookPromises.push(this.hookRunner.runObservingHook("tool:error", errorEvent));
-          }
-
-          // Hook: tool:after (fires for all cases including blocks) — fire-and-forget (observing)
-          if (this.hookRunner) {
-            const afterEvent: AfterToolCallEvent = {
-              toolName: block.name,
-              params: structuredClone(plan.params),
-              result: {
-                success: exec.result.success,
-                data: exec.result.data,
-                error: exec.result.error,
-              },
-              durationMs: exec.durationMs,
-              chatId,
-              isGroup: effectiveIsGroup,
-              ...(plan.blocked ? { blocked: true, blockReason: plan.blockReason } : {}),
-            };
-            observingHookPromises.push(this.hookRunner.runObservingHook("tool:after", afterEvent));
-          }
-
-          const toolHint = summarizeToolParams(block.name, plan.params);
-          log.debug(`${block.name}: ${exec.result.success ? "✓" : "✗"} ${exec.result.error || ""}`);
-          iterationToolNames.push(`${block.name}${toolHint} ${exec.result.success ? "✓" : "✗"}`);
-
-          totalToolCalls.push({
-            name: block.name,
-            input: plan.params,
-          });
-          allToolExecResults.push({
-            toolName: block.name,
-            result: { success: exec.result.success, error: exec.result.error },
-          });
-
-          const resultText = truncateToolResult(exec.result, MAX_TOOL_RESULT_SIZE);
-          if (resultText.includes('"_truncated":true')) {
-            log.warn(`Tool result too large, truncated to ${resultText.length} chars`);
-          }
-
-          if (provider === "cocoon") {
-            const { wrapToolResult } = await import("../cocoon/tool-adapter.js");
-            const cocoonResultMsg: UserMessage = {
-              role: "user",
-              content: [
-                {
-                  type: "text",
-                  text: wrapToolResult(resultText),
-                },
-              ],
-              timestamp: Date.now(),
-            };
-            context.messages.push(cocoonResultMsg);
-            appendToTranscript(session.sessionId, cocoonResultMsg);
-          } else {
-            const toolResultMsg: ToolResultMessage = {
-              role: "toolResult",
-              toolCallId: block.id,
-              toolName: block.name,
-              content: [
-                {
-                  type: "text",
-                  text: resultText,
-                },
-              ],
-              isError: !exec.result.success,
-              timestamp: Date.now(),
-            };
-            context.messages.push(toolResultMsg);
-            appendToTranscript(session.sessionId, toolResultMsg);
-          }
-        }
-
-        // Await all observing hooks from Phase 3 (non-blocking during result processing)
-        if (observingHookPromises.length > 0) {
-          await Promise.allSettled(observingHookPromises);
-        }
-
-        log.info(`${iteration}/${maxIterations} → ${iterationToolNames.join(", ")}`);
-
-        // Stall detection: break early if all tool calls are duplicates from prior iterations
-        const iterSignatures = toolPlans.map(
-          (p) => `${p.block.name}:${JSON.stringify(p.params, Object.keys(p.params).sort())}`
-        );
-        const allDuplicates =
-          iterSignatures.length > 0 && iterSignatures.every((sig) => seenToolSignatures.has(sig));
-        for (const sig of iterSignatures) seenToolSignatures.add(sig);
-
-        if (allDuplicates) {
-          log.warn(
-            `Loop stall detected: all ${iterSignatures.length} tool call(s) are repeats — breaking early`
-          );
-          finalResponse = response;
-          break;
-        }
-
-        if (iteration === maxIterations) {
-          log.info(`Max iterations reached (${maxIterations})`);
-          finalResponse = response;
-        }
-      }
-
-      if (!finalResponse) {
+      const loop = await executeAgentLoop(built.turn, opts, trace, {
+        config: this.config,
+        toolRegistry: this.toolRegistry,
+        hookRunner: this.hookRunner,
+      });
+      if (!loop.finalResponse) {
         log.error("Agentic loop exited early without final response");
+        trace.finish({
+          status: "error",
+          calls: loop.totalToolCalls,
+          iterations: loop.iterations,
+          usage: loop.accumulatedUsage,
+          stopReason: loop.stopReason,
+          provider: loop.activeProvider,
+          model: loop.activeModel,
+          errorMessage: "Agent loop failed to produce a response",
+        });
         return {
           content: "Internal error: Agent loop failed to produce a response.",
           toolCalls: [],
         };
       }
 
-      const response = finalResponse;
-
-      const lastMsg = context.messages[context.messages.length - 1];
-      if (lastMsg?.role !== "assistant") {
-        context.messages.push(response.message);
-      }
-
-      // Post-loop compaction deferred: the pre-loop check at the start of the next
-      // processMessage() will handle it, avoiding AI summarization latency on response delivery.
-
-      const sessionUpdate: Parameters<typeof updateSession>[1] = {
-        updatedAt: Date.now(),
-        messageCount: session.messageCount + 1,
-        model: this.config.agent.model,
-        provider: this.config.agent.provider,
-        inputTokens:
-          (session.inputTokens ?? 0) +
-          accumulatedUsage.input +
-          accumulatedUsage.cacheRead +
-          accumulatedUsage.cacheWrite,
-        outputTokens: (session.outputTokens ?? 0) + accumulatedUsage.output,
-      };
-      updateSession(chatId, sessionUpdate);
-
-      if (accumulatedUsage.input > 0 || accumulatedUsage.output > 0) {
-        const u = accumulatedUsage;
-        const totalInput = u.input + u.cacheRead + u.cacheWrite;
-        const inK = (totalInput / 1000).toFixed(1);
-        const cacheParts: string[] = [];
-        if (u.cacheRead) cacheParts.push(`${(u.cacheRead / 1000).toFixed(1)}K cached`);
-        if (u.cacheWrite) cacheParts.push(`${(u.cacheWrite / 1000).toFixed(1)}K new`);
-        const cacheInfo = cacheParts.length > 0 ? ` (${cacheParts.join(", ")})` : "";
-        log.info(`${inK}K in${cacheInfo}, ${u.output} out | $${u.totalCost.toFixed(3)}`);
-
-        accumulateTokenUsage(u);
-      }
-
-      let content = accumulatedTexts.join("\n").trim() || response.text;
-
-      const usedTelegramSendTool = totalToolCalls.some((tc) => TELEGRAM_SEND_TOOLS.has(tc.name));
-
-      if (!content && accumulatedUsage.input === 0 && accumulatedUsage.output === 0) {
-        log.warn("Empty response with zero tokens - possible API issue");
-        content = "I couldn't process your request. Please try again.";
-      } else if (!content && usedTelegramSendTool) {
-        log.info("Response sent via Telegram tool - no additional text needed");
-        content = "";
-      } else if (!content && totalToolCalls.length > 0) {
-        log.warn("Empty response after tool calls - generating fallback");
-        content = generateToolSummary(allToolExecResults);
-        log.info(`Generated fallback summary from ${allToolExecResults.length} tool result(s)`);
-      }
-
-      // Hook: response:before — plugins can mutate or block the response text
-      let responseMetadata: Record<string, unknown> = {};
-      if (this.hookRunner) {
-        const responseBeforeEvent: ResponseBeforeEvent = {
-          chatId,
-          sessionId: session.sessionId,
-          isGroup: effectiveIsGroup,
-          originalText: content,
-          text: content,
-          block: false,
-          blockReason: "",
-          metadata: {},
-        };
-        await this.hookRunner.runModifyingHook("response:before", responseBeforeEvent);
-        if (responseBeforeEvent.block) {
-          log.info(
-            `🚫 Response blocked by hook: ${responseBeforeEvent.blockReason || "no reason"}`
-          );
-          content = "";
-        } else {
-          content = responseBeforeEvent.text;
-        }
-        responseMetadata = responseBeforeEvent.metadata;
-      }
-
-      // Build response:after event (run after finalizeDraft so upsell appears after the answer)
-      const responseAfterEvent: ResponseAfterEvent | null = this.hookRunner
-        ? {
-            chatId,
-            sessionId: session.sessionId,
-            isGroup: effectiveIsGroup,
-            text: content,
-            durationMs: Date.now() - processStartTime,
-            toolsUsed: totalToolCalls.map((tc) => tc.name),
-            tokenUsage:
-              accumulatedUsage.input > 0 ||
-              accumulatedUsage.output > 0 ||
-              accumulatedUsage.cacheRead > 0
-                ? {
-                    input: accumulatedUsage.input,
-                    output: accumulatedUsage.output,
-                    cacheRead: accumulatedUsage.cacheRead,
-                    cacheWrite: accumulatedUsage.cacheWrite,
-                  }
-                : undefined,
-            metadata: responseMetadata,
-          }
-        : null;
-
-      // Finalize streaming draft — clear bubble, send final message only if no send tool was used
-      if (wasStreamed && opts.streamToChat) {
-        const { isBotBridge } = await import("../telegram/bridge-guards.js");
-        const bridge = opts.streamToChat.bridge;
-        if (isBotBridge(bridge)) {
-          if (usedTelegramSendTool) {
-            // Agent already sent via tool — just clear the draft bubble
-            await bridge.clearDraft(opts.streamToChat.chatId);
-          } else {
-            await bridge.finalizeDraft(opts.streamToChat.chatId, content);
-          }
-        }
-      }
-
-      // Hook: response:after — runs AFTER finalizeDraft (with timeout to prevent chatQueue deadlock)
-      if (this.hookRunner && responseAfterEvent) {
-        try {
-          await Promise.race([
-            this.hookRunner.runObservingHook("response:after", responseAfterEvent),
-            new Promise((_, reject) =>
-              setTimeout(() => reject(new Error("response:after timeout")), 15000)
-            ),
-          ]);
-        } catch (hookErr) {
-          log.warn(
-            `response:after hook failed or timed out: ${hookErr instanceof Error ? hookErr.message : hookErr}`
-          );
-        }
-      }
-
-      return {
-        content,
-        toolCalls: totalToolCalls,
-        streamed: wasStreamed,
-      };
+      const response = await finalizeAgentResponse(
+        built.turn,
+        loop,
+        loop.finalResponse,
+        opts,
+        this.hookRunner
+      );
+      trace.finish({
+        status: loop.stopReason.endsWith("budget") ? "budget_exhausted" : "completed",
+        calls: loop.totalToolCalls,
+        iterations: loop.iterations,
+        usage: loop.accumulatedUsage,
+        stopReason: loop.stopReason,
+        provider: loop.activeProvider,
+        model: loop.activeModel,
+      });
+      return response;
     } catch (error) {
       log.error({ err: error }, "Agent error");
+      trace?.fail(error);
       throw error;
     }
+  }
+
+  async drainTurns(): Promise<void> {
+    await this.turnCoordinator.drain();
   }
 
   clearHistory(chatId: string): void {
@@ -1300,7 +211,7 @@ export class AgentRuntime {
 
     db.prepare(
       `DELETE FROM tg_messages_vec WHERE id IN (
-        SELECT id FROM tg_messages WHERE chat_id = ?
+        SELECT chat_id || char(31) || id FROM tg_messages WHERE chat_id = ?
       )`
     ).run(chatId);
 
@@ -1329,23 +240,6 @@ export class AgentRuntime {
       .all() as Array<{ chat_id: string }>;
 
     return rows.map((r) => r.chat_id);
-  }
-
-  setSoul(soul: string): void {
-    this.soul = soul;
-  }
-
-  configureCompaction(config: {
-    enabled?: boolean;
-    maxMessages?: number;
-    maxTokens?: number;
-  }): void {
-    this.compactionManager.updateConfig(config);
-    log.info({ config: this.compactionManager.getConfig() }, `Compaction config updated`);
-  }
-
-  getCompactionConfig() {
-    return this.compactionManager.getConfig();
   }
 
   private _memoryStatsCache: {

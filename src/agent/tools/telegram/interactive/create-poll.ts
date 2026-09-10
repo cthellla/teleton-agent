@@ -1,4 +1,4 @@
-import { randomLong } from "../../../../utils/gramjs-bigint.js";
+import { randomLong, toLong } from "../../../../utils/gramjs-bigint.js";
 import { Type } from "@sinclair/typebox";
 import { Api } from "telegram";
 import type { Tool, ToolExecutor, ToolResult } from "../../types.js";
@@ -29,7 +29,7 @@ interface CreatePollParams {
 export const telegramCreatePollTool: Tool = {
   name: "telegram_create_poll",
   description:
-    "Create a poll in a chat. For quizzes with a correct answer, use telegram_create_quiz instead.",
+    "Create a poll in a chat. For quizzes with a correct answer, use telegram_create_quiz instead. Examples: voting on a topic, opinion gathering.",
   parameters: Type.Object({
     chatId: Type.String({
       description: "The chat ID where the poll will be created",
@@ -126,6 +126,7 @@ export const telegramCreatePollExecutor: ToolExecutor<CreatePollParams> = async 
       multipleChoice,
       closePeriod,
       closeDate,
+      hash: toLong(0),
     });
 
     const _result = await gramJsClient.invoke(

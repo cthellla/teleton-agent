@@ -17,6 +17,12 @@ export interface ToolContext {
   senderId: number;
   /** Whether this is a group chat */
   isGroup: boolean;
+  /** Whether this request came from bot guest mode. */
+  isGuest?: boolean;
+  /** Stable ID for one inbound turn; used for action idempotency. */
+  turnId?: string;
+  /** Stable session ID used to scope persisted tool artifacts. */
+  sessionId?: string;
   /** Full config for accessing API key, model, etc. (optional) */
   config?: Config;
 }
@@ -38,6 +44,17 @@ export interface ToolResult {
  */
 export type ToolCategory = "data-bearing" | "action";
 
+/** Compact routing metadata used to discover large tool surfaces hierarchically. */
+export interface ToolNamespaceMetadata {
+  /** Stable dotted identifier, for example `telegram.messaging`. */
+  name: string;
+  /** Short capability-oriented description shown to the model. */
+  description: string;
+}
+
+/** Runtime authority required to expose and execute a tool. */
+export type ToolAccessLevel = "all" | "allowlist" | "admin" | "off";
+
 /**
  * Tool scope for context-based filtering.
  * - "open": included in both DMs and groups (default, canonical form)
@@ -56,6 +73,22 @@ export type ToolScope =
   | "admin-only"
   | "allowlist"
   | "disabled";
+
+/**
+ * Telegram execution mode a tool supports.
+ * - "user": userbot only — relies on an MTProto capability the Bot API lacks
+ * - "bot": Bot API only — relies on a capability exclusive to bots
+ * - "both": works identically in either mode
+ *
+ * Mandatory on every built-in tool: the compiler refuses an undeclared tool.
+ */
+export type ToolMode = "user" | "bot" | "both";
+
+/**
+ * The two runtime bridge modes a registry can operate in. A tool's "both" is a
+ * declaration, not a runtime mode — the registry itself is always user or bot.
+ */
+export type RuntimeMode = Exclude<ToolMode, "both">;
 
 /**
  * Tool definition compatible with pi-ai
@@ -85,6 +118,20 @@ export type ToolExecutor<TParams = unknown> = (
 export interface RegisteredTool {
   tool: Tool;
   executor: ToolExecutor;
+  /** Declared non-trivial scope (undefined for the default always/open). */
+  scope?: ToolScope;
+  /** Hard authority floor. Runtime configuration may only make access stricter. */
+  minimumAccess: ToolAccessLevel;
+  /** Optional per-tool allowlist. When present, it replaces telegram.allow_from. */
+  allowFrom?: ReadonlySet<number>;
+  /** Telegram mode this tool runs in. */
+  mode: ToolMode;
+  /** Module this tool belongs to (name prefix for built-ins, plugin name otherwise). */
+  module: string;
+  /** Hierarchical routing namespace. */
+  namespace: ToolNamespaceMetadata;
+  /** Toolset tags (e.g. "core", "finance"). */
+  tags?: string[];
 }
 
 /**
@@ -96,20 +143,28 @@ export interface ToolEntry {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- tool executors accept varied param shapes
   executor: ToolExecutor<any>;
   scope?: ToolScope;
-  /** When set to "user", excluded in bot mode. When set to "bot", excluded in user mode. */
-  requiredMode?: "user" | "bot";
+  /** Hard authority floor, independent from the DM/group channel scope. */
+  minimumAccess?: ToolAccessLevel;
+  /** Optional per-tool allowlist. When present, it replaces telegram.allow_from. */
+  allowFrom?: readonly number[];
+  /** @deprecated Retained for plugin source compatibility; ignored at runtime. */
+  requiresApproval?: boolean;
+  /** Telegram mode(s) this tool runs in. Mandatory — every tool must declare it. */
+  mode: ToolMode;
   /** Toolset tags for profile-based filtering (e.g. "core", "finance", "social") */
   tags?: string[];
 }
 
 /**
  * Built-in plugin module interface.
- * Modules are self-contained feature packs (deals, etc.)
+ * Modules are self-contained feature packs (ton-proxy, exec, etc.)
  * that register their own tools, config, and migrations.
  */
 export interface PluginModule {
   name: string;
   version: string;
+  /** Filesystem/marketplace identifier, distinct from the display manifest name. */
+  sourceId?: string;
   /** Called ALWAYS (even if disabled) to merge YAML config into runtime defaults */
   configure?(config: Config): void;
   /** Called ALWAYS — must be idempotent (IF NOT EXISTS) */
@@ -120,6 +175,12 @@ export interface PluginModule {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- tool executors accept varied param shapes
     executor: ToolExecutor<any>;
     scope?: ToolScope;
+    /** Optional per-tool allowlist. When present, it replaces telegram.allow_from. */
+    allowFrom?: readonly number[];
+    /** Telegram mode(s) this module tool runs in. Defaults to "both" when omitted. */
+    mode?: ToolMode;
+    /** @deprecated Retained for plugin source compatibility; ignored at runtime. */
+    requiresApproval?: boolean;
   }>;
   /** Start background jobs (polling, timers, etc.) */
   start?(context: PluginContext): Promise<void>;

@@ -105,12 +105,12 @@ export function Select({ value, options, labels, onChange, style, disabled }: Se
       <button
         type="button"
         className="custom-select-trigger"
-        onClick={() => setOpen(!open)}
-        onKeyDown={disabled ? undefined : handleKeyDown}
+        onClick={() => !disabled && setOpen(!open)}
+        onKeyDown={(e) => !disabled && handleKeyDown(e)}
+        disabled={disabled}
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-controls={open ? menuId : undefined}
-        disabled={disabled}
       >
         <span>{labels ? labels[options.indexOf(value)] ?? value : value}</span>
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">

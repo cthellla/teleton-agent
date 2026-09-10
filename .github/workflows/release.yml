@@ -4,49 +4,78 @@ on:
   push:
     tags: ["v*"]
 
+# Least privilege by default; jobs opt into the extra scopes they need.
 permissions:
-  contents: write
-  packages: write
+  contents: read
 
 jobs:
   # ---- Build & Verify ----
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
-          node-version: 20
+          node-version-file: .nvmrc
           cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            web/package-lock.json
+
+      - name: Verify release metadata
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          test "$GITHUB_REF_NAME" = "v$VERSION"
+          grep -Fq "## [$VERSION]" CHANGELOG.md
 
       - run: npm ci
       - run: cd web && npm ci
-      - run: npm run build -w packages/sdk
-      - run: npm run typecheck
       - run: npm run build
+      - run: node scripts/check-sdk-package.mjs
+      - run: npm run typecheck
       - run: node dist/cli/index.js --help
 
       - name: Run tests
         run: npx vitest run
 
-      - uses: actions/upload-artifact@v4
+      - name: Enforce SDK coverage
+        run: npm run test:sdk:coverage
+
+  # Ensure Docker is buildable before publishing immutable npm packages.
+  verify-docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/build-push-action@v7
         with:
-          name: dist
-          path: dist/
+          context: .
+          push: false
 
   # ---- Publish to npm ----
   publish-npm:
-    needs: build
+    needs: [build, verify-docker]
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write # npm provenance
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
-          node-version: 20
+          node-version-file: .nvmrc
           registry-url: https://registry.npmjs.org
           cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            web/package-lock.json
 
       - name: Check if version already published
         id: check
@@ -65,27 +94,25 @@ jobs:
       - run: cd web && npm ci
         if: steps.check.outputs.publish == 'true'
 
-      - uses: actions/download-artifact@v4
-        if: steps.check.outputs.publish == 'true'
-        with:
-          name: dist
-          path: dist/
-
-      - run: npm publish --access public
+      - run: npm publish --provenance --access public
         if: steps.check.outputs.publish == 'true'
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
   # ---- Publish SDK to npm (if version changed) ----
   publish-sdk:
-    needs: build
+    needs: [build, verify-docker]
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write # npm provenance
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
-          node-version: 20
+          node-version-file: .nvmrc
           registry-url: https://registry.npmjs.org
           cache: npm
 
@@ -102,25 +129,32 @@ jobs:
             echo "publish=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Install root deps (for @types/node hoisting)
+      - name: Install dependencies
         if: steps.check.outputs.publish == 'true'
         run: npm ci
 
       - name: Build and publish SDK
         if: steps.check.outputs.publish == 'true'
-        run: npm run build -w packages/sdk && cd packages/sdk && npm publish --access public
+        run: npm run build -w packages/sdk && cd packages/sdk && npm publish --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
   # ---- Publish Docker image ----
   publish-docker:
-    needs: build
+    needs: [build, verify-docker]
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write # push to ghcr.io
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v4
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -133,20 +167,25 @@ jobs:
           echo "repo=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
 
       - name: Build and push Docker image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           push: true
+          cache-from: type=registry,ref=ghcr.io/${{ steps.meta.outputs.repo }}:latest
+          cache-to: type=inline
           tags: |
             ghcr.io/${{ steps.meta.outputs.repo }}:${{ steps.meta.outputs.version }}
             ghcr.io/${{ steps.meta.outputs.repo }}:latest
 
   # ---- GitHub Release ----
   create-release:
-    needs: [publish-npm]
+    needs: [publish-npm, publish-sdk, publish-docker]
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # create the GitHub release
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -175,9 +214,13 @@ jobs:
           echo "$LOG" >> "$GITHUB_OUTPUT"
           echo "EOF" >> "$GITHUB_OUTPUT"
 
+      - name: Lowercase image path for the install snippet
+        id: meta
+        run: echo "repo=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
       - name: Create GitHub Release
         if: steps.check.outputs.exists == 'false'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           generate_release_notes: true
           body: |
@@ -190,7 +233,7 @@ jobs:
 
             **Docker:**
             ```bash
-            docker run -it -v ~/.teleton:/data ghcr.io/${{ github.repository }}:latest setup
+            docker run -it -v ~/.teleton:/data ghcr.io/${{ steps.meta.outputs.repo }}:latest setup
             ```
 
             ## Changes

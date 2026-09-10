@@ -216,5 +216,5 @@ function canOverwrite(existing: SkillOwner, newScope: SkillScope, viewer: SkillV
 }
 
 export const tools: ToolEntry[] = [
-  { tool: skillInstallTool, executor: skillInstallExecutor, tags: ["core"] },
+  { tool: skillInstallTool, executor: skillInstallExecutor, mode: "both", tags: ["core"] },
 ];

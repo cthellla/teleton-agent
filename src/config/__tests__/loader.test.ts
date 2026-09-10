@@ -78,15 +78,6 @@ storage:
   memory_file: "~/custom_memory.json"
   history_limit: 50
 
-deals:
-  enabled: false
-  expiry_seconds: 60
-  buy_max_floor_percent: 90
-  sell_min_floor_percent: 110
-  poll_interval_ms: 3000
-  max_verification_retries: 5
-  expiry_check_interval_ms: 30000
-
 webui:
   enabled: true
   port: 8888
@@ -149,6 +140,19 @@ telegram:
 market:
   enabled: true
   deprecated_field: "should be ignored"
+`;
+
+// Config with the removed 'cocoon' provider (replaced by gocoon in 0.9.0)
+const LEGACY_COCOON = `
+agent:
+  api_key: sk-ant-test
+  provider: cocoon
+telegram:
+  api_id: 12345
+  api_hash: abcdef
+  phone: "+1234567890"
+cocoon:
+  port: 9999
 `;
 
 // Config for non-anthropic provider (should auto-set model)
@@ -298,10 +302,6 @@ describe("Config Loader", () => {
       // Storage
       expect(config.storage.history_limit).toBe(50);
 
-      // Deals
-      expect(config.deals.enabled).toBe(false);
-      expect(config.deals.expiry_seconds).toBe(60);
-
       // WebUI
       expect(config.webui.enabled).toBe(true);
       expect(config.webui.port).toBe(8888);
@@ -370,10 +370,6 @@ describe("Config Loader", () => {
       // Storage defaults
       expect(config.storage.history_limit).toBe(100);
 
-      // Deals defaults
-      expect(config.deals.enabled).toBe(true);
-      expect(config.deals.expiry_seconds).toBe(120);
-
       // WebUI defaults
       expect(config.webui.enabled).toBe(false);
       expect(config.webui.port).toBe(7777);
@@ -391,7 +387,7 @@ describe("Config Loader", () => {
       const config = loadConfig(TEST_CONFIG_PATH);
 
       expect(config.agent.provider).toBe("openai");
-      expect(config.agent.model).toBe("gpt-5.5");
+      expect(config.agent.model).toBe("gpt-5.6-terra");
     });
 
     it("should not override explicit model for non-anthropic providers", () => {
@@ -561,6 +557,15 @@ storage:
 
       // log.warn is pino — we verify the field is removed
       expect((config as any).market).toBeUndefined();
+    });
+
+    it("should migrate the removed 'cocoon' provider to 'gocoon' and carry its port", () => {
+      writeTestConfig(LEGACY_COCOON);
+
+      const config = loadConfig(TEST_CONFIG_PATH);
+
+      expect(config.agent.provider).toBe("gocoon");
+      expect(config.gocoon?.port).toBe(9999);
     });
 
     it("should accept config with extra unknown fields", () => {
@@ -880,7 +885,7 @@ telegram:
       expect(config.webui.enabled).toBe(true);
 
       // Provider auto-model
-      expect(config.agent.model).toBe("gpt-5.5");
+      expect(config.agent.model).toBe("gpt-5.6-terra");
 
       // Path expansion
       expect(config.telegram.session_path).toBe(join(homedir(), "custom"));

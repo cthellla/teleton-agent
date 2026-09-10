@@ -15,9 +15,7 @@ interface MemorySearchParams {
 export const memorySearchTool: Tool = {
   name: "memory_search",
   description:
-    "Search your memory (knowledge chunks, ingested files) using keyword search. " +
-    "Returns the most relevant results with source paths. " +
-    "Use this to recall facts, prior conversations, or ingested documents.",
+    "Search the agent's knowledge base (indexed files, ingested documents) by keyword. Returns relevant chunks with source paths. NOT for recent chat history — use session_search. NOT for structured memory blocks — use memory_read with target='core'.",
   category: "data-bearing",
   parameters: Type.Object({
     query: Type.String({
@@ -41,7 +39,8 @@ export const memorySearchExecutor: ToolExecutor<MemorySearchParams> = async (
     const { query } = params;
     const limit = Math.min(params.limit ?? 5, 20);
 
-    const embedder = getKnowledgeIndexer()?.getEmbedder() ?? null;
+    const knowledge = getKnowledgeIndexer();
+    const embedder = knowledge?.getEmbedder() ?? null;
 
     let queryEmbedding: number[] = [];
     if (embedder) {
@@ -52,9 +51,9 @@ export const memorySearchExecutor: ToolExecutor<MemorySearchParams> = async (
       }
     }
 
-    const vectorEnabled = queryEmbedding.length > 0;
-    const search = new HybridSearch(context.db, vectorEnabled);
-    const results = await search.searchKnowledge(query, queryEmbedding, { limit });
+    const results = knowledge
+      ? await knowledge.search(query, queryEmbedding, limit)
+      : await new HybridSearch(context.db, false).searchKnowledge(query, [], { limit });
 
     if (results.length === 0) {
       return {
