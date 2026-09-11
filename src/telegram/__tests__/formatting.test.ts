@@ -194,6 +194,21 @@ describe("markdownToTelegramHtml", () => {
       expect(markdownToTelegramHtml(tag)).toBe(tag);
     });
 
+    // Code inside a label: code is extracted before tg-time, so the label already
+    // holds a placeholder. The tests above never put code in a label, so the
+    // "never emits a placeholder" sweep did not cover this — found in review.
+    it("leaves a tag whose label contains inline code as text, without leaking", () => {
+      const out = markdownToTelegramHtml('<tg-time unix="1" format="r">see `x`</tg-time>');
+      expect(out).toBe('&lt;tg-time unix="1" format="r"&gt;see <code>x</code>&lt;/tg-time&gt;');
+      expect(out).not.toMatch(/\x00|INLINECODE|DATETIME/);
+    });
+
+    it("leaves a tag whose label contains a code fence as text, without leaking", () => {
+      const out = markdownToTelegramHtml('<tg-time unix="1" format="r">```\ncode\n```</tg-time>');
+      expect(out).toBe('&lt;tg-time unix="1" format="r"&gt;<pre>code</pre>&lt;/tg-time&gt;');
+      expect(out).not.toMatch(/\x00|CODEBLOCK|DATETIME/);
+    });
+
     it("does not treat $-sequences in the label as replacement patterns", () => {
       const out = markdownToTelegramHtml('<tg-time unix="1" format="r">$& cost</tg-time>');
       expect(out).toBe('<tg-time unix="1" format="r">$&amp; cost</tg-time>');

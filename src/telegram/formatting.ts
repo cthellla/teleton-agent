@@ -45,6 +45,10 @@ export function markdownToTelegramHtml(markdown: string): string {
     /<tg-time\s+unix="(\d+)"(?:\s+format="([^"]*)")?\s*>([\s\S]*?)<\/tg-time>/g,
     (match, unix: string, format: string | undefined, label: string) => {
       if (format !== undefined && !/^(r|w?[dD]?[tT]?)$/.test(format)) return match;
+      // Code inside the label was already extracted to a placeholder, and a tg-time
+      // entity cannot contain code anyway. Leave the whole tag as text so the code
+      // restores below put the code back and no placeholder can escape.
+      if (label.includes("\x00")) return match;
       const index = dateTimes.length;
       const attrs = format === undefined ? ` unix="${unix}"` : ` unix="${unix}" format="${format}"`;
       dateTimes.push(`<tg-time${attrs}>${escapeHtml(label)}</tg-time>`);
