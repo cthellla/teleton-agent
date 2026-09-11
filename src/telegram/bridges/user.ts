@@ -33,36 +33,14 @@ import type {
   ChatInfo,
 } from "../bridge-interface.js";
 
+import { hasRichFormatting } from "../rich-detect.js";
+
 export type { TelegramMessage, InlineButton, SendMessageOptions } from "../bridge-interface.js";
 
 const log = createLogger("Telegram");
 
 /** Max time to wait for getSender() before giving up (deleted accounts, timeouts). */
 const SENDER_RESOLVE_TIMEOUT_MS = 5000;
-
-const RICH_FORMATTING_PATTERNS = [
-  /(?:^|\n)\s{0,3}#{1,6}\s+\S/, // heading
-  /(?:^|\n)\s{0,3}(?:>\s*|[-+*]\s+|\d+[.)]\s+)\S/, // quote or list
-  /(?:^|\n)\s{0,3}-\s+\[[ xX]\]\s+\S/, // task list
-  /(?:^|\n)\s{0,3}(?:-{3,}|\*{3,}|_{3,})\s*(?:\n|$)/, // horizontal rule
-  /(?:^|\n)\s*\|?(?:\s*:?-{3,}:?\s*\|){1,}\s*:?-{3,}:?\s*\|?\s*(?:\n|$)/, // table
-  /```[\s\S]*?```|~~~[\s\S]*?~~~/, // fenced code
-  /`[^`\n]+`/, // inline code
-  /!?\[[^\]\n]+\]\([^) \n]+(?:\s+"[^"]*")?\)/, // link or image
-  /<https?:\/\/[^>\s]+>/, // autolink
-  /\*\*\S(?:[\s\S]*?\S)?\*\*/, // bold
-  /(?<![\w_])__(?!_)(?=[^_\n]*\s)[^_\n]*?\S__(?![\w_])/, // underscore bold with spaces
-  /~~\S(?:[\s\S]*?\S)?~~|\|\|\S(?:[\s\S]*?\S)?\|\|/, // strike or spoiler
-  /(?:^|[^\w])\*\S(?:[^*\n]*?\S)?\*(?!\w)/, // italic with asterisks
-  /(?<![\w_])_(?!_)\S(?:[^_\n]*?\S)?_(?![\w_])/, // italic with underscores
-  /\\(?:\(|\[)[\s\S]+?\\(?:\)|\])|\$\$[\s\S]+?\$\$/, // display LaTeX
-  /(?<![$\\])\$(?![$\s])[^$\n]+?(?<![\s\\])\$(?![\w$])/, // inline LaTeX
-  /<\/?(?:a|b|blockquote|code|del|details|em|i|pre|s|strong|sub|summary|sup|tg-spoiler|u)(?:\s[^>]*)?>/i, // supported HTML
-];
-
-function hasRichFormatting(text: string): boolean {
-  return RICH_FORMATTING_PATTERNS.some((pattern) => pattern.test(text));
-}
 
 /**
  * Rich Markdown can be rejected deterministically when the account does not
