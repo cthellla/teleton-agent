@@ -1,4 +1,12 @@
-import { Bot, InlineKeyboard, InputFile, type Context, type MiddlewareFn } from "grammy";
+import {
+  Bot,
+  GrammyError,
+  InlineKeyboard,
+  InputFile,
+  type Context,
+  type MiddlewareFn,
+} from "grammy";
+import type { InlineQueryResultArticle } from "@grammyjs/types";
 import { markdownToTelegramHtml } from "../formatting.js";
 import { sanitizeMarkdownForTelegram } from "../sanitize-markdown.js";
 import { TELEGRAM_MAX_MESSAGE_LENGTH } from "../../constants/limits.js";
@@ -128,10 +136,14 @@ export class GrammyBotBridge implements ITelegramBridge {
   }
 
   /**
-   * Bot API 10.0: reply to a guest invocation. One-shot — same guest_query_id can't
-   * be answered twice. The reply is delivered as an InlineQueryResultArticle whose
-   * input_message_content is the actual message; the article title isn't shown to
-   * the user. grammy 1.41 doesn't type the method, so we go raw.
+   * Bot API 10.0: reply to a guest invocation. One-shot — the same guest_query_id
+   * cannot be answered twice. The reply is delivered as an InlineQueryResultArticle
+   * whose input_message_content is the actual message; the article title is not
+   * shown to the user.
+   *
+   * NOTE: the markdown is truncated at the Telegram limit *before* HTML conversion,
+   * so an expanded result can still exceed it. Pre-existing behaviour, tracked in
+   * teletonhnplugin#16 — deliberately unchanged here.
    */
   async answerGuestQuery(guestQueryId: string, text: string): Promise<void> {
     const safeMd = sanitizeMarkdownForTelegram(text);
@@ -141,7 +153,7 @@ export class GrammyBotBridge implements ITelegramBridge {
         : safeMd;
     const html = markdownToTelegramHtml(truncated);
 
-    const buildResult = (parseMode: "HTML" | undefined): Record<string, unknown> => ({
+    const buildResult = (parseMode: "HTML" | undefined): InlineQueryResultArticle => ({
       type: "article",
       id: guestQueryId.slice(0, 64),
       title: "Reply",
@@ -154,29 +166,35 @@ export class GrammyBotBridge implements ITelegramBridge {
       },
     });
 
-    const send = async (parseMode: "HTML" | undefined): Promise<Response> =>
-      fetch(`https://api.telegram.org/bot${this.bot.token}/answerGuestQuery`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          guest_query_id: guestQueryId,
-          result: buildResult(parseMode),
-        }),
-      });
+    // GrammyError carries an enumerable `payload` holding the whole request —
+    // for this method that is the user's entire answer text. Callers log errors
+    // with pino's serializer, which would dump it. Rethrow narrowly instead,
+    // keeping the diagnostic bits and no message body (and no URL, which embeds
+    // the bot token).
+    const narrow = (error: unknown): Error =>
+      error instanceof GrammyError
+        ? new Error(`answerGuestQuery failed (${error.error_code}): ${error.description}`)
+        : error instanceof Error
+          ? error
+          : new Error(String(error));
 
-    const res = await send("HTML");
-    if (res.ok) return;
-
-    const body = await res.text().catch(() => "");
-    if (res.status === 400 && body.includes("can't parse entities")) {
-      log.warn(`answerGuestQuery HTML rejected, retrying as plain text: ${body}`);
-      const retry = await send(undefined);
-      if (retry.ok) return;
-      const retryBody = await retry.text().catch(() => "");
-      throw new Error(`answerGuestQuery ${retry.status}: ${retryBody}`);
+    try {
+      await this.bot.api.answerGuestQuery(guestQueryId, buildResult("HTML"));
+    } catch (error) {
+      // Same fallback as before: a model-produced entity Telegram refuses to parse
+      // must not cost the user their answer — resend it unformatted.
+      const description = error instanceof GrammyError ? error.description : "";
+      if (description.includes("can't parse entities")) {
+        log.warn(`answerGuestQuery HTML rejected, retrying as plain text: ${description}`);
+        try {
+          await this.bot.api.answerGuestQuery(guestQueryId, buildResult(undefined));
+        } catch (retryError) {
+          throw narrow(retryError);
+        }
+        return;
+      }
+      throw narrow(error);
     }
-    // Don't include the URL (contains the bot token) in the thrown error.
-    throw new Error(`answerGuestQuery ${res.status}: ${body}`);
   }
 
   getBot(): Bot {
