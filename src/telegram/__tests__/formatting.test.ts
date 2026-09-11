@@ -91,4 +91,63 @@ describe("markdownToTelegramHtml", () => {
     expect(result).toContain("&amp;");
     expect(result).toContain("&gt;");
   });
+
+  // ─── <tg-time> passthrough (date_time entity, Bot API 9.5) ───────────────
+  describe("tg-time passthrough", () => {
+    it("carries a valid tag through unescaped", () => {
+      const out = markdownToTelegramHtml(
+        'Posted <tg-time unix="1647531900" format="r">4h ago</tg-time>'
+      );
+      expect(out).toBe('Posted <tg-time unix="1647531900" format="r">4h ago</tg-time>');
+    });
+
+    it("accepts a tag without a format", () => {
+      const out = markdownToTelegramHtml('<tg-time unix="1647531900">22:45</tg-time>');
+      expect(out).toBe('<tg-time unix="1647531900">22:45</tg-time>');
+    });
+
+    it("accepts every control character the spec allows", () => {
+      for (const format of ["r", "w", "d", "D", "t", "T", "wDT", "wdt", ""]) {
+        const tag = `<tg-time unix="1" format="${format}">x</tg-time>`;
+        expect(markdownToTelegramHtml(tag)).toContain("<tg-time");
+      }
+    });
+
+    it("escapes a tag whose format violates r|w?[dD]?[tT]?", () => {
+      // "r" cannot be combined, and "zz" is not a control character at all.
+      for (const format of ["zz", "rt", "rw", "tw"]) {
+        const out = markdownToTelegramHtml(`<tg-time unix="1" format="${format}">x</tg-time>`);
+        expect(out).toContain("&lt;tg-time");
+        expect(out).not.toContain("<tg-time");
+      }
+    });
+
+    it("escapes a tag whose unix is not digits", () => {
+      const out = markdownToTelegramHtml('<tg-time unix="abc" format="r">x</tg-time>');
+      expect(out).toContain("&lt;tg-time");
+      expect(out).not.toContain("<tg-time");
+    });
+
+    // Model output reaches this converter, so the passthrough must not become a
+    // general HTML hole.
+    it("escapes markup nested inside the label", () => {
+      const out = markdownToTelegramHtml(
+        '<tg-time unix="1" format="r"><b onclick=x>evil</b></tg-time>'
+      );
+      expect(out).toContain('<tg-time unix="1" format="r">');
+      expect(out).toContain("&lt;b onclick=x&gt;evil&lt;/b&gt;");
+      expect(out).not.toContain("<b onclick");
+    });
+
+    it("still escapes every other tag", () => {
+      expect(markdownToTelegramHtml("<script>alert(1)</script>")).toBe(
+        "&lt;script&gt;alert(1)&lt;/script&gt;"
+      );
+    });
+
+    it("does not treat $-sequences in the label as replacement patterns", () => {
+      const out = markdownToTelegramHtml('<tg-time unix="1" format="r">$& cost</tg-time>');
+      expect(out).toBe('<tg-time unix="1" format="r">$&amp; cost</tg-time>');
+    });
+  });
 });

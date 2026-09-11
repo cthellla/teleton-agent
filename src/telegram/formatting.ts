@@ -16,6 +16,24 @@ export function markdownToTelegramHtml(markdown: string): string {
   const codeBlocks: string[] = [];
   const inlineCodes: string[] = [];
   const blockquotes: string[] = [];
+  const dateTimes: string[] = [];
+
+  // Carry <tg-time> through unescaped so Telegram renders the timestamp in each
+  // reader's own timezone. Everything else stays escaped: model output reaches
+  // this function, so an unrestricted passthrough would be an HTML injection
+  // hole. Attributes are validated against the Bot API spec — unix must be
+  // digits and format must match r|w?[dD]?[tT]? — and anything failing that is
+  // left alone to be escaped as ordinary text.
+  html = html.replace(
+    /<tg-time\s+unix="(\d+)"(?:\s+format="([^"]*)")?\s*>([\s\S]*?)<\/tg-time>/g,
+    (match, unix: string, format: string | undefined, label: string) => {
+      if (format !== undefined && !/^(r|w?[dD]?[tT]?)$/.test(format)) return match;
+      const index = dateTimes.length;
+      const attrs = format ? ` unix="${unix}" format="${format}"` : ` unix="${unix}"`;
+      dateTimes.push(`<tg-time${attrs}>${escapeHtml(label)}</tg-time>`);
+      return `\x00DATETIME${index}\x00`;
+    }
+  );
 
   html = html.replace(/```(\w*)\n?([\s\S]*?)```/g, (_match, lang, code) => {
     const index = codeBlocks.length;
@@ -89,6 +107,13 @@ export function markdownToTelegramHtml(markdown: string): string {
     /\[([^\]]+)\]\(([^)]+)\)/g,
     (_, text, url) => `<a href="${sanitizeUrl(url)}">${text}</a>`
   );
+
+  dateTimes.forEach((tag, index) => {
+    // Function form: a string replacement would treat $& / $1 in the payload as
+    // substitution patterns. The other restores below still have that bug —
+    // tracked as bug 4 in teletonhnplugin#16.
+    html = html.replace(`\x00DATETIME${index}\x00`, () => tag);
+  });
 
   blockquotes.forEach((quote, index) => {
     html = html.replace(`\x00BLOCKQUOTE${index}\x00`, quote);
