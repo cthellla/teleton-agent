@@ -231,7 +231,8 @@ describe("placeholder restore", () => {
     ["inline code", "цена `$& и $1` в строке"],
     ["dollar-quote", '```sh\necho "$\'"\n```'],
     ["dollar-backtick", '```sh\necho "$`"\n```'],
-    ["blockquote", "> цитата с `$&` внутри"],
+    ["blockquote with code", "> цитата с `$&` внутри"],
+    ["blockquote plain text", "> цена $& рублей за $1 запрос"],
   ])("does not corrupt %s", (_case, markdown) => {
     const html = markdownToTelegramHtml(markdown);
 
