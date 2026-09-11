@@ -166,6 +166,18 @@ export class GrammyBotBridge implements ITelegramBridge {
       },
     });
 
+    // GrammyError carries an enumerable `payload` holding the whole request —
+    // for this method that is the user's entire answer text. Callers log errors
+    // with pino's serializer, which would dump it. Rethrow narrowly instead,
+    // keeping the diagnostic bits and no message body (and no URL, which embeds
+    // the bot token).
+    const narrow = (error: unknown): Error =>
+      error instanceof GrammyError
+        ? new Error(`answerGuestQuery failed (${error.error_code}): ${error.description}`)
+        : error instanceof Error
+          ? error
+          : new Error(String(error));
+
     try {
       await this.bot.api.answerGuestQuery(guestQueryId, buildResult("HTML"));
     } catch (error) {
@@ -174,10 +186,14 @@ export class GrammyBotBridge implements ITelegramBridge {
       const description = error instanceof GrammyError ? error.description : "";
       if (description.includes("can't parse entities")) {
         log.warn(`answerGuestQuery HTML rejected, retrying as plain text: ${description}`);
-        await this.bot.api.answerGuestQuery(guestQueryId, buildResult(undefined));
+        try {
+          await this.bot.api.answerGuestQuery(guestQueryId, buildResult(undefined));
+        } catch (retryError) {
+          throw narrow(retryError);
+        }
         return;
       }
-      throw error;
+      throw narrow(error);
     }
   }
 
