@@ -663,8 +663,11 @@ export interface TelegramSDK {
   /**
    * Get current Telegram Stars balance.
    *
-   * @returns Stars balance
-   * @throws {PluginSDKError} BRIDGE_NOT_CONNECTED, OPERATION_FAILED
+   * Works in both modes: bot mode uses the Bot API `getMyStarBalance`,
+   * user mode uses MTProto `payments.GetStarsStatus`.
+   *
+   * @returns Stars balance as a plain number (not an object)
+   * @throws {PluginSDKError} BRIDGE_NOT_CONNECTED, NOT_AVAILABLE, OPERATION_FAILED
    */
   getStarsBalance(): Promise<number>;
 

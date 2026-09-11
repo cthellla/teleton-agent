@@ -19,6 +19,8 @@ import type {
   GiftOfferOptions,
 } from "@teleton-agent/sdk";
 import { PluginSDKError } from "@teleton-agent/sdk";
+import { isBotBridge } from "../telegram/bridge-guards.js";
+import { getErrorMessage } from "../utils/errors.js";
 import { randomLong, toLong } from "../utils/gramjs-bigint.js";
 import { resolveTelegramMessageText } from "../telegram/rich-message.js";
 import { getApi, toSimpleMessageWithText } from "./telegram-utils.js";
@@ -429,6 +431,27 @@ export function createTelegramSocialSDK(
     // ─── Stars & Gifts ────────────────────────────────────────
 
     async getStarsBalance(): Promise<number> {
+      // Bot mode has no MTProto client, so the user-mode payments.GetStarsStatus
+      // call below can never run there. Bot API 9.1 added getMyStarBalance for
+      // exactly this; without it the balance silently read as unavailable in the
+      // only mode we actually run in.
+      // Branch on the bridge itself, not on telegramMode: the mode argument can
+      // override what the bridge actually is, and only the bridge knows whether
+      // getBot() exists. A user bridge falls through to userOp below, which
+      // raises NOT_AVAILABLE through requireUserMode as before.
+      if (isBotBridge(bridge)) {
+        requireBridge();
+        try {
+          const { amount } = await bridge.getBot().api.getMyStarBalance();
+          return amount;
+        } catch (error) {
+          throw new PluginSDKError(
+            `Failed to get stars balance: ${getErrorMessage(error)}`,
+            "OPERATION_FAILED"
+          );
+        }
+      }
+
       return userOp("getStarsBalance", "get stars balance", async ({ client, Api }) => {
         const result = await client.invoke(
           new Api.payments.GetStarsStatus({
