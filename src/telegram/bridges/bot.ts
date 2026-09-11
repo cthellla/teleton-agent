@@ -312,10 +312,29 @@ export class GrammyBotBridge implements ITelegramBridge {
    * a different markup, and the paywall's callback buttons must keep working.
    */
   private shouldSendRich(chatId: string, text: string, hasKeyboard: boolean): boolean {
-    if (this.richMessages === "off" || hasKeyboard) return false;
-    if (this.richMessages === "dm" && this.toChatId(chatId) < 0) return false;
+    if (hasKeyboard || !this.richChat(chatId)) return false;
     if (text.length > RICH_MESSAGE_MAX_LENGTH) return false;
     return hasRichFormatting(text);
+  }
+
+  /** Whether this chat may receive rich messages at all, ignoring the text. */
+  private richChat(chatId: string): boolean {
+    if (this.richMessages === "off") return false;
+    if (this.richMessages === "all") return true;
+    // Private chats have positive numeric ids; "@channel" is not a DM.
+    const numeric = Number(chatId);
+    return Number.isFinite(numeric) && numeric > 0;
+  }
+
+  /**
+   * Longest reply this bridge can deliver to the chat in one message. The caller
+   * splits on it, and the two formats differ by 8x, so assuming the classic
+   * limit would chop rich replies through the middle of a table.
+   */
+  outboundTextLimit(chatId: string, text: string): number {
+    return this.shouldSendRich(chatId, text, false)
+      ? RICH_MESSAGE_MAX_LENGTH
+      : TELEGRAM_MAX_MESSAGE_LENGTH;
   }
 
   /**
@@ -497,11 +516,10 @@ export class GrammyBotBridge implements ITelegramBridge {
     let lastDraftTime = 0;
     const THROTTLE_MS = 300;
     const numericChatId = this.toChatId(chatId);
-    const richChat =
-      this.richMessages === "all" || (this.richMessages === "dm" && numericChatId > 0);
+    const richChat = this.richChat(chatId);
     // Leave headroom for HTML expansion from markdownToTelegramHtml
-    const SPLIT_THRESHOLD =
-      (richChat ? RICH_MESSAGE_MAX_LENGTH : TELEGRAM_MAX_MESSAGE_LENGTH) - 300;
+    const HTML_THRESHOLD = TELEGRAM_MAX_MESSAGE_LENGTH - 300;
+    const RICH_THRESHOLD = RICH_MESSAGE_MAX_LENGTH - 300;
 
     for await (const chunk of textStream) {
       fullText += chunk;
@@ -509,9 +527,12 @@ export class GrammyBotBridge implements ITelegramBridge {
       if (fullText.trim() === "__SILENT__" || fullText.trim() === "NO_ACTION") continue;
 
       // Auto-split: when accumulated text nears the limit, flush as real message
+      // The draft goes out in one of two formats and each has its own cap:
+      // sendMessageDraft rejects anything past 4096, a rich draft past 32768.
       const rich = richChat && hasRichFormatting(fullText);
       const html = rich ? "" : markdownToTelegramHtml(fullText);
-      if ((rich ? fullText.length : html.length) >= SPLIT_THRESHOLD) {
+      const rendered = rich ? fullText.length : html.length;
+      if (rendered >= (rich ? RICH_THRESHOLD : HTML_THRESHOLD)) {
         // Clear draft bubble and send as real message
         try {
           await this.bot.api.sendMessageDraft(numericChatId, draftId, " ");

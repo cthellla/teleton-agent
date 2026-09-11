@@ -173,6 +173,13 @@ export interface ITelegramBridge {
   // Messages
   getMessages(chatId: string, limit: number): Promise<TelegramMessage[]>;
   sendMessage(options: SendMessageOptions): Promise<SentMessage>;
+
+  /**
+   * Longest text the bridge can deliver in one message, given the format it
+   * would send this particular text as. Callers that split long replies should
+   * ask instead of assuming the classic 4096-character limit.
+   */
+  outboundTextLimit?(chatId: string, text: string): number;
   editMessage(options: EditMessageOptions): Promise<SentMessage>;
   deleteMessage(chatId: string, messageId: number): Promise<boolean>;
   forwardMessage(fromChatId: string, toChatId: string, messageId: number): Promise<SentMessage>;

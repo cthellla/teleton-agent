@@ -43,8 +43,17 @@ export function hasRichFormatting(text: string): boolean {
  * model does not own. Callback buttons stay the caller's job (`inlineKeyboard`).
  */
 const INTERACTIVE_RICH_MARKUP =
-  /<\/?tg-button(?:-row)?(?:\s[^>]*)?>|tg:\/\/(?:photo|video|audio|document)\?id=[^\s")]*/gi;
+  /<\/?tg-(?:button-row|button|collage|slideshow|document|map|emoji|thinking)(?:\s[^>]*)?>|tg:\/\/(?:photo|video|audio|document)\?id=[^\s")]*/gi;
 
 export function stripInteractiveRichMarkup(text: string): string {
-  return text.replace(INTERACTIVE_RICH_MARKUP, "");
+  // One pass is not enough: removing the inner tag of a nested pair splices the
+  // outer halves back into a working tag, so
+  // `<tg-<tg-button>button data="pack_1">Buy</...>` would come out as a real
+  // button. Each pass can only shorten the text, so this terminates.
+  let stripped = text;
+  for (let previous = ""; previous !== stripped; ) {
+    previous = stripped;
+    stripped = stripped.replace(INTERACTIVE_RICH_MARKUP, "");
+  }
+  return stripped;
 }

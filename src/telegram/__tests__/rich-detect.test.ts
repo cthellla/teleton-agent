@@ -47,6 +47,25 @@ describe("stripInteractiveRichMarkup", () => {
     );
   });
 
+  // A single pass splices the outer halves of a nested pair back together, which
+  // is how an answer steered by a hostile page could rebuild a payment button.
+  it("does not let a nested pair rebuild a working button", () => {
+    const nested =
+      '<tg-<tg-button>button type="callback_data" data="stars_pack_30">Купить</</tg-button>tg-button>';
+    const stripped = stripInteractiveRichMarkup(nested);
+    expect(stripped).not.toMatch(/<\/?tg-button/i);
+    expect(stripped).toBe("Купить");
+  });
+
+  it.each(["document", "map", "collage", "slideshow", "thinking", "emoji"])(
+    "removes <tg-%s> too",
+    (tag) => {
+      expect(stripInteractiveRichMarkup(`до <tg-${tag} id="x">текст</tg-${tag}> после`)).toBe(
+        "до текст после"
+      );
+    }
+  );
+
   it("keeps ordinary markdown and links untouched", () => {
     const text = "## Заголовок\n\n| a | b |\n|---|---|\n| 1 | [ссылка](https://t.me/) |";
     expect(stripInteractiveRichMarkup(text)).toBe(text);

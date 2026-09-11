@@ -35,8 +35,9 @@ describe("GrammyBotBridge rich messages", () => {
   it("sends a formatted DM reply as a rich message", async () => {
     const { bridge, sendRichMessage, sendMessage } = bridgeWith("dm");
 
-    await expect(bridge.sendMessage({ chatId: DM, text: TABLE_REPLY, replyToId: 11 })).resolves
-      .toMatchObject({ id: 42, chatId: DM });
+    await expect(
+      bridge.sendMessage({ chatId: DM, text: TABLE_REPLY, replyToId: 11 })
+    ).resolves.toMatchObject({ id: 42, chatId: DM });
 
     expect(sendMessage).not.toHaveBeenCalled();
     expect(sendRichMessage).toHaveBeenCalledWith(
@@ -137,5 +138,63 @@ describe("GrammyBotBridge rich messages", () => {
 
     expect(sendRichMessage).not.toHaveBeenCalled();
     expect(sendMessage).toHaveBeenCalled();
+  });
+});
+
+describe("GrammyBotBridge rich drafts and limits", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const streamOf = async function* (...chunks: string[]) {
+    for (const chunk of chunks) yield chunk;
+  };
+
+  it("streams a formatted reply as a rich draft", async () => {
+    const bridge = new GrammyBotBridge({ bot_token: "123:test", rich_messages: "dm" });
+    const richDraft = vi
+      .spyOn(bridge.getBot().api, "sendRichMessageDraft")
+      .mockResolvedValue(true as never);
+    const htmlDraft = vi
+      .spyOn(bridge.getBot().api, "sendMessageDraft")
+      .mockResolvedValue(true as never);
+
+    await bridge.streamDraft(DM, streamOf(TABLE_REPLY));
+
+    expect(richDraft).toHaveBeenCalled();
+    expect(richDraft.mock.calls[0][2]).toEqual({ markdown: TABLE_REPLY });
+    expect(htmlDraft).not.toHaveBeenCalled();
+  });
+
+  // The chat allows rich, but plain text streams as a classic draft, and those
+  // are capped at 4096 — a threshold taken from the chat type would let the
+  // draft grow to 32768 and every update would fail with 400.
+  it("flushes a plain draft at the classic limit even in a rich chat", async () => {
+    const bridge = new GrammyBotBridge({ bot_token: "123:test", rich_messages: "dm" });
+    vi.spyOn(bridge.getBot().api, "sendMessageDraft").mockResolvedValue(true as never);
+    const sendMessage = vi
+      .spyOn(bridge.getBot().api, "sendMessage")
+      .mockResolvedValue(sentMessage(7) as never);
+
+    const remainder = await bridge.streamDraft(DM, streamOf("я".repeat(5000)));
+
+    // The flush itself may split again: what matters is that it happened at all,
+    // instead of the draft growing to the rich limit in a classic-draft chat.
+    expect(sendMessage).toHaveBeenCalled();
+    expect(remainder).toBe("");
+  });
+
+  it("reports the limit of the format it will actually use", () => {
+    const bridge = new GrammyBotBridge({ bot_token: "123:test", rich_messages: "dm" });
+
+    expect(bridge.outboundTextLimit(DM, TABLE_REPLY)).toBe(32768);
+    expect(bridge.outboundTextLimit(DM, "обычный ответ без разметки")).toBe(4096);
+    expect(bridge.outboundTextLimit(GROUP, TABLE_REPLY)).toBe(4096);
+  });
+
+  it("does not treat a username chat id as a private chat", () => {
+    const bridge = new GrammyBotBridge({ bot_token: "123:test", rich_messages: "dm" });
+
+    expect(bridge.outboundTextLimit("@hackernws", TABLE_REPLY)).toBe(4096);
   });
 });
