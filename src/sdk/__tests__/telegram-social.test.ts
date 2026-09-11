@@ -759,6 +759,36 @@ describe("createTelegramSocialSDK", () => {
         code: "OPERATION_FAILED",
       });
     });
+
+    // Bot mode has no MTProto client, so it must go through the Bot API instead
+    // of falling into the user-only path (which would always fail, and used to).
+    describe("bot mode", () => {
+      function botSdkWith(getMyStarBalance: () => Promise<{ amount: number }>) {
+        const botBridge = {
+          ...mockBridge,
+          getMode: vi.fn(() => "bot"),
+          getBot: vi.fn(() => ({ api: { getMyStarBalance } })),
+        } as unknown as Parameters<typeof createTelegramSocialSDK>[0];
+        return { sdk: createTelegramSocialSDK(botBridge, mockLog, "bot"), botBridge };
+      }
+
+      it("reads the balance through getMyStarBalance", async () => {
+        const { sdk: botSdk } = botSdkWith(async () => ({ amount: 30 }));
+
+        await expect(botSdk.getStarsBalance()).resolves.toBe(30);
+        expect(mockGramJsClient.invoke).not.toHaveBeenCalled();
+      });
+
+      it("wraps Bot API failures as OPERATION_FAILED", async () => {
+        const { sdk: botSdk } = botSdkWith(async () => {
+          throw new Error("boom");
+        });
+
+        await expect(botSdk.getStarsBalance()).rejects.toMatchObject({
+          code: "OPERATION_FAILED",
+        });
+      });
+    });
   });
 
   // ─── sendGift ───────────────────────────────────────────────
