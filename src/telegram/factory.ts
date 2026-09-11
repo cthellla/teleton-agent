@@ -15,6 +15,7 @@ export function createBridge(config: Config): ITelegramBridge {
   if (config.telegram.mode === "bot") {
     return new GrammyBotBridge({
       bot_token: config.telegram.bot_token!,
+      rich_messages: config.telegram.rich_messages,
     });
   }
 

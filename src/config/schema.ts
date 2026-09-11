@@ -141,6 +141,12 @@ export const TelegramConfigSchema = z
       .describe(
         "Bot streaming mode: replace=each iteration replaces draft (default), all=concatenate all iterations, off=no streaming"
       ),
+    rich_messages: z
+      .enum(["off", "dm", "all"])
+      .default("off")
+      .describe(
+        "Send replies as Rich Messages (headings, tables, italics) instead of the Telegram HTML subset: off=never, dm=private chats only, all=every chat. Falls back to HTML when Telegram rejects the rich message"
+      ),
     guest_mode: z
       .boolean()
       .default(false)

@@ -84,6 +84,7 @@ export function buildConfig(input: BuildConfigInput): Config {
       bot_token: input.botToken,
       bot_username: input.botUsername,
       stream_mode: "all",
+      rich_messages: "off",
       guest_mode: false,
       bot_to_bot: false,
     },

@@ -706,7 +706,12 @@ export class MessageHandler {
             // Sanitize markdown (fix unclosed fences, remove empty code blocks) then
             // split into Telegram-safe parts (≤ max_message_length chars each).
             const sanitized = sanitizeMarkdownForTelegram(response.content);
-            const parts = splitMessageForTelegram(sanitized, this.config.max_message_length);
+            // Rich Messages hold 32768 characters and the classic path 4096, so
+            // ask the bridge what it will send this as instead of assuming.
+            const limit =
+              this.bridge.outboundTextLimit?.(message.chatId, sanitized) ??
+              this.config.max_message_length;
+            const parts = splitMessageForTelegram(sanitized, limit);
 
             if (parts.length > 1) {
               log.info(

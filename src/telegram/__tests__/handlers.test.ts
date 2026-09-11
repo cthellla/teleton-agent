@@ -818,6 +818,38 @@ describe("MessageHandler", () => {
       expect(sentText.endsWith("...")).toBe(true);
     });
 
+    // The bridge picks the format and therefore the limit: a rich reply holds 8x
+    // more than the classic one. Splitting on the configured 4096 regardless
+    // would chop a table through the middle.
+    it("splits on the limit the bridge reports", async () => {
+      const agent = makeAgent();
+      agent.processMessage.mockResolvedValue({
+        content: "Абзац про Hacker News.\n\n".repeat(300),
+        toolCalls: [],
+      });
+      const bridge = makeBridge();
+      bridge.outboundTextLimit = vi.fn().mockReturnValue(32_768);
+
+      const { handler } = createHandler({ dm_policy: "open" }, { agent, bridge });
+      await handler.handleMessage(makeMessage({ id: 301 }));
+
+      expect(bridge.outboundTextLimit).toHaveBeenCalled();
+      expect(bridge.sendMessage).toHaveBeenCalledTimes(1);
+    });
+
+    it("falls back to the configured limit when the bridge reports none", async () => {
+      const agent = makeAgent();
+      agent.processMessage.mockResolvedValue({
+        content: "Абзац про Hacker News.\n\n".repeat(300),
+        toolCalls: [],
+      });
+
+      const { handler, bridge } = createHandler({ dm_policy: "open" }, { agent });
+      await handler.handleMessage(makeMessage({ id: 302 }));
+
+      expect(bridge.sendMessage.mock.calls.length).toBeGreaterThan(1);
+    });
+
     it("writes offset after successful processing", async () => {
       const { handler } = createHandler({ dm_policy: "open" });
       await handler.handleMessage(makeMessage({ id: 101, chatId: "chat1" }));

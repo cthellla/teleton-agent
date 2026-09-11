@@ -8,6 +8,14 @@ import {
 } from "grammy";
 import type { InlineQueryResultArticle } from "@grammyjs/types";
 import { markdownToTelegramHtml } from "../formatting.js";
+import {
+  RICH_MESSAGE_MAX_BYTES,
+  hasRichFormatting,
+  richMessageBytes,
+  richMessageFits,
+  stripInteractiveRichMarkup,
+} from "../rich-detect.js";
+import { splitMessageForTelegram } from "../message-splitter.js";
 import { sanitizeMarkdownForTelegram } from "../sanitize-markdown.js";
 import { TELEGRAM_MAX_MESSAGE_LENGTH } from "../../constants/limits.js";
 import { classifyMedia } from "../bridge-interface.js";
@@ -31,7 +39,11 @@ const log = createLogger("BotBridge");
 
 interface GrammyBotBridgeConfig {
   bot_token: string;
+  /** Fork-only: send replies as Rich Messages where Telegram supports them. */
+  rich_messages?: RichMessageMode;
 }
+
+type RichMessageMode = "off" | "dm" | "all";
 
 type GrammyMessage = NonNullable<Context["message"]>;
 
@@ -47,6 +59,50 @@ const ALLOWED_UPDATES = [
   "inline_query",
   "chosen_inline_result",
 ] as const;
+
+const FENCE_LINE = /^[ \t]*(?:```|~~~)[^\n]*$/gm;
+
+/**
+ * Close a code fence left open at the end of a part and reopen it in the next,
+ * so every part converts to valid HTML on its own. Without this, a fence longer
+ * than the budget is cut in the middle and the user sees raw backticks.
+ */
+function reopenFences(parts: string[]): string[] {
+  const balanced: string[] = [];
+  let carry = "";
+
+  for (const part of parts) {
+    let text = carry ? `${carry}\n${part}` : part;
+    const fences = text.match(FENCE_LINE) ?? [];
+    if (fences.length % 2 === 1) {
+      const opener = fences[fences.length - 1].trim();
+      carry = opener;
+      text = `${text}\n${opener.slice(0, 3)}`;
+    } else {
+      carry = "";
+    }
+    balanced.push(text);
+  }
+
+  return balanced;
+}
+
+/** Split markdown at the last line or word boundary before the budget. */
+function splitMarkdownAt(text: string, budget: number): string[] {
+  const parts: string[] = [];
+  let remaining = text;
+
+  while (remaining.length > budget) {
+    let cut = remaining.lastIndexOf("\n", budget);
+    if (cut < budget * 0.3) cut = remaining.lastIndexOf(" ", budget);
+    if (cut < budget * 0.3) cut = budget;
+    parts.push(remaining.slice(0, cut));
+    remaining = remaining.slice(cut).replace(/^[ \t]+/, "");
+  }
+  if (remaining.length > 0) parts.push(remaining);
+
+  return parts;
+}
 
 export class GrammyBotBridge implements ITelegramBridge {
   private bot: Bot;
@@ -72,9 +128,11 @@ export class GrammyBotBridge implements ITelegramBridge {
       ) => Promise<boolean>)
     | undefined;
   private activeDraftIds: Map<string, number> = new Map();
+  private readonly richMessages: RichMessageMode;
 
   constructor(config: GrammyBotBridgeConfig) {
     this.bot = new Bot(config.bot_token);
+    this.richMessages = config.rich_messages ?? "off";
 
     this.bot.catch((err) => {
       log.error({ err }, "Grammy bot error");
@@ -227,11 +285,18 @@ export class GrammyBotBridge implements ITelegramBridge {
       ? this.toGrammyKeyboard(options.inlineKeyboard)
       : undefined;
 
+    if (this.shouldSendRich(options.chatId, options.text, replyMarkup !== undefined)) {
+      const sent = await this.sendRichMessage(options);
+      if (sent) return sent;
+    }
+
     const html = markdownToTelegramHtml(options.text);
 
-    // Auto-split: if HTML exceeds Telegram limit, send in chunks
+    // Auto-split: if HTML exceeds Telegram limit, send in chunks. The markdown
+    // is split, not the HTML — cutting converted HTML leaves one part with an
+    // unclosed tag and the other with an orphan closer, and Telegram 400s both.
     if (html.length > TELEGRAM_MAX_MESSAGE_LENGTH) {
-      return this.sendLongMessage(options.chatId, html, options.replyToId, replyMarkup);
+      return this.sendLongMessage(options.chatId, options.text, options.replyToId, replyMarkup);
     }
 
     const result = await this.bot.api.sendMessage(this.toChatId(options.chatId), html, {
@@ -247,40 +312,20 @@ export class GrammyBotBridge implements ITelegramBridge {
     };
   }
 
-  /** Split and send HTML that exceeds the Telegram message limit */
+  /** Split markdown that would exceed the Telegram message limit, then send each part. */
   private async sendLongMessage(
     chatId: string,
-    html: string,
+    markdown: string,
     replyToId?: number,
     replyMarkup?: InlineKeyboard
   ): Promise<SentMessage> {
-    const chunks: string[] = [];
-    let remaining = html;
-
-    while (remaining.length > TELEGRAM_MAX_MESSAGE_LENGTH) {
-      // Find a split point: prefer double newline, then single newline, then space
-      let splitAt = remaining.lastIndexOf("\n\n", TELEGRAM_MAX_MESSAGE_LENGTH);
-      if (splitAt < TELEGRAM_MAX_MESSAGE_LENGTH * 0.3) {
-        splitAt = remaining.lastIndexOf("\n", TELEGRAM_MAX_MESSAGE_LENGTH);
-      }
-      if (splitAt < TELEGRAM_MAX_MESSAGE_LENGTH * 0.3) {
-        splitAt = remaining.lastIndexOf(" ", TELEGRAM_MAX_MESSAGE_LENGTH);
-      }
-      if (splitAt < TELEGRAM_MAX_MESSAGE_LENGTH * 0.3) {
-        splitAt = TELEGRAM_MAX_MESSAGE_LENGTH; // hard cut as last resort
-      }
-      chunks.push(remaining.slice(0, splitAt));
-      remaining = remaining.slice(splitAt).trimStart();
-    }
-    if (remaining.length > 0) chunks.push(remaining);
-
+    const chunks = this.splitForHtml(markdown);
     let lastResult: SentMessage = { id: 0, date: Math.floor(Date.now() / 1000), chatId };
 
     for (let i = 0; i < chunks.length; i++) {
       const isFirst = i === 0;
       const isLast = i === chunks.length - 1;
-      const result = await this.bot.api.sendMessage(this.toChatId(chatId), chunks[i], {
-        parse_mode: "HTML",
+      const result = await this.sendPart(chatId, chunks[i], {
         reply_to_message_id: isFirst ? replyToId : undefined,
         reply_markup: isLast ? replyMarkup : undefined,
       });
@@ -288,6 +333,125 @@ export class GrammyBotBridge implements ITelegramBridge {
     }
 
     return lastResult;
+  }
+
+  /**
+   * Send one converted part, and if Telegram rejects the markup, send the same
+   * part as plain text. Losing the formatting beats losing the reply, which is
+   * what happened before: a 400 on one part threw and the rest never went out.
+   */
+  private async sendPart(
+    chatId: string,
+    html: string,
+    other: { reply_to_message_id?: number; reply_markup?: InlineKeyboard }
+  ) {
+    try {
+      return await this.bot.api.sendMessage(this.toChatId(chatId), html, {
+        parse_mode: "HTML",
+        ...other,
+      });
+    } catch (error) {
+      if (!(error instanceof GrammyError) || error.error_code !== 400) throw error;
+      log.warn(`Telegram rejected a message part (${error.description}), retrying as plain text`);
+      const plain = html.replace(/<[^>]+>/g, "").slice(0, TELEGRAM_MAX_MESSAGE_LENGTH);
+      return await this.bot.api.sendMessage(this.toChatId(chatId), plain, other);
+    }
+  }
+
+  /**
+   * Split markdown into parts whose *converted* HTML fits the limit.
+   *
+   * A fixed markdown budget cannot work: escaping turns one "<" into "&lt;" and
+   * one "&" into "&amp;", so a part full of angle brackets grows past the limit
+   * after conversion, and cutting the HTML instead leaves one part with an
+   * unclosed tag and the next with an orphan closer — Telegram 400s both. Each
+   * part is measured after conversion and re-split when it does not fit.
+   */
+  private splitForHtml(markdown: string): string[] {
+    return reopenFences(splitMessageForTelegram(markdown, TELEGRAM_MAX_MESSAGE_LENGTH)).flatMap(
+      (part) => this.fitPart(part, 0)
+    );
+  }
+
+  private fitPart(part: string, depth: number): string[] {
+    const html = markdownToTelegramHtml(part);
+    if (html.length <= TELEGRAM_MAX_MESSAGE_LENGTH || depth >= 8) return [html];
+
+    // Budget from what this text actually expands to, with room to spare.
+    const ratio = html.length / Math.max(1, part.length);
+    const budget = Math.max(256, Math.floor((TELEGRAM_MAX_MESSAGE_LENGTH * 0.85) / ratio));
+    const pieces = reopenFences(splitMarkdownAt(part, budget));
+    if (pieces.length < 2) return [html];
+    return pieces.flatMap((piece) => this.fitPart(piece, depth + 1));
+  }
+
+  /**
+   * Rich Messages render the headings, tables and italics that the HTML subset
+   * silently drops. Inline keyboards stay on the classic path: rich buttons are
+   * a different markup, and the paywall's callback buttons must keep working.
+   */
+  private shouldSendRich(chatId: string, text: string, hasKeyboard: boolean): boolean {
+    if (hasKeyboard || !this.richChat(chatId)) return false;
+    if (!richMessageFits(text)) return false;
+    return hasRichFormatting(text);
+  }
+
+  /** Whether this chat may receive rich messages at all, ignoring the text. */
+  private richChat(chatId: string): boolean {
+    if (this.richMessages === "off") return false;
+    if (this.richMessages === "all") return true;
+    // Private chats have positive numeric ids; "@channel" is not a DM.
+    const numeric = Number(chatId);
+    return Number.isFinite(numeric) && numeric > 0;
+  }
+
+  /**
+   * Longest reply this bridge can deliver to the chat in one message. The caller
+   * splits on it, and the two formats differ by 8x, so assuming the classic
+   * limit would chop rich replies through the middle of a table.
+   */
+  outboundTextLimit(chatId: string, text: string): number {
+    if (!this.shouldSendRich(chatId, text, false)) return TELEGRAM_MAX_MESSAGE_LENGTH;
+    // The caller counts characters, Telegram counts bytes: hand back the budget
+    // in the caller's units, which for Cyrillic is about half.
+    const bytesPerChar = Math.max(1, richMessageBytes(text) / Math.max(1, text.length));
+    return Math.floor(RICH_MESSAGE_MAX_BYTES / bytesPerChar);
+  }
+
+  /**
+   * Telegram rejecting the markup means nothing was delivered, so resending it
+   * as classic HTML is safe. A transport failure leaves delivery unknown and
+   * must not be retried, or the user gets the same reply twice. A 403 is the
+   * user blocking the bot: the classic retry would fail identically, so only a
+   * 403 that is about the message itself falls back.
+   */
+  private static canFallbackFromRich(error: unknown): boolean {
+    if (!(error instanceof GrammyError)) return false;
+    if (error.error_code === 400 || error.error_code === 406) return true;
+    if (error.error_code !== 403) return false;
+    return !/blocked|kicked|deactivated|deleted/i.test(error.description);
+  }
+
+  /** Returns null when Telegram rejected the markup and the HTML path should take over. */
+  private async sendRichMessage(options: SendMessageOptions): Promise<SentMessage | null> {
+    const markdown = stripInteractiveRichMarkup(options.text);
+    try {
+      const result = await this.bot.api.sendRichMessage(
+        this.toChatId(options.chatId),
+        { markdown },
+        {
+          reply_parameters:
+            options.replyToId !== undefined ? { message_id: options.replyToId } : undefined,
+        }
+      );
+      return { id: result.message_id, date: result.date, chatId: options.chatId };
+    } catch (error) {
+      if (!GrammyBotBridge.canFallbackFromRich(error)) throw error;
+      log.warn(
+        `Rich message rejected (${error instanceof GrammyError ? error.description : String(error)}), falling back to HTML`
+      );
+      return null;
+    }
   }
 
   async editMessage(options: EditMessageOptions): Promise<SentMessage> {
@@ -433,8 +597,10 @@ export class GrammyBotBridge implements ITelegramBridge {
     let lastDraftTime = 0;
     const THROTTLE_MS = 300;
     const numericChatId = this.toChatId(chatId);
+    const richChat = this.richChat(chatId);
     // Leave headroom for HTML expansion from markdownToTelegramHtml
-    const SPLIT_THRESHOLD = TELEGRAM_MAX_MESSAGE_LENGTH - 300;
+    const HTML_THRESHOLD = TELEGRAM_MAX_MESSAGE_LENGTH - 300;
+    const RICH_THRESHOLD = RICH_MESSAGE_MAX_BYTES - 300;
 
     for await (const chunk of textStream) {
       fullText += chunk;
@@ -442,8 +608,12 @@ export class GrammyBotBridge implements ITelegramBridge {
       if (fullText.trim() === "__SILENT__" || fullText.trim() === "NO_ACTION") continue;
 
       // Auto-split: when accumulated text nears the limit, flush as real message
-      const html = markdownToTelegramHtml(fullText);
-      if (html.length >= SPLIT_THRESHOLD) {
+      // The draft goes out in one of two formats and each has its own cap:
+      // sendMessageDraft rejects anything past 4096, a rich draft past 32768.
+      const rich = richChat && hasRichFormatting(fullText);
+      const html = rich ? "" : markdownToTelegramHtml(fullText);
+      const rendered = rich ? richMessageBytes(fullText) : html.length;
+      if (rendered >= (rich ? RICH_THRESHOLD : HTML_THRESHOLD)) {
         // Clear draft bubble and send as real message
         try {
           await this.bot.api.sendMessageDraft(numericChatId, draftId, " ");
@@ -463,7 +633,7 @@ export class GrammyBotBridge implements ITelegramBridge {
       const now = Date.now();
       if (now - lastDraftTime >= THROTTLE_MS && fullText.length > 0) {
         try {
-          await this.bot.api.sendMessageDraft(numericChatId, draftId, html, { parse_mode: "HTML" });
+          await this.sendDraft(numericChatId, draftId, fullText, rich, html);
         } catch {
           // Draft updates are best-effort
         }
@@ -473,12 +643,14 @@ export class GrammyBotBridge implements ITelegramBridge {
 
     // Send one final draft update with complete text
     if (fullText.length > 0) {
+      const rich = richChat && hasRichFormatting(fullText);
       try {
-        await this.bot.api.sendMessageDraft(
+        await this.sendDraft(
           numericChatId,
           draftId,
-          markdownToTelegramHtml(fullText),
-          { parse_mode: "HTML" }
+          fullText,
+          rich,
+          rich ? "" : markdownToTelegramHtml(fullText)
         );
       } catch {
         /* best effort */
@@ -486,6 +658,23 @@ export class GrammyBotBridge implements ITelegramBridge {
     }
 
     return fullText;
+  }
+
+  /** One draft update, rich when the chat and the text allow it. */
+  private async sendDraft(
+    chatId: number,
+    draftId: number,
+    text: string,
+    rich: boolean,
+    html: string
+  ): Promise<void> {
+    if (rich) {
+      await this.bot.api.sendRichMessageDraft(chatId, draftId, {
+        markdown: stripInteractiveRichMarkup(text),
+      });
+      return;
+    }
+    await this.bot.api.sendMessageDraft(chatId, draftId, html, { parse_mode: "HTML" });
   }
 
   async clearDraft(chatId: string): Promise<void> {
