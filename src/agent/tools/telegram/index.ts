@@ -15,30 +15,6 @@ import { tools as tasksTools } from "./tasks/index.js";
 import { sendButtonsEntry } from "./send-buttons.js";
 import type { ToolEntry } from "../types.js";
 
-// Messaging
-export * from "./messaging/index.js";
-
-// Chats
-export * from "./chats/index.js";
-
-// Groups & Members
-export * from "./groups/index.js";
-
-// Contacts
-export * from "./contacts/index.js";
-
-// Memory (agent self-memory management)
-export * from "./memory/index.js";
-
-// Tasks (scheduled task management)
-export * from "./tasks/index.js";
-
-// Media
-export * from "./media/index.js";
-
-// Interactive (polls, quizzes, keyboards, reactions)
-export * from "./interactive/index.js";
-
 export const tools: ToolEntry[] = [
   ...messagingTools,
   ...mediaTools,

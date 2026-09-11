@@ -3,6 +3,7 @@ import Database from "better-sqlite3";
 import {
   ensureSchema,
   ensureVectorTables,
+  normalizeInvalidTelegramMessageEmbeddings,
   getSchemaVersion,
   setSchemaVersion,
   runMigrations,
@@ -26,7 +27,7 @@ describe("Memory Schema", () => {
   // ============================================
 
   describe("Table Creation", () => {
-    it("creates all 15 core tables after initialization", () => {
+    it("creates all required core tables after initialization", () => {
       ensureSchema(db);
 
       const tables = db
@@ -41,7 +42,7 @@ describe("Memory Schema", () => {
 
       const tableNames = tables.map((t) => t.name);
 
-      // Core tables (14 total)
+      // Core and FTS backing tables
       expect(tableNames).toContain("meta");
       expect(tableNames).toContain("knowledge");
       expect(tableNames).toContain("sessions");
@@ -56,6 +57,9 @@ describe("Memory Schema", () => {
       expect(tableNames).toContain("knowledge_fts_data");
       expect(tableNames).toContain("tg_messages_fts");
       expect(tableNames).toContain("tg_messages_fts_data");
+      expect(tableNames).toContain("agent_turn_traces");
+      expect(tableNames).toContain("tool_result_artifacts");
+      expect(tableNames).toContain("action_executions");
     });
 
     it("creates meta table with correct schema", () => {
@@ -227,6 +231,12 @@ describe("Memory Schema", () => {
       expect(columnNames).toContain("media_type");
       expect(columnNames).toContain("timestamp");
       expect(columnNames).toContain("indexed_at");
+
+      const primaryKey = info
+        .filter((column) => (column as { pk?: number }).pk)
+        .sort((a, b) => ((a as { pk?: number }).pk ?? 0) - ((b as { pk?: number }).pk ?? 0))
+        .map((column) => column.name);
+      expect(primaryKey).toEqual(["chat_id", "id"]);
     });
 
     it("creates embedding_cache table with correct schema", () => {
@@ -1081,7 +1091,7 @@ describe("Memory Schema", () => {
     });
 
     it("CURRENT_SCHEMA_VERSION is set to expected value", () => {
-      expect(CURRENT_SCHEMA_VERSION).toBe("1.18.0");
+      expect(CURRENT_SCHEMA_VERSION).toBe("1.25.0");
     });
   });
 
@@ -1096,6 +1106,56 @@ describe("Memory Schema", () => {
 
       const version = getSchemaVersion(db);
       expect(version).toBe(CURRENT_SCHEMA_VERSION);
+    });
+
+    it("migration 1.22.0 preserves legacy messages and scopes IDs by chat", () => {
+      db.exec(`
+        CREATE TABLE meta (
+          key TEXT PRIMARY KEY,
+          value TEXT NOT NULL,
+          updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+        );
+        INSERT INTO meta (key, value) VALUES ('schema_version', '1.21.0');
+        CREATE TABLE tg_chats (id TEXT PRIMARY KEY, type TEXT NOT NULL);
+        CREATE TABLE tg_users (id TEXT PRIMARY KEY);
+        INSERT INTO tg_chats (id, type) VALUES ('chat-a', 'dm'), ('chat-b', 'dm');
+        CREATE TABLE tg_messages (
+          id TEXT PRIMARY KEY,
+          chat_id TEXT NOT NULL,
+          sender_id TEXT,
+          text TEXT,
+          embedding TEXT,
+          reply_to_id TEXT,
+          forward_from_id TEXT,
+          is_from_agent INTEGER DEFAULT 0,
+          is_edited INTEGER DEFAULT 0,
+          has_media INTEGER DEFAULT 0,
+          media_type TEXT,
+          timestamp INTEGER NOT NULL,
+          indexed_at INTEGER NOT NULL DEFAULT (unixepoch())
+        );
+        INSERT INTO tg_messages (id, chat_id, text, timestamp)
+        VALUES ('42', 'chat-a', 'legacy', 1);
+      `);
+
+      runMigrations(db);
+      db.prepare(
+        `INSERT INTO tg_messages (id, chat_id, text, timestamp)
+         VALUES ('42', 'chat-b', 'new chat', 2)`
+      ).run();
+
+      expect(
+        db.prepare("SELECT chat_id, id, text FROM tg_messages ORDER BY chat_id").all()
+      ).toEqual([
+        { chat_id: "chat-a", id: "42", text: "legacy" },
+        { chat_id: "chat-b", id: "42", text: "new chat" },
+      ]);
+      expect(
+        db.prepare("SELECT text FROM tg_messages_fts WHERE tg_messages_fts MATCH 'legacy'").get()
+      ).toEqual({ text: "legacy" });
+      expect(
+        db.prepare("SELECT value FROM meta WHERE key = 'tg_messages_vector_rebuild_required'").get()
+      ).toEqual({ value: "1" });
     });
 
     it("runMigrations on fresh database creates all tables and sets version", () => {
@@ -1128,6 +1188,20 @@ describe("Memory Schema", () => {
       expect(columnNames).toContain("payload");
       expect(columnNames).toContain("reason");
       expect(columnNames).toContain("scheduled_message_id");
+    });
+
+    it("runMigrations from version 1.19.0 adds scheduled task authority columns", () => {
+      ensureSchema(db);
+      setSchemaVersion(db, "1.19.0");
+
+      runMigrations(db);
+
+      const info = db.prepare("PRAGMA table_info(tasks)").all() as Array<{ name: string }>;
+      const columnNames = info.map((c) => c.name);
+
+      expect(columnNames).toContain("origin_sender_id");
+      expect(columnNames).toContain("origin_chat_id");
+      expect(columnNames).toContain("origin_is_group");
     });
 
     it("runMigrations from version 1.1.0 extends sessions table", () => {
@@ -1166,6 +1240,32 @@ describe("Memory Schema", () => {
       expect(columnNames).toContain("output_tokens");
     });
 
+    it("runMigrations from 1.20.0 adds runtime resilience tables", () => {
+      ensureSchema(db);
+      db.exec(`
+        DROP TABLE agent_turn_traces;
+        DROP TABLE tool_result_artifacts;
+        DROP TABLE action_executions;
+      `);
+      setSchemaVersion(db, "1.20.0");
+
+      runMigrations(db);
+
+      const tables = (
+        db
+          .prepare(
+            `SELECT name FROM sqlite_master
+             WHERE type = 'table' AND name IN (
+               'agent_turn_traces', 'tool_result_artifacts', 'action_executions'
+             )`
+          )
+          .all() as Array<{ name: string }>
+      ).map((row) => row.name);
+      expect(tables.sort()).toEqual(
+        ["action_executions", "agent_turn_traces", "tool_result_artifacts"].sort()
+      );
+    });
+
     it("runMigrations is idempotent (can run multiple times)", () => {
       ensureSchema(db);
       runMigrations(db);
@@ -1184,6 +1284,41 @@ describe("Memory Schema", () => {
   // ============================================
 
   describe("Vector Tables", () => {
+    it("normalizes invalid legacy message embeddings before a rebuild", () => {
+      ensureSchema(db);
+      db.prepare("INSERT INTO tg_chats (id, type) VALUES ('chat-a', 'group')").run();
+      const insert = db.prepare(
+        `INSERT INTO tg_messages
+           (id, chat_id, text, embedding, embedding_status, timestamp)
+         VALUES (?, 'chat-a', ?, ?, 'ready', 1)`
+      );
+      insert.run("empty-media", "", Buffer.alloc(0));
+      insert.run("corrupt-text", "retry me", Buffer.alloc(0));
+      insert.run(
+        "non-finite",
+        "retry this too",
+        Buffer.from(new Float32Array([0.1, NaN, 0.3]).buffer)
+      );
+      insert.run("valid", "keep me", Buffer.from(new Float32Array([0.1, 0.2, 0.3]).buffer));
+
+      expect(normalizeInvalidTelegramMessageEmbeddings(db, 3)).toBe(3);
+      expect(
+        db.prepare("SELECT id, embedding, embedding_status FROM tg_messages ORDER BY id").all()
+      ).toEqual([
+        { id: "corrupt-text", embedding: null, embedding_status: "pending" },
+        { id: "empty-media", embedding: null, embedding_status: "disabled" },
+        { id: "non-finite", embedding: null, embedding_status: "pending" },
+        {
+          id: "valid",
+          embedding: Buffer.from(new Float32Array([0.1, 0.2, 0.3]).buffer),
+          embedding_status: "ready",
+        },
+      ]);
+      expect(
+        db.prepare("SELECT value FROM meta WHERE key = 'tg_messages_vector_rebuild_required'").get()
+      ).toEqual({ value: "1" });
+    });
+
     it("ensureVectorTables creates knowledge_vec and tg_messages_vec tables", () => {
       ensureSchema(db);
 
@@ -1359,6 +1494,95 @@ describe("Memory Schema", () => {
         enabled: number;
       };
       expect(row.enabled).toBe(1);
+    });
+
+    it("migration 1.19.0 adds scope_level column and keeps legacy ones", () => {
+      ensureSchema(db);
+      runMigrations(db);
+
+      const cols = (
+        db.prepare(`PRAGMA table_info(tool_config)`).all() as Array<{ name: string }>
+      ).map((c) => c.name);
+
+      expect(cols).toContain("enabled");
+      expect(cols).toContain("scope");
+      expect(cols).toContain("scope_level");
+    });
+
+    it("migration 1.19.0 backfills scope_level from legacy (enabled, scope)", () => {
+      ensureSchema(db);
+      // Simulate a pre-1.19 tool_config table populated by an existing user.
+      db.exec(`
+        CREATE TABLE tool_config (
+          tool_name TEXT PRIMARY KEY,
+          enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0, 1)),
+          scope TEXT CHECK(scope IN ('always', 'open', 'dm-only', 'group-only', 'admin-only', 'allowlist', 'disabled')),
+          updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          updated_by INTEGER
+        );
+      `);
+      const seed: Array<[string, number, string | null]> = [
+        ["t_open", 1, "open"],
+        ["t_always", 1, "always"],
+        ["t_dm", 1, "dm-only"], // context scope collapses to 'all'
+        ["t_group", 1, "group-only"], // collapses to 'all'
+        ["t_admin", 1, "admin-only"],
+        ["t_allow", 1, "allowlist"],
+        ["t_disabled", 1, "disabled"],
+        ["t_enabled0", 0, "admin-only"], // enabled=0 overrides scope → off
+        ["t_null", 1, null],
+      ];
+      const ins = db.prepare(
+        `INSERT INTO tool_config (tool_name, enabled, scope, updated_at) VALUES (?, ?, ?, unixepoch())`
+      );
+      for (const [n, e, s] of seed) ins.run(n, e, s);
+
+      setSchemaVersion(db, "1.18.0");
+      runMigrations(db);
+
+      const level = (name: string) =>
+        (
+          db.prepare(`SELECT scope_level FROM tool_config WHERE tool_name = ?`).get(name) as {
+            scope_level: string;
+          }
+        ).scope_level;
+
+      expect(level("t_open")).toBe("all");
+      expect(level("t_always")).toBe("all");
+      expect(level("t_dm")).toBe("all");
+      expect(level("t_group")).toBe("all");
+      expect(level("t_admin")).toBe("admin");
+      expect(level("t_allow")).toBe("allowlist");
+      expect(level("t_disabled")).toBe("off");
+      expect(level("t_enabled0")).toBe("off");
+      expect(level("t_null")).toBe("all");
+    });
+
+    it("migration 1.19.0 is idempotent on re-run", () => {
+      ensureSchema(db);
+      db.exec(`
+        CREATE TABLE tool_config (
+          tool_name TEXT PRIMARY KEY,
+          enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0, 1)),
+          scope TEXT CHECK(scope IN ('always', 'open', 'dm-only', 'group-only', 'admin-only', 'allowlist', 'disabled')),
+          updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          updated_by INTEGER
+        );
+      `);
+      db.prepare(
+        `INSERT INTO tool_config (tool_name, enabled, scope, updated_at) VALUES ('t_admin', 1, 'admin-only', unixepoch())`
+      ).run();
+
+      setSchemaVersion(db, "1.18.0");
+      runMigrations(db);
+      // Force the 1.19.0 block to run a second time.
+      setSchemaVersion(db, "1.18.0");
+      expect(() => runMigrations(db)).not.toThrow();
+
+      const row = db
+        .prepare(`SELECT scope_level FROM tool_config WHERE tool_name = 't_admin'`)
+        .get() as { scope_level: string };
+      expect(row.scope_level).toBe("admin");
     });
   });
 });

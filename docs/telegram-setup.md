@@ -11,6 +11,7 @@ This guide covers obtaining Telegram API credentials, configuring the agent's me
 - [First-Time Authentication](#first-time-authentication)
 - [2FA Handling](#2fa-handling)
 - [Bot Token (Optional)](#bot-token-optional)
+- [Guest Mode](#guest-mode)
 - [DM Policies](#dm-policies)
 - [Group Policies](#group-policies)
 - [Admin IDs](#admin-ids)
@@ -131,8 +132,8 @@ If you change your 2FA password after establishing a session, you do not need to
 
 A regular Telegram Bot token (from @BotFather) is optionally used alongside the user client for specific features:
 
-- **Inline keyboard buttons** in the deals system
-- **Callback query handling** for interactive UI elements
+- **Plugin inline cards** inserted into regular chats
+- **Callback query handling** for interactive plugin UI elements
 
 The bot token is NOT used for the primary message sending/receiving -- that is handled by the user client.
 
@@ -150,6 +151,33 @@ telegram:
 ```
 
 The bot must be added to any groups where you want inline buttons to work.
+
+---
+
+## Guest Mode
+
+Guest Mode is a Telegram Bot API 10.0 feature that lets the bot answer **guest queries** -- messages from users in chats the bot is **not a member of**. It applies to bot mode only.
+
+### Prerequisite: enable it in BotFather
+
+Guest Mode must be enabled for your bot in [@BotFather](https://t.me/BotFather) first. Without this, Telegram never delivers guest queries and the agent has nothing to answer.
+
+### Configuration
+
+```yaml
+telegram:
+  guest_mode: false   # Default. Set to true to answer guest queries.
+```
+
+`guest_mode` can be toggled three ways, all writing the same config key:
+
+- The config file directly.
+- The WebUI **Config** page (Telegram category).
+- The `/guest on` / `/guest off` admin command.
+
+### Behaviour
+
+Guest queries are handled with **group-mode capabilities**: agent memory and trading strategy are not exposed, and the agent replies once per query. Because the bot is not a member of the chat, message-sending tools are disabled on this path -- the answer is delivered through the guest-query reply channel.
 
 ---
 
@@ -302,23 +330,24 @@ All admin commands require the sender's Telegram user ID to be listed in `admin_
 
 ### Command Summary
 
-| # | Command | Syntax | Description |
-|---|---------|--------|-------------|
-| 1 | `/status` | `/status` | View agent status: active conversations, provider, model, policies, paused state. |
-| 2 | `/model` | `/model [model_name]` | View or switch the LLM model at runtime. |
-| 3 | `/loop` | `/loop [1-50]` | View or set max agentic loop iterations. |
-| 4 | `/policy` | `/policy <dm\|group> <value>` | View or change access policies. |
-| 5 | `/strategy` | `/strategy [buy\|sell <percent>]` | View or change trading strategy thresholds. |
-| 6 | `/modules` | `/modules [set\|info\|reset] ...` | Manage per-group module permissions (group-only). |
-| 7 | `/plugin` | `/plugin <set\|unset\|keys> ...` | Manage plugin secrets (API keys, tokens). |
-| 8 | `/wallet` | `/wallet` | Check TON wallet balance and address. |
-| 9 | `/verbose` | `/verbose` | Toggle verbose debug logging on/off. |
-| 10 | `/pause` | `/pause` | Pause the agent (ignores non-admin messages). |
-| 11 | `/resume` | `/resume` | Resume the agent after pause. |
-| 12 | `/stop` | `/stop` | Emergency shutdown (terminates process). |
-| 13 | `/clear` | `/clear [chat_id]` | Clear conversation history for a chat. |
-| 14 | `/ping` | `/ping` | Health check (returns "Pong!"). |
-| 15 | `/help` | `/help` | Display all available commands. |
+| Command | Syntax | Description |
+|---------|--------|-------------|
+| `/status` | `/status` | View active conversations, provider, model, policies, and paused state. |
+| `/model` | `/model [model_name]` | View or switch the LLM model at runtime. |
+| `/loop` | `/loop [1-50]` | View or set max agentic loop iterations. |
+| `/policy` | `/policy <dm\|group> <value>` | View or change access policies. |
+| `/modules` | `/modules [set\|info\|reset] ...` | Manage per-group module permissions (group-only). |
+| `/plugin` | `/plugin <set\|unset\|keys> ...` | Manage plugin secrets. |
+| `/wallet` | `/wallet` | Check TON wallet balance and address. |
+| `/verbose` | `/verbose` | Toggle verbose debug logging. |
+| `/rag` | `/rag [status\|topk <n>]` | Toggle Tool RAG or view its status. |
+| `/guest` | `/guest [on\|off]` | View or toggle guest mode. |
+| `/pause` | `/pause` | Pause the agent. |
+| `/resume` | `/resume` | Resume the agent. |
+| `/stop` | `/stop` | Emergency shutdown. |
+| `/clear` | `/clear [chat_id]` | Clear conversation history for a chat. |
+| `/ping` | `/ping` | Health check. |
+| `/help` | `/help` | Display available commands. |
 
 > `/task <description>` and `/boot` are also available but handled by the message handler layer, not AdminHandler directly.
 
@@ -349,18 +378,6 @@ Change DM or group access policies at runtime.
 ```
 /policy dm allowlist
 /policy group disabled
-```
-
-### /strategy
-
-Adjust trading thresholds for the deals module.
-
-- **Buy threshold (50-150):** Max % of floor price the agent will pay.
-- **Sell threshold (100-200):** Min % of floor price the agent will accept.
-
-```
-/strategy buy 90
-/strategy sell 130
 ```
 
 ### /modules

@@ -1,7 +1,9 @@
 import { useState, useEffect, useRef } from 'react';
-import { setup, SetupProvider, SetupModelOption, ClaudeCodeKeyDetection } from '../../lib/api';
+import { setup, SetupProvider, SetupModelOption } from '../../lib/api';
 import { Select } from '../Select';
 import type { StepProps } from '../../pages/Setup';
+import { errMsg } from '../../lib/utils';
+import { Loading } from '../Loading';
 
 export function ProviderStep({ data, onChange }: StepProps) {
   const [providers, setProviders] = useState<SetupProvider[]>([]);
@@ -11,43 +13,21 @@ export function ProviderStep({ data, onChange }: StepProps) {
   const [keyError, setKeyError] = useState('');
   const [validating, setValidating] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [ccDetection, setCcDetection] = useState<ClaudeCodeKeyDetection | null>(null);
-  const [ccDetecting, setCcDetecting] = useState(false);
-  const [ccShowFallback, setCcShowFallback] = useState(false);
   const [models, setModels] = useState<SetupModelOption[]>([]);
   const [loadingModels, setLoadingModels] = useState(false);
 
   useEffect(() => {
     setup.getProviders()
       .then((p) => setProviders(p))
-      .catch((err) => setError(err instanceof Error ? err.message : String(err)))
+      .catch((err) => setError(errMsg(err)))
       .finally(() => setLoading(false));
   }, []);
 
   const selected = providers.find((p) => p.id === data.provider);
 
-  // Auto-detect Claude Code credentials when provider is selected
-  useEffect(() => {
-    if (selected?.autoDetectsKey) {
-      setCcDetecting(true);
-      setCcDetection(null);
-      setCcShowFallback(false);
-      setup.detectClaudeCodeKey()
-        .then((result) => {
-          setCcDetection(result);
-          if (result.found) {
-            // Clear manual key — auto-detected key will be used at runtime
-            onChange({ ...data, apiKey: '' });
-          }
-        })
-        .catch(() => setCcDetection({ found: false, maskedKey: null, valid: false }))
-        .finally(() => setCcDetecting(false));
-    }
-  }, [selected?.id]);
-
   // Load models when provider changes
   useEffect(() => {
-    if (!data.provider || data.provider === 'cocoon' || data.provider === 'local') {
+    if (!data.provider || data.provider === 'gocoon' || data.provider === 'local') {
       setModels([]);
       return;
     }
@@ -67,8 +47,6 @@ export function ProviderStep({ data, onChange }: StepProps) {
     onChange({ ...data, provider: id, apiKey: '', model: '', customModel: '' });
     setKeyValid(null);
     setKeyError('');
-    setCcDetection(null);
-    setCcShowFallback(false);
     if (debounceRef.current) clearTimeout(debounceRef.current);
   };
 
@@ -97,7 +75,7 @@ export function ProviderStep({ data, onChange }: StepProps) {
     }
   };
 
-  if (loading) return <div className="loading">Loading providers...</div>;
+  if (loading) return <Loading text='Loading providers...' />;
   if (error) return <div className="alert error">{error}</div>;
 
   return (
@@ -131,68 +109,6 @@ export function ProviderStep({ data, onChange }: StepProps) {
         </div>
       )}
 
-      {selected && selected.autoDetectsKey && (
-        <div style={{ marginTop: '16px' }}>
-          {ccDetecting && (
-            <div className="info-panel">
-              <span className="spinner sm" /> Detecting Claude Code credentials...
-            </div>
-          )}
-          {!ccDetecting && ccDetection?.found && (
-            <div className="info-panel">
-              <div style={{ marginBottom: '4px', color: 'var(--accent)' }}>
-                <strong>Credentials auto-detected from Claude Code</strong>
-              </div>
-              <code style={{ fontSize: '0.85em', opacity: 0.8 }}>{ccDetection.maskedKey}</code>
-              <div className="helper-text" style={{ marginTop: '6px' }}>
-                Token will auto-refresh when it expires. No configuration needed.
-              </div>
-            </div>
-          )}
-          {!ccDetecting && ccDetection && !ccDetection.found && !ccShowFallback && (
-            <div className="info-panel" style={{ borderColor: 'var(--warning)' }}>
-              <div style={{ marginBottom: '8px' }}>
-                Claude Code credentials not found. Make sure Claude Code is installed and authenticated
-                (<code>claude login</code>).
-              </div>
-              <button
-                className="btn btn-sm"
-                onClick={() => setCcShowFallback(true)}
-              >
-                Enter API key manually instead
-              </button>
-            </div>
-          )}
-          {!ccDetecting && ccShowFallback && (
-            <div className="form-group" style={{ marginTop: '8px' }}>
-              <label>API Key (fallback)</label>
-              <input
-                type="password"
-                value={data.apiKey}
-                onChange={(e) => handleKeyChange(e.target.value)}
-                placeholder={selected.keyPrefix ? `${selected.keyPrefix}...` : 'Enter API key'}
-                className="w-full"
-              />
-              {validating && (
-                <div className="helper-text"><span className="spinner sm" /> Validating...</div>
-              )}
-              {!validating && keyValid === true && (
-                <div className="helper-text success">Key format looks valid.</div>
-              )}
-              {!validating && keyValid === false && keyError && (
-                <div className="helper-text error">{keyError}</div>
-              )}
-              <div className="helper-text">
-                Get your key at:{' '}
-                <a href="https://console.anthropic.com/" target="_blank" rel="noopener noreferrer">
-                  https://console.anthropic.com/
-                </a>
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-
       {selected && selected.requiresApiKey && (
         <div className="form-group" style={{ marginTop: '16px' }}>
           <label>API Key</label>
@@ -223,23 +139,29 @@ export function ProviderStep({ data, onChange }: StepProps) {
         </div>
       )}
 
-      {selected && !selected.requiresApiKey && selected.id === 'cocoon' && (
+      {selected && selected.credentialMode === 'cli-auto' && (
+        <div className="info-panel" style={{ marginTop: '16px' }}>
+          Credentials are read automatically from your local {selected.id === 'codex' ? 'Codex' : 'Grok'} CLI session.
+        </div>
+      )}
+
+      {selected && !selected.requiresApiKey && selected.id === 'gocoon' && (
         <div style={{ marginTop: '16px' }}>
           <div className="info-panel">
-            Cocoon Network uses a local proxy. No API key required.
+            Gocoon runs a local decentralized LLM on TON. No API key required.
           </div>
           <div className="form-group">
-            <label>Cocoon Proxy Port</label>
+            <label>gocoon-runner Port</label>
             <input
               type="number"
-              value={data.cocoonPort}
-              onChange={(e) => onChange({ ...data, cocoonPort: parseInt(e.target.value) || 0 })}
+              value={data.gocoonPort}
+              onChange={(e) => onChange({ ...data, gocoonPort: parseInt(e.target.value) || 0 })}
               min={1}
               max={65535}
               className="w-full"
             />
             <div className="helper-text">
-              Port where the Cocoon client proxy is running (1-65535).
+              Port where the gocoon runner is listening (1-65535).
             </div>
           </div>
         </div>
@@ -266,7 +188,7 @@ export function ProviderStep({ data, onChange }: StepProps) {
         </div>
       )}
 
-      {selected && selected.id !== 'cocoon' && selected.id !== 'local' && (
+      {selected && selected.id !== 'gocoon' && selected.id !== 'local' && (
         <div className="form-group" style={{ marginTop: '16px' }}>
           <label>Model</label>
           {loadingModels ? (

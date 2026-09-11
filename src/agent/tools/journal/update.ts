@@ -6,11 +6,13 @@
 import { Type } from "@sinclair/typebox";
 import { getDatabase } from "../../../memory/database.js";
 import { JournalStore } from "../../../memory/journal-store.js";
-import type { Tool, ToolExecutor, ToolResult } from "../types.js";
+import type { JournalOutcome } from "../../../memory/journal-store.js";
+import type { Tool, ToolExecutor } from "../types.js";
+import { outcomeEmoji, formatAssetFlow, formatTxHash } from "./format.js";
 
 interface JournalUpdateParams {
   id: number;
-  outcome?: "pending" | "profit" | "loss" | "neutral" | "cancelled";
+  outcome?: JournalOutcome;
   pnl_ton?: number;
   pnl_pct?: number;
   tx_hash?: string;
@@ -32,7 +34,10 @@ export const journalUpdateTool: Tool = {
           Type.Literal("neutral"),
           Type.Literal("cancelled"),
         ],
-        { description: "Update outcome status" }
+        {
+          description:
+            "P&L result — must be EXACTLY one of: 'pending', 'profit' (use when pnl_ton > 0), 'loss' (pnl_ton < 0), 'neutral' (break-even), 'cancelled'. This is the profit/loss outcome, NOT a completion status — do not use 'closed'/'completed'/'success'/'done'. Setting it to a non-pending value auto-closes the entry.",
+        }
       )
     ),
     pnl_ton: Type.Optional(
@@ -43,9 +48,7 @@ export const journalUpdateTool: Tool = {
   }),
 };
 
-export const journalUpdateExecutor: ToolExecutor<JournalUpdateParams> = async (
-  params
-): Promise<ToolResult> => {
+export const journalUpdateExecutor: ToolExecutor<JournalUpdateParams> = async (params) => {
   const db = getDatabase().getDb();
   const store = new JournalStore(db);
 
@@ -87,28 +90,12 @@ export const journalUpdateExecutor: ToolExecutor<JournalUpdateParams> = async (
     `**Type**: ${updated.type} - ${updated.action}`,
   ];
 
-  if (updated.asset_from || updated.asset_to) {
-    const fromStr = updated.asset_from
-      ? `${updated.amount_from?.toFixed(4) ?? "?"} ${updated.asset_from}`
-      : "—";
-    const toStr = updated.asset_to
-      ? `${updated.amount_to?.toFixed(4) ?? "?"} ${updated.asset_to}`
-      : "—";
-    lines.push(`**Assets**: ${fromStr} → ${toStr}`);
+  const assetFlow = formatAssetFlow(updated);
+  if (assetFlow) {
+    lines.push(`**Assets**: ${assetFlow}`);
   }
 
-  const outcomeEmoji =
-    updated.outcome === "profit"
-      ? "✅"
-      : updated.outcome === "loss"
-        ? "❌"
-        : updated.outcome === "pending"
-          ? "⏳"
-          : updated.outcome === "cancelled"
-            ? "🚫"
-            : "➖";
-
-  lines.push(`**Outcome**: ${outcomeEmoji} ${updated.outcome}`);
+  lines.push(`**Outcome**: ${outcomeEmoji(updated.outcome)} ${updated.outcome}`);
 
   if (updated.pnl_ton !== null && updated.pnl_ton !== undefined) {
     const sign = updated.pnl_ton >= 0 ? "+" : "";
@@ -118,7 +105,7 @@ export const journalUpdateExecutor: ToolExecutor<JournalUpdateParams> = async (
   }
 
   if (updated.tx_hash) {
-    lines.push(`**TX**: \`${updated.tx_hash.slice(0, 16)}...\``);
+    lines.push(`**TX**: ${formatTxHash(updated.tx_hash)}`);
   }
 
   if (updated.closed_at) {

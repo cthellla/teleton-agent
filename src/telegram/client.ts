@@ -7,6 +7,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
 import { dirname } from "path";
 import { createInterface } from "readline";
 import { markdownToTelegramHtml } from "./formatting.js";
+import { renderTelegramMessageText } from "./rich-message.js";
 
 import { createLogger } from "../utils/logger.js";
 
@@ -242,7 +243,8 @@ export class TelegramUserClient {
         const chatId = event.message.chatId?.toString() ?? "unknown";
         const isGroup = chatId.startsWith("-");
         log.debug(
-          `RAW EVENT: chatId=${chatId} isGroup=${isGroup} text="${event.message.message?.substring(0, 30) ?? ""}"`
+          { chatId, isGroup, messageLength: renderTelegramMessageText(event.message).length },
+          "RAW EVENT"
         );
       }
       await handler(event);
@@ -368,21 +370,6 @@ export class TelegramUserClient {
       );
     } catch {
       // setTyping() is cosmetic — ignore FloodWait, permission errors, etc.
-    }
-  }
-
-  async resolveUsername(username: string): Promise<Api.TypeUser | Api.TypeChat | undefined> {
-    const clean = username.replace("@", "");
-    try {
-      // Call ResolveUsername directly — bypasses GramJS's VALID_USERNAME_RE
-      // which rejects collectible usernames shorter than 5 chars.
-      const result = await this.client.invoke(
-        new Api.contacts.ResolveUsername({ username: clean })
-      );
-      return result.users[0] || result.chats[0];
-    } catch (error: unknown) {
-      log.error({ err: error }, `Failed to resolve username ${clean}`);
-      return undefined;
     }
   }
 

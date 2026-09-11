@@ -1,5 +1,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { api, StatusData, MemoryStats, ToolRagStatus, ConfigKeyData } from '../lib/api';
+import { mergeModelOptions } from '../lib/model-options';
+import { errMsg } from '../lib/utils';
 
 export interface ProviderMeta {
   needsKey: boolean;
@@ -70,7 +72,7 @@ export function useConfigState() {
       await api.setConfigKey(key, value.trim());
       await loadData();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(errMsg(err));
     }
   };
 
@@ -79,7 +81,7 @@ export function useConfigState() {
       const res = await api.updateToolRag(update);
       setToolRag(res.data);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(errMsg(err));
     }
   };
 
@@ -87,20 +89,19 @@ export function useConfigState() {
     setLocalInputs((prev) => ({ ...prev, [key]: value }));
   };
 
-  // Load model options when provider changes
+  // Load model options without mutating the configured selection
   const currentProvider = getLocal('agent.provider');
+  const currentModel = getLocal('agent.model');
   useEffect(() => {
     if (!currentProvider) return;
     api.getModelsForProvider(currentProvider).then((res) => {
-      const models = res.data.map((m) => ({ value: m.value, name: m.name, reasoning: m.reasoning }));
+      const models = mergeModelOptions(
+        res.data.map((m) => ({ value: m.value, name: m.name, reasoning: m.reasoning })),
+        currentModel
+      );
       setModelOptions(models);
-      // Auto-select first model if current model isn't in the new list
-      const currentModel = localInputs['agent.model'] ?? '';
-      if (models.length > 0 && !models.some((m) => m.value === currentModel)) {
-        saveConfig('agent.model', models[0].value);
-      }
     }).catch(() => setModelOptions([]));
-  }, [currentProvider]);
+  }, [currentProvider, currentModel]);
 
   // Handle provider change — gate on API key
   const handleProviderChange = async (newProvider: string) => {
@@ -121,7 +122,7 @@ export function useConfigState() {
         setPendingError(null);
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(errMsg(err));
     }
   };
 
@@ -148,7 +149,7 @@ export function useConfigState() {
       setPendingMeta(null);
       setPendingApiKey('');
     } catch (err) {
-      setPendingError(err instanceof Error ? err.message : String(err));
+      setPendingError(errMsg(err));
     } finally {
       setPendingValidating(false);
     }

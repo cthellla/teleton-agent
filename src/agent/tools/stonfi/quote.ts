@@ -1,13 +1,11 @@
 import { Type } from "@sinclair/typebox";
 import type { Tool, ToolExecutor, ToolResult } from "../types.js";
-import { StonApiClient } from "@ston-fi/api";
 import { getErrorMessage } from "../../../utils/errors.js";
 import { createLogger } from "../../../utils/logger.js";
+import { fromUnits } from "../../../ton/units.js";
+import { simulateStonfiSwap } from "../../../ton/dex-service.js";
 
 const log = createLogger("Tools");
-
-// Native TON address used by STON.fi API
-const NATIVE_TON_ADDRESS = "EQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAM9c";
 interface JettonQuoteParams {
   from_asset: string;
   to_asset: string;
@@ -47,49 +45,35 @@ export const stonfiQuoteExecutor: ToolExecutor<JettonQuoteParams> = async (
   try {
     const { from_asset, to_asset, amount, slippage = 0.01 } = params;
 
-    // STON.fi API requires the native TON address, not the string "ton"
-    const isTonInput = from_asset.toLowerCase() === "ton" || from_asset === NATIVE_TON_ADDRESS;
-    const isTonOutput = to_asset.toLowerCase() === "ton" || to_asset === NATIVE_TON_ADDRESS;
-    const fromAddress = isTonInput ? NATIVE_TON_ADDRESS : from_asset;
-    const toAddress = isTonOutput ? NATIVE_TON_ADDRESS : to_asset;
-
-    // Initialize STON.fi API client
-    const stonApiClient = new StonApiClient();
-
-    // Fetch decimals for accurate conversion (TON=9, USDT=6, WBTC=8, etc.)
-    const fromAssetInfo = await stonApiClient.getAsset(fromAddress);
-    const fromDecimals = fromAssetInfo?.decimals ?? 9;
-    const amountStr = amount.toFixed(fromDecimals);
-    const [whole, frac = ""] = amountStr.split(".");
-    const offerUnits = BigInt(
-      whole + (frac + "0".repeat(fromDecimals)).slice(0, fromDecimals)
-    ).toString();
-
-    const simulationResult = await stonApiClient.simulateSwap({
-      offerAddress: fromAddress,
-      askAddress: toAddress,
-      offerUnits,
-      slippageTolerance: slippage.toString(),
+    const simulation = await simulateStonfiSwap({
+      fromAsset: from_asset,
+      toAsset: to_asset,
+      amount,
+      slippage,
     });
-
-    if (!simulationResult) {
+    if (!simulation) {
       return {
         success: false,
         error: "Failed to get quote. Pool may not exist or have insufficient liquidity.",
       };
     }
+    const {
+      simulation: simulationResult,
+      fromAddress,
+      toAddress,
+      isTonInput,
+      isTonOutput,
+      toDecimals,
+    } = simulation;
 
     // Parse results
     const askUnits = BigInt(simulationResult.askUnits);
     const minAskUnits = BigInt(simulationResult.minAskUnits);
     const feeUnits = BigInt(simulationResult.feeUnits || "0");
 
-    // Fetch ask asset decimals for accurate output conversion
-    const toAssetInfo = await stonApiClient.getAsset(toAddress);
-    const askDecimals = toAssetInfo?.decimals ?? 9;
-    const expectedOutput = Number(askUnits) / 10 ** askDecimals;
-    const minOutput = Number(minAskUnits) / 10 ** askDecimals;
-    const feeAmount = Number(feeUnits) / 10 ** askDecimals;
+    const expectedOutput = fromUnits(askUnits, toDecimals);
+    const minOutput = fromUnits(minAskUnits, toDecimals);
+    const feeAmount = fromUnits(feeUnits, toDecimals);
 
     // Calculate effective rate
     const rate = expectedOutput / amount;

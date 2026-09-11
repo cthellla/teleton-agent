@@ -1,10 +1,11 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 import { Type } from "@sinclair/typebox";
 import { Api } from "telegram";
 import type { Tool, ToolExecutor, ToolResult } from "../../types.js";
 import { getErrorMessage } from "../../../../utils/errors.js";
 import { createLogger } from "../../../../utils/logger.js";
 import { getClient } from "../../../../sdk/telegram-utils.js";
+import { isUserBridge } from "../../../../telegram/bridge-guards.js";
+import { resolveTelegramMessageText } from "../../../../telegram/rich-message.js";
 
 const log = createLogger("Tools");
 
@@ -69,7 +70,7 @@ export const telegramGetHistoryExecutor: ToolExecutor<GetHistoryParams> = async 
     const gramJsClient = getClient(context.bridge);
 
     // Use cached peer if available, fall back to raw chatId string
-    const entity = context.bridge.getPeer(chatId) || chatId;
+    const entity = isUserBridge(context.bridge) ? context.bridge.getPeer(chatId) || chatId : chatId;
 
     // Fetch messages using GramJS getMessages
     const messages = await gramJsClient.getMessages(entity, {
@@ -78,18 +79,20 @@ export const telegramGetHistoryExecutor: ToolExecutor<GetHistoryParams> = async 
     });
 
     // Parse and format messages
-    const formattedMessages = messages.map((msg: any) => ({
-      id: msg.id,
-      text: msg.message || "",
-      senderId: msg.senderId?.toString() || null,
-      senderName: msg.sender
-        ? msg.sender instanceof Api.User
-          ? msg.sender.firstName || msg.sender.username || null
-          : null
-        : null,
-      timestamp: msg.date,
-      isOutgoing: msg.out || false,
-    }));
+    const formattedMessages = await Promise.all(
+      messages.map(async (msg: Api.Message) => ({
+        id: msg.id,
+        text: await resolveTelegramMessageText(gramJsClient, msg, entity),
+        senderId: msg.senderId?.toString() || null,
+        senderName: msg.sender
+          ? msg.sender instanceof Api.User
+            ? msg.sender.firstName || msg.sender.username || null
+            : null
+          : null,
+        timestamp: msg.date,
+        isOutgoing: msg.out || false,
+      }))
+    );
 
     return {
       success: true,

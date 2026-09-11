@@ -51,13 +51,13 @@ const executor = async (params: any, context: any) => {
     inlineKeyboard,
   });
 
-  return { success: true, message_id: sent.id };
+  return { success: true, data: { messageId: sent.id } };
 };
 
 export const sendButtonsEntry: ToolEntry = {
   tool,
   executor,
   scope: "always",
-  requiredMode: "bot",
-  tags: ["core", "bot"],
+  mode: "bot",
+  tags: ["social", "bot"],
 };

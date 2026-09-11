@@ -28,7 +28,7 @@ interface JettonHoldersParams {
 export const jettonHoldersTool: Tool = {
   name: "jetton_holders",
   description:
-    "List top holders of a jetton ranked by balance. Returns wallet addresses and amounts. Useful for whale analysis and token distribution checks.",
+    "List top holders of a jetton ranked by balance. Returns wallet addresses and amounts. Useful for whale analysis and token distribution checks. Useful when user asks 'who holds the most X?' or 'show whale wallets for Y'.",
   category: "data-bearing",
   parameters: Type.Object({
     jetton_address: Type.String({
@@ -97,12 +97,6 @@ export const jettonHoldersExecutor: ToolExecutor<JettonHoldersParams> = async (
         isWallet: h.owner?.is_wallet || false,
       };
     });
-
-    // Calculate concentration (top holder %)
-    const _totalTop = holders.reduce(
-      (sum: number, h: FormattedHolder) => sum + parseFloat(h.balance.replace(/,/g, "")),
-      0
-    );
 
     let message = `Top ${holders.length} holders of ${symbol}:\n\n`;
     holders.forEach((h) => {

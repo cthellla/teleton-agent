@@ -8,17 +8,56 @@ import type { EmbeddingProvider } from "../memory/embeddings/provider.js";
 import { readOffset, writeOffset } from "./offset-store.js";
 import { PendingHistory } from "../memory/pending-history.js";
 import type { ToolContext } from "../agent/tools/types.js";
-import { TELEGRAM_SEND_TOOLS } from "../constants/tools.js";
 import { isSilentReply } from "../constants/tokens.js";
-import { telegramTranscribeAudioExecutor } from "../agent/tools/telegram/media/transcribe-audio.js";
+import {
+  deliveredTelegramMessageId,
+  deliveredTelegramMessageIdFromCall,
+  deliveredTelegramStructuredMessage,
+  deliveredTelegramText,
+} from "../agent/telegram-send-state.js";
+import { transcribeAudio } from "../sdk/telegram-utils.js";
 import { TYPING_REFRESH_MS } from "../constants/timeouts.js";
 import { createLogger } from "../utils/logger.js";
 import { getErrorMessage } from "../utils/errors.js";
 import { splitMessageForTelegram } from "./message-splitter.js";
 import { sanitizeMarkdownForTelegram } from "./sanitize-markdown.js";
+import { randomUUID } from "crypto";
+import { TELEGRAM_SEND_TOOLS } from "../constants/tools.js";
 
 const log = createLogger("Telegram");
 import type { PluginMessageEvent } from "@teleton-agent/sdk";
+
+type FeedTelegramMessage = Omit<TelegramMessage, "id"> & { id: number | string };
+
+function providerFailureReply(error: unknown): string {
+  const message = getErrorMessage(error).toLowerCase();
+
+  if (
+    message.includes("usage limit") ||
+    message.includes("insufficient_quota") ||
+    message.includes("quota exceeded")
+  ) {
+    return "⚠️ The AI provider usage limit has been reached. Please try again later or switch providers.";
+  }
+
+  if (
+    message.includes("rate limit") ||
+    message.includes("rate_limited") ||
+    /\b429\b/.test(message)
+  ) {
+    return "⚠️ The AI provider is temporarily rate-limited. Please try again in a moment.";
+  }
+
+  if (
+    message.includes("authentication token is expired") ||
+    message.includes("invalid authentication") ||
+    /\b(?:401|unauthorized)\b/.test(message)
+  ) {
+    return "⚠️ The AI provider credentials are invalid or expired. Please refresh them and try again.";
+  }
+
+  return "⚠️ The AI provider is unavailable. Please try again later.";
+}
 
 export interface MessageContext {
   message: TelegramMessage;
@@ -77,13 +116,17 @@ class RateLimiter {
   }
 }
 
-class ChatQueue {
+export class ChatQueue {
   private chains = new Map<string, Promise<void>>();
   private activeTasks = 0;
   private maxConcurrent: number;
   private waitQueue: Array<() => void> = [];
+  private pendingTasks = 0;
 
-  constructor(maxConcurrent = 10) {
+  constructor(
+    maxConcurrent = 10,
+    private readonly maxPending = 100
+  ) {
     this.maxConcurrent = maxConcurrent;
   }
 
@@ -110,6 +153,10 @@ class ChatQueue {
   }
 
   enqueue(chatId: string, task: () => Promise<void>): Promise<void> {
+    if (this.pendingTasks >= this.maxPending) {
+      return Promise.reject(new Error("Telegram message queue capacity reached"));
+    }
+    this.pendingTasks++;
     const prev = this.chains.get(chatId) ?? Promise.resolve();
     const next = prev
       .then(
@@ -117,6 +164,7 @@ class ChatQueue {
         () => this.acquireSlot(chatId).then(task)
       )
       .finally(() => {
+        this.pendingTasks--;
         this.releaseSlot();
         if (this.chains.get(chatId) === next) {
           this.chains.delete(chatId);
@@ -153,7 +201,7 @@ export class MessageHandler {
   private db: Database.Database;
   private chatQueue: ChatQueue = new ChatQueue();
   private pluginMessageHooks: Array<
-    (e: PluginMessageEvent) => Promise<string | { context: string } | void>
+    (e: PluginMessageEvent) => Promise<string | { context: string } | { block: boolean } | void>
   > = [];
   private recentMessageIds: Set<string> = new Set();
   private botReplyTimestamps: Map<string, number> = new Map();
@@ -166,7 +214,8 @@ export class MessageHandler {
     db: Database.Database,
     embedder: EmbeddingProvider,
     vectorEnabled: boolean,
-    fullConfig?: Config
+    fullConfig?: Config,
+    messageStore?: MessageStore
   ) {
     this.bridge = bridge;
     this.config = config;
@@ -178,7 +227,7 @@ export class MessageHandler {
       config.rate_limit_groups_per_minute
     );
 
-    this.messageStore = new MessageStore(db, embedder, vectorEnabled);
+    this.messageStore = messageStore ?? new MessageStore(db, embedder, vectorEnabled);
     this.chatStore = new ChatStore(db);
     this.userStore = new UserStore(db);
     this.pendingHistory = new PendingHistory();
@@ -195,8 +244,19 @@ export class MessageHandler {
     this.ownUserId = uid !== undefined ? String(uid) : this.ownUserId;
   }
 
+  updateConfig(config: Config): void {
+    this.config = config.telegram;
+    this.fullConfig = config;
+    this.rateLimiter = new RateLimiter(
+      config.telegram.rate_limit_messages_per_second,
+      config.telegram.rate_limit_groups_per_minute
+    );
+  }
+
   setPluginMessageHooks(
-    hooks: Array<(e: PluginMessageEvent) => Promise<string | { context: string } | void>>
+    hooks: Array<
+      (e: PluginMessageEvent) => Promise<string | { context: string } | { block: boolean } | void>
+    >
   ): void {
     this.pluginMessageHooks = hooks;
   }
@@ -208,8 +268,8 @@ export class MessageHandler {
   analyzeMessage(message: TelegramMessage): MessageContext {
     const isAdmin = this.config.admin_ids.includes(message.senderId);
 
-    // Skip offset dedup in bot mode — Grammy handles dedup via update_id internally
-    if (this.bridge.getMode() !== "bot") {
+    // Bridges that redeliver (user mode) need handler-side dedup; bot mode dedupes via update_id.
+    if (this.bridge.requiresOffsetDedup()) {
       const chatOffset = readOffset(message.chatId) ?? 0;
       if (message.id <= chatOffset) {
         return {
@@ -219,6 +279,20 @@ export class MessageHandler {
           reason: "Already processed",
         };
       }
+    }
+
+    const ownSenderId = this.ownUserId ? Number(this.ownUserId) : undefined;
+    if (
+      ownSenderId !== undefined &&
+      Number.isFinite(ownSenderId) &&
+      message.senderId === ownSenderId
+    ) {
+      return {
+        message,
+        isAdmin,
+        shouldRespond: false,
+        reason: "Sender is self",
+      };
     }
 
     if (message.isBot) {
@@ -445,9 +519,8 @@ export class MessageHandler {
       if (isReplayMsg) log.info(`[Replay] chatQueue task started for ${message.chatId}`);
       try {
         // Re-check offset after queue wait to prevent duplicate processing
-        // (GramJS may fire duplicate NewMessage events during reconnection)
-        // Skip in bot mode — Grammy handles dedup via update_id
-        if (this.bridge.getMode() !== "bot") {
+        // (GramJS may fire duplicate NewMessage events during reconnection).
+        if (this.bridge.requiresOffsetDedup()) {
           const postQueueOffset = readOffset(message.chatId) ?? 0;
           if (message.id <= postQueueOffset) {
             log.debug(`Skipping message ${message.id} (already processed after queue wait)`);
@@ -484,22 +557,16 @@ export class MessageHandler {
           let transcriptionText: string | null = null;
           if (message.mediaType === "voice" || message.mediaType === "audio") {
             try {
-              const transcribeResult = await telegramTranscribeAudioExecutor(
-                { chatId: message.chatId, messageId: message.id },
-                {
-                  bridge: this.bridge,
-                  db: this.db,
-                  chatId: message.chatId,
-                  senderId: message.senderId,
-                  isGroup: message.isGroup,
-                  config: this.fullConfig,
-                }
+              const transcribeResult = await transcribeAudio(
+                this.bridge,
+                message.chatId,
+                message.id
               );
-              const transcribeData = transcribeResult.data as Record<string, unknown> | undefined;
-              if (transcribeResult.success && transcribeData?.text) {
-                transcriptionText = transcribeData.text as string;
+              if (transcribeResult.text) {
+                transcriptionText = transcribeResult.text;
                 log.info(
-                  `Auto-transcribed voice msg ${message.id}: "${transcriptionText?.substring(0, 80)}..."`
+                  { messageId: message.id, transcriptLength: transcriptionText.length },
+                  "Voice message auto-transcribed"
                 );
               }
             } catch (innerError) {
@@ -528,7 +595,7 @@ export class MessageHandler {
           const streamMode = this.fullConfig?.telegram?.stream_mode ?? "all";
           const _isReplay = message.id < 0;
           const streamToChat =
-            this.bridge.getMode() === "bot" && this.bridge.streamResponse && streamMode !== "off"
+            this.bridge.streamResponse && streamMode !== "off"
               ? {
                   chatId: message.chatId,
                   bridge: this.bridge,
@@ -536,40 +603,102 @@ export class MessageHandler {
                 }
               : undefined;
 
-          const response = await this.agent.processMessage({
-            chatId: message.chatId,
-            userMessage: effectiveText,
-            userName,
-            timestamp: message.timestamp.getTime(),
-            isGroup: message.isGroup,
-            pendingContext,
-            toolContext,
-            senderUsername: message.senderUsername,
-            senderLangCode: message.senderLangCode,
-            senderRank: message.senderRank,
-            hasMedia: message.hasMedia,
-            mediaType: message.mediaType,
-            messageId: message.id,
-            replyContext,
-            streamToChat,
-          });
+          let response: Awaited<ReturnType<AgentRuntime["processMessage"]>>;
+          try {
+            response = await this.agent.processMessage({
+              chatId: message.chatId,
+              userMessage: effectiveText,
+              userName,
+              timestamp: message.timestamp.getTime(),
+              isGroup: message.isGroup,
+              pendingContext,
+              toolContext,
+              senderUsername: message.senderUsername,
+              senderLangCode: message.senderLangCode,
+              senderRank: message.senderRank,
+              hasMedia: message.hasMedia,
+              mediaType: message.mediaType,
+              messageId: message.id,
+              replyContext,
+              streamToChat,
+            });
+          } catch (error) {
+            log.error({ err: error }, "Agent provider request failed");
 
-          if (isReplayMsg) log.info(`[Replay] processMessage done, handling response`);
-          // 8. Handle response based on whether tools were used
-          const hasToolCalls = response.toolCalls && response.toolCalls.length > 0;
+            try {
+              await this.bridge.sendMessage({
+                chatId: message.chatId,
+                text: providerFailureReply(error),
+                replyToId: message.id,
+              });
 
-          // Check if agent used any Telegram send tool - it already sent the message
-          const telegramSendCalled =
-            hasToolCalls && response.toolCalls?.some((tc) => TELEGRAM_SEND_TOOLS.has(tc.name));
+              if (this.bridge.requiresOffsetDedup()) {
+                writeOffset(message.id, message.chatId);
+              }
+            } catch (notificationError) {
+              log.error({ err: notificationError }, "Failed to send provider error notification");
+            }
 
-          if (isSilentReply(response.content)) {
-            if (isReplayMsg) log.info(`[Replay] Silent reply suppressed`);
+            return;
+          }
+
+          // Suppress only an identical text that was confirmed delivered to this
+          // chat. Cross-chat sends, failed sends, and distinct confirmations must
+          // still produce a response to the requester.
+          const responseAlreadyDelivered = deliveredTelegramText(
+            response.toolCalls,
+            message.chatId,
+            response.content
+          );
+          const deliveredStructuredMessage = deliveredTelegramStructuredMessage(
+            response.toolCalls,
+            message.chatId
+          );
+
+          if (deliveredStructuredMessage) {
+            // A structured send is the response itself. Never append the
+            // model's final acknowledgement as a separate Telegram message.
+            const deliveryData =
+              deliveredStructuredMessage.result?.data &&
+              typeof deliveredStructuredMessage.result.data === "object"
+                ? (deliveredStructuredMessage.result.data as Record<string, unknown>)
+                : {};
+            const richText =
+              typeof deliveryData.renderedText === "string" ? deliveryData.renderedText : "";
+            const deliveredMessageId = deliveredTelegramMessageIdFromCall(
+              deliveredStructuredMessage
+            );
+            const mediaType =
+              deliveryData.mediaType === "photo" ||
+              deliveryData.mediaType === "video" ||
+              deliveryData.mediaType === "audio" ||
+              deliveryData.mediaType === "document"
+                ? deliveryData.mediaType
+                : undefined;
+
+            await this.storeTelegramMessage(
+              {
+                id: deliveredMessageId ?? `tool:${message.id}:${randomUUID()}`,
+                chatId: message.chatId,
+                senderId: this.ownUserId ? parseInt(this.ownUserId, 10) : 0,
+                text: richText,
+                isGroup: message.isGroup,
+                isChannel: message.isChannel,
+                isBot: false,
+                mentionsMe: false,
+                timestamp: new Date(),
+                hasMedia: deliveryData.hasMedia === true,
+                mediaType,
+              },
+              true
+            );
+          } else if (isSilentReply(response.content)) {
             log.debug("Silent reply suppressed");
           } else if (response.streamed) {
             if (isReplayMsg) log.info(`[Replay] Response already streamed`);
             log.debug("Response already streamed to chat");
           } else if (
-            !telegramSendCalled &&
+            !responseAlreadyDelivered &&
             response.content &&
             response.content.trim().length > 0
           ) {
@@ -615,15 +744,20 @@ export class MessageHandler {
               );
             }
           } else if (
-            telegramSendCalled &&
+            responseAlreadyDelivered &&
             response.content &&
             response.content.trim().length > 0 &&
             !isSilentReply(response.content)
           ) {
             // Tool already sent the message to Telegram — store in feed for conversation history
+            const deliveredMessageId = deliveredTelegramMessageId(
+              response.toolCalls,
+              message.chatId,
+              response.content
+            );
             await this.storeTelegramMessage(
               {
-                id: 0, // tool-sent message ID not propagated back
+                id: deliveredMessageId ?? `tool:${message.id}:${randomUUID()}`,
                 chatId: message.chatId,
                 senderId: this.ownUserId ? parseInt(this.ownUserId, 10) : 0,
                 text: response.content,
@@ -643,9 +777,8 @@ export class MessageHandler {
             this.pendingHistory.clearPending(message.chatId);
           }
 
-          // Mark as processed AFTER successful handling (prevents message loss on crash)
-          // Skip in bot mode — Grammy handles dedup via update_id
-          if (this.bridge.getMode() !== "bot") {
+          // Mark as processed AFTER successful handling (prevents message loss on crash).
+          if (this.bridge.requiresOffsetDedup()) {
             writeOffset(message.id, message.chatId);
           }
         } finally {
@@ -797,7 +930,12 @@ export class MessageHandler {
         userMessage: `${userText}\n\n${guestTag}${injectedContext}`,
         userName,
         timestamp: message.timestamp.getTime(),
-        isGroup: false,
+        // A guest turn answers in a chat the bot is not a member of, so treat it as
+        // a group: isGroup keeps memory and strategy out of the prompt, and isGuest
+        // makes turn preparation strip the telegram_send tools. With isGroup:false
+        // both were exposed to strangers' chats.
+        isGroup: true,
+        isGuest: true,
         toolContext,
         senderUsername: message.senderUsername,
         senderLangCode: message.senderLangCode,
@@ -841,7 +979,7 @@ export class MessageHandler {
    * Store Telegram message to feed (with chat/user tracking)
    */
   private async storeTelegramMessage(
-    message: TelegramMessage,
+    message: FeedTelegramMessage,
     isFromAgent: boolean
   ): Promise<void> {
     try {

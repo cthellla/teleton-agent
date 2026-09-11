@@ -9,6 +9,14 @@ import {
   type SupportedProvider,
 } from "../../config/providers.js";
 import { getErrorMessage } from "../../utils/errors.js";
+import { SUPPORTED_NODE_RANGE, isNodeVersionSupported } from "../../constants/runtime.js";
+import { GREEN, YELLOW, RED } from "../prompts.js";
+import { getCodexApiKey, isCodexTokenValid } from "../../providers/codex-credentials.js";
+import {
+  getGrokBuildCliVersion,
+  getGrokBuildApiKey,
+  isGrokBuildTokenValid,
+} from "../../providers/grok-build-credentials.js";
 
 interface CheckResult {
   name: string;
@@ -16,20 +24,19 @@ interface CheckResult {
   message: string;
 }
 
-const green = "\x1b[32m";
-const yellow = "\x1b[33m";
-const red = "\x1b[31m";
-const reset = "\x1b[0m";
+// ASCII banner colors (raw ANSI — chalk has no equivalent blue export)
 const blue = "\x1b[34m";
+const reset = "\x1b[0m";
 
 function formatResult(result: CheckResult): string {
   const icon =
-    result.status === "ok"
-      ? `${green}✓${reset}`
-      : result.status === "warn"
-        ? `${yellow}⚠${reset}`
-        : `${red}✗${reset}`;
+    result.status === "ok" ? GREEN("✓") : result.status === "warn" ? YELLOW("⚠") : RED("✗");
   return `${icon} ${result.name}: ${result.message}`;
+}
+
+/** Read and YAML-parse the config file (shared by the config-dependent checks). */
+function readAndParseConfig(configPath: string) {
+  return parse(readFileSync(configPath, "utf-8"));
 }
 
 async function checkConfig(workspaceDir: string): Promise<CheckResult> {
@@ -44,8 +51,7 @@ async function checkConfig(workspaceDir: string): Promise<CheckResult> {
   }
 
   try {
-    const content = readFileSync(configPath, "utf-8");
-    const raw = parse(content);
+    const raw = readAndParseConfig(configPath);
     const result = ConfigSchema.safeParse(raw);
 
     if (!result.success) {
@@ -82,8 +88,7 @@ async function checkTelegramCredentials(workspaceDir: string): Promise<CheckResu
   }
 
   try {
-    const content = readFileSync(configPath, "utf-8");
-    const config = parse(content);
+    const config = readAndParseConfig(configPath);
 
     if (!config.telegram?.api_id || !config.telegram?.api_hash) {
       return {
@@ -127,8 +132,7 @@ async function checkApiKey(workspaceDir: string): Promise<CheckResult> {
   }
 
   try {
-    const content = readFileSync(configPath, "utf-8");
-    const config = parse(content);
+    const config = readAndParseConfig(configPath);
 
     const provider = (config.agent?.provider || "anthropic") as SupportedProvider;
     const apiKey = config.agent?.api_key;
@@ -143,12 +147,42 @@ async function checkApiKey(workspaceDir: string): Promise<CheckResult> {
       };
     }
 
-    if (provider === "cocoon" || provider === "local") {
+    if (meta.credentialMode === "none") {
       return {
         name: `${meta.displayName}`,
         status: "ok",
         message: "No API key needed",
       };
+    }
+
+    if (meta.credentialMode === "cli-auto") {
+      try {
+        if (provider === "codex") {
+          getCodexApiKey();
+          return {
+            name: meta.displayName,
+            status: isCodexTokenValid() ? "ok" : "warn",
+            message: isCodexTokenValid() ? "CLI credentials detected" : "CLI token expired",
+          };
+        }
+
+        const cliVersion = getGrokBuildCliVersion();
+        getGrokBuildApiKey();
+        const tokenValid = isGrokBuildTokenValid();
+        return {
+          name: meta.displayName,
+          status: tokenValid ? "ok" : "warn",
+          message: tokenValid
+            ? `Grok CLI ${cliVersion}; credentials detected`
+            : `Grok CLI ${cliVersion}; token expired (run grok login)`,
+        };
+      } catch (error) {
+        return {
+          name: meta.displayName,
+          status: "error",
+          message: getErrorMessage(error),
+        };
+      }
     }
 
     if (!apiKey) {
@@ -227,7 +261,7 @@ async function checkWallet(workspaceDir: string): Promise<CheckResult> {
 }
 
 async function checkSoul(workspaceDir: string): Promise<CheckResult> {
-  const soulPath = join(workspaceDir, "SOUL.md");
+  const soulPath = join(workspaceDir, "workspace", "SOUL.md");
 
   if (!existsSync(soulPath)) {
     return {
@@ -334,8 +368,7 @@ async function checkModel(workspaceDir: string): Promise<CheckResult> {
   }
 
   try {
-    const content = readFileSync(configPath, "utf-8");
-    const config = parse(content);
+    const config = readAndParseConfig(configPath);
 
     const provider = (config.agent?.provider || "anthropic") as SupportedProvider;
     let model = config.agent?.model;
@@ -373,8 +406,7 @@ async function checkAdmins(workspaceDir: string): Promise<CheckResult> {
   }
 
   try {
-    const content = readFileSync(configPath, "utf-8");
-    const config = parse(content);
+    const config = readAndParseConfig(configPath);
 
     const admins = config.telegram?.admin_ids || [];
 
@@ -402,13 +434,12 @@ async function checkAdmins(workspaceDir: string): Promise<CheckResult> {
 
 async function checkNodeVersion(): Promise<CheckResult> {
   const version = process.version;
-  const major = parseInt(version.slice(1).split(".")[0]);
 
-  if (major < 20) {
+  if (!isNodeVersionSupported(version)) {
     return {
       name: "Node.js",
       status: "error",
-      message: `${version} (requires >= 20.0.0)`,
+      message: `${version} (requires ${SUPPORTED_NODE_RANGE})`,
     };
   }
 
@@ -429,7 +460,7 @@ ${blue}  ┌──────────────────────�
   └─────────────────────────────────────────────────────────────┘${reset}
 `);
 
-  console.log(`  Workspace: ${workspaceDir}\n`);
+  console.log(`  Data directory: ${workspaceDir}\n`);
 
   // Run all checks
   const results: CheckResult[] = [];
@@ -464,14 +495,16 @@ ${blue}  ┌──────────────────────�
 
   if (errors > 0) {
     console.log(
-      `${red}  ✗ ${errors} error${errors > 1 ? "s" : ""} found - run 'teleton setup' to fix${reset}`
+      RED(`  ✗ ${errors} error${errors > 1 ? "s" : ""} found - run 'teleton setup' to fix`)
     );
   } else if (warnings > 0) {
     console.log(
-      `${yellow}  ⚠ ${warnings} warning${warnings > 1 ? "s" : ""} - agent may work with limited features${reset}`
+      YELLOW(
+        `  ⚠ ${warnings} warning${warnings > 1 ? "s" : ""} - agent may work with limited features`
+      )
     );
   } else {
-    console.log(`${green}  ✓ All ${ok} checks passed - system ready${reset}`);
+    console.log(GREEN(`  ✓ All ${ok} checks passed - system ready`));
   }
 
   console.log("");

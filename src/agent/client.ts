@@ -1,260 +1,51 @@
 import {
   complete,
   stream,
-  getModel,
-  type Model,
-  type Api,
   type Context,
   type AssistantMessage,
   type Message,
-  type Tool,
-  type ProviderStreamOptions,
-} from "@mariozechner/pi-ai";
+} from "@earendil-works/pi-ai/compat";
 import type { AgentConfig } from "../config/schema.js";
 import { appendToTranscript, readTranscript } from "../session/transcript.js";
-import { getProviderMetadata, type SupportedProvider } from "../config/providers.js";
-import { sanitizeToolsForGemini } from "./schema-sanitizer.js";
+import type { SupportedProvider } from "../config/providers.js";
 import { createLogger } from "../utils/logger.js";
-import { fetchWithTimeout } from "../utils/fetch.js";
+import { refreshCodexApiKey } from "../providers/codex-credentials.js";
+import { refreshGrokBuildApiKey } from "../providers/grok-build-credentials.js";
 import {
-  getClaudeCodeApiKey,
-  refreshClaudeCodeApiKey,
-} from "../providers/claude-code-credentials.js";
+  prepareModelRequest,
+  type ModelRequestOptions,
+  type PreparedModelRequest,
+} from "./model-request.js";
+import { isSilentReply } from "../constants/tokens.js";
 import { LLM_REQUEST_TIMEOUT_MS, LLM_STREAM_TIMEOUT_MS } from "../constants/timeouts.js";
-import { getCodexApiKey, refreshCodexApiKey } from "../providers/codex-credentials.js";
+
+// Model resolution + provider model registration live in the neutral providers/
+// layer so non-agent consumers (e.g. memory) can resolve models without importing
+// from agent/. Re-exported here for backward compatibility with existing importers.
+export {
+  registerGocoonModels,
+  registerLocalModels,
+  getProviderModel,
+  getUtilityModel,
+} from "../providers/model-resolver.js";
+export { getEffectiveApiKey } from "./model-request.js";
 
 const log = createLogger("LLM");
 
-export function isOAuthToken(apiKey: string, provider?: string): boolean {
-  if (provider && provider !== "anthropic" && provider !== "claude-code") return false;
-  return apiKey.startsWith("sk-ant-oat01-");
+/** 401/Unauthorized detection for the one-shot credential-refresh retry. */
+function isUnauthorizedError(errorMessage?: string): boolean {
+  if (!errorMessage) return false;
+  return errorMessage.includes("401") || errorMessage.toLowerCase().includes("unauthorized");
 }
 
-/** Resolve the effective API key for a provider (local/cocoon need no real key) */
-export function getEffectiveApiKey(provider: string, rawKey: string): string {
-  if (provider === "local") return "local";
-  if (provider === "cocoon") return "";
-  if (provider === "claude-code") return getClaudeCodeApiKey(rawKey);
-  if (provider === "codex") return getCodexApiKey(rawKey);
-  return rawKey;
-}
-
-const modelCache = new Map<string, Model<Api>>();
-
-const COCOON_MODELS: Record<string, Model<"openai-completions">> = {};
-
-/** Register models discovered from a running Cocoon client */
-export async function registerCocoonModels(httpPort: number): Promise<string[]> {
-  try {
-    const res = await fetch(`http://localhost:${httpPort}/v1/models`);
-    if (!res.ok) return [];
-    const body = (await res.json()) as {
-      data?: { id?: string; name?: string }[];
-      models?: { id?: string; name?: string }[];
-    };
-    const models = body.data || body.models || [];
-    if (!Array.isArray(models)) return [];
-    const ids: string[] = [];
-    for (const m of models) {
-      const id = m.id || m.name || String(m);
-      COCOON_MODELS[id] = {
-        id,
-        name: id,
-        api: "openai-completions",
-        provider: "cocoon",
-        baseUrl: `http://localhost:${httpPort}/v1`,
-        reasoning: false,
-        input: ["text"],
-        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-        contextWindow: 128000,
-        maxTokens: 4096,
-        compat: {
-          supportsStore: false,
-          supportsDeveloperRole: false,
-          supportsReasoningEffort: false,
-        },
-      };
-      ids.push(id);
-    }
-    return ids;
-  } catch {
-    return [];
-  }
-}
-
-const LOCAL_MODELS: Record<string, Model<"openai-completions">> = {};
-
-/** Register models discovered from a local OpenAI-compatible server */
-export async function registerLocalModels(baseUrl: string): Promise<string[]> {
-  try {
-    const parsed = new URL(baseUrl);
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-      log.warn(`Local LLM base_url must use http or https (got ${parsed.protocol})`);
-      return [];
-    }
-    const url = baseUrl.replace(/\/+$/, "");
-    const res = await fetchWithTimeout(`${url}/models`, { timeoutMs: 10_000 });
-    if (!res.ok) return [];
-    const body = (await res.json()) as {
-      data?: { id?: string; name?: string }[];
-      models?: { id?: string; name?: string }[];
-    };
-    const rawModels = body.data || body.models || [];
-    if (!Array.isArray(rawModels)) return [];
-    const models = rawModels.slice(0, 500);
-    const ids: string[] = [];
-    for (const m of models) {
-      const id = m.id || m.name || String(m);
-      LOCAL_MODELS[id] = {
-        id,
-        name: id,
-        api: "openai-completions",
-        provider: "local",
-        baseUrl: url,
-        reasoning: false,
-        input: ["text"],
-        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-        contextWindow: 128000,
-        maxTokens: 4096,
-        compat: {
-          supportsStore: false,
-          supportsDeveloperRole: false,
-          supportsReasoningEffort: false,
-          supportsStrictMode: false,
-          maxTokensField: "max_tokens",
-        },
-      };
-      ids.push(id);
-    }
-    return ids;
-  } catch {
-    return [];
-  }
-}
-
-/** Moonshot backward-compat: old model IDs → kimi-coding IDs */
-const MOONSHOT_MODEL_ALIASES: Record<string, string> = {
-  "kimi-k2.5": "k2p6",
+/** Providers whose credentials can be refreshed once on a 401, then the call retried. */
+const CREDENTIAL_REFRESHERS: Partial<Record<SupportedProvider, () => Promise<string | null>>> = {
+  codex: refreshCodexApiKey,
+  "grok-build": refreshGrokBuildApiKey,
 };
 
-export function getProviderModel(provider: SupportedProvider, modelId: string): Model<Api> {
-  const cacheKey = `${provider}:${modelId}`;
-  const cached = modelCache.get(cacheKey);
-  if (cached) return cached;
-
-  const meta = getProviderMetadata(provider);
-
-  if (meta.piAiProvider === "cocoon") {
-    let model = COCOON_MODELS[modelId];
-    if (!model) {
-      model = Object.values(COCOON_MODELS)[0];
-      if (model) log.warn(`Cocoon model "${modelId}" not found, using "${model.id}"`);
-    }
-    if (model) {
-      modelCache.set(cacheKey, model);
-      return model;
-    }
-    throw new Error("No Cocoon models available. Is the cocoon client running?");
-  }
-
-  if (meta.piAiProvider === "local") {
-    let model = LOCAL_MODELS[modelId];
-    if (!model) {
-      model = Object.values(LOCAL_MODELS)[0];
-      if (model) log.warn(`Local model "${modelId}" not found, using "${model.id}"`);
-    }
-    if (model) {
-      modelCache.set(cacheKey, model);
-      return model;
-    }
-    throw new Error("No local models available. Is the LLM server running?");
-  }
-
-  // Moonshot backward-compat: remap old model IDs to kimi-coding IDs
-  if (provider === "moonshot" && MOONSHOT_MODEL_ALIASES[modelId]) {
-    modelId = MOONSHOT_MODEL_ALIASES[modelId];
-  }
-
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- getModel requires literal provider+model types; dynamic strings need casts
-    let model = getModel(meta.piAiProvider as any, modelId as any);
-
-    // OpenRouter: SDK may only know one variant (:free or paid) — try the other
-
-    if (!model && provider === "openrouter") {
-      if (!modelId.endsWith(":free")) {
-        const freeVariant = getModel(meta.piAiProvider as any, `${modelId}:free` as any); // eslint-disable-line @typescript-eslint/no-explicit-any
-        if (freeVariant) {
-          model = { ...freeVariant, id: modelId } as typeof freeVariant;
-          log.info(`Model ${modelId} resolved via :free variant in SDK`);
-        }
-      } else {
-        /* eslint-disable @typescript-eslint/no-explicit-any -- pi-ai dynamic provider/model string typing */
-        const paidVariant = getModel(
-          meta.piAiProvider as any,
-          modelId.replace(/:free$/, "") as any
-        );
-        /* eslint-enable @typescript-eslint/no-explicit-any */
-        if (paidVariant) {
-          model = { ...paidVariant, id: modelId } as typeof paidVariant;
-          log.info(`Model ${modelId} resolved via paid variant in SDK`);
-        }
-      }
-    }
-
-    // OpenRouter: if model still not found, create a generic passthrough
-    // OpenRouter API accepts any valid model ID — pi-ai catalog doesn't need to know it
-    if (!model && provider === "openrouter") {
-      const anyKnown = getModel(meta.piAiProvider as any, meta.defaultModel as any); // eslint-disable-line @typescript-eslint/no-explicit-any
-      if (anyKnown) {
-        model = { ...anyKnown, id: modelId } as typeof anyKnown;
-        log.info(`Model ${modelId} not in SDK catalog — using generic OpenRouter passthrough`);
-      }
-    }
-
-    if (!model) {
-      throw new Error(`getModel returned undefined for ${provider}/${modelId}`);
-    }
-    modelCache.set(cacheKey, model);
-    return model;
-  } catch {
-    log.warn(`Model ${modelId} not found for ${provider}, falling back to ${meta.defaultModel}`);
-    const fallbackKey = `${provider}:${meta.defaultModel}`;
-    const fallbackCached = modelCache.get(fallbackKey);
-    if (fallbackCached) return fallbackCached;
-
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- same as above: dynamic strings
-      const model = getModel(meta.piAiProvider as any, meta.defaultModel as any);
-      if (!model) {
-        throw new Error(
-          `Fallback model ${meta.defaultModel} also returned undefined for ${provider}`
-        );
-      }
-      modelCache.set(fallbackKey, model);
-      return model;
-    } catch {
-      throw new Error(
-        `Could not find model ${modelId} or fallback ${meta.defaultModel} for ${provider}`
-      );
-    }
-  }
-}
-
-export function getUtilityModel(provider: SupportedProvider, overrideModel?: string): Model<Api> {
-  const meta = getProviderMetadata(provider);
-  const modelId = overrideModel || meta.utilityModel;
-  return getProviderModel(provider, modelId);
-}
-
-export interface ChatOptions {
-  systemPrompt?: string;
-  context: Context;
-  sessionId?: string;
-  maxTokens?: number;
-  temperature?: number;
+export interface ChatOptions extends ModelRequestOptions {
   persistTranscript?: boolean;
-  tools?: Tool[];
 }
 
 export interface ChatResponse {
@@ -263,137 +54,88 @@ export interface ChatResponse {
   context: Context;
 }
 
-export async function chatWithContext(
-  config: AgentConfig,
+const THINK_RE = /<think>[\s\S]*?<\/think>/g;
+
+/**
+ * Shared post-processing for both complete() and stream() responses: strip
+ * <think> blocks (Mistral, local models, etc.), persist the transcript, extract the
+ * text content, and append the response to the context.
+ */
+function finalizeResponse(
+  response: AssistantMessage,
+  context: Context,
   options: ChatOptions
-): Promise<ChatResponse> {
-  const provider = (config.provider || "anthropic") as SupportedProvider;
-  const model = getProviderModel(provider, config.model);
-  const isCocoon = provider === "cocoon";
-  const isQwen = /qwen/i.test(config.model || "");
-
-  let tools =
-    provider === "google" && options.tools ? sanitizeToolsForGemini(options.tools) : options.tools;
-
-  // Disable thinking mode for Qwen models (prevents COT leaking as markdown text)
-  let systemPrompt = options.systemPrompt || options.context.systemPrompt || "";
-  if (isCocoon || isQwen) {
-    systemPrompt = "/no_think\n" + systemPrompt;
-  }
-  // Cocoon: inject tools into system prompt (no native tool API)
-  let cocoonAllowedTools: Set<string> | undefined;
-  if (isCocoon) {
-    if (tools && tools.length > 0) {
-      cocoonAllowedTools = new Set(tools.map((t) => t.name));
-      const { injectToolsIntoSystemPrompt } = await import("../cocoon/tool-adapter.js");
-      systemPrompt = injectToolsIntoSystemPrompt(systemPrompt, tools);
-      tools = undefined; // Don't send via API
-    }
-  }
-
-  const context: Context = {
-    ...options.context,
-    systemPrompt,
-    tools,
-  };
-
-  const temperature = options.temperature ?? config.temperature;
-
-  const completeOptions: Record<string, unknown> = {
-    apiKey: getEffectiveApiKey(provider, config.api_key),
-    maxTokens: options.maxTokens ?? config.max_tokens,
-    ...(provider !== "codex" && { temperature }),
-    sessionId: options.sessionId,
-    cacheRetention: "long",
-    signal: AbortSignal.timeout(LLM_REQUEST_TIMEOUT_MS),
-  };
-  // Apply user's reasoning effort preference (pi-ai stream() requires reasoningEffort, not reasoning)
-  const reasoningEffort = config.reasoning_effort ?? "low";
-  if (model.reasoning && reasoningEffort !== "off") {
-    completeOptions.reasoningEffort = reasoningEffort;
-  }
-  if (isCocoon) {
-    const { stripCocoonPayload } = await import("../cocoon/tool-adapter.js");
-    completeOptions.onPayload = stripCocoonPayload;
-  }
-
-  let response = await complete(model, context, completeOptions as ProviderStreamOptions);
-
-  // Claude Code provider: retry once on 401/Unauthorized by refreshing credentials
-  if (
-    provider === "claude-code" &&
-    response.stopReason === "error" &&
-    response.errorMessage &&
-    (response.errorMessage.includes("401") ||
-      response.errorMessage.toLowerCase().includes("unauthorized"))
-  ) {
-    log.warn("Claude Code token rejected (401), refreshing credentials and retrying...");
-    const refreshedKey = await refreshClaudeCodeApiKey();
-    if (refreshedKey) {
-      completeOptions.apiKey = refreshedKey;
-      response = await complete(model, context, completeOptions as ProviderStreamOptions);
-    }
-  }
-
-  // Codex provider: retry once on 401/Unauthorized by re-reading credentials
-  if (
-    provider === "codex" &&
-    response.stopReason === "error" &&
-    response.errorMessage &&
-    (response.errorMessage.includes("401") ||
-      response.errorMessage.toLowerCase().includes("unauthorized"))
-  ) {
-    log.warn("Codex token rejected (401), re-reading credentials and retrying...");
-    const refreshedKey = await refreshCodexApiKey();
-    if (refreshedKey) {
-      completeOptions.apiKey = refreshedKey;
-      response = await complete(model, context, completeOptions as ProviderStreamOptions);
-    }
-  }
-
-  // Cocoon: parse <tool_call> from text response
-  if (isCocoon) {
-    const textBlock = response.content.find((b) => b.type === "text");
-    if (textBlock?.type === "text" && textBlock.text.includes("<tool_call>")) {
-      const { parseToolCallsFromText, extractPlainText } =
-        await import("../cocoon/tool-adapter.js");
-      const syntheticCalls = parseToolCallsFromText(textBlock.text, cocoonAllowedTools);
-      if (syntheticCalls.length > 0) {
-        const plainText = extractPlainText(textBlock.text);
-        response.content = [
-          ...(plainText ? [{ type: "text" as const, text: plainText }] : []),
-          ...syntheticCalls,
-        ];
-        (response as { stopReason: AssistantMessage["stopReason"] }).stopReason = "toolUse";
-      }
-    }
-  }
-
-  // Strip <think> blocks from all providers (Cocoon, Mistral, etc.)
-  const thinkRe = /<think>[\s\S]*?<\/think>/g;
+): ChatResponse {
   for (const block of response.content) {
     if (block.type === "text" && block.text.includes("<think>")) {
-      block.text = block.text.replace(thinkRe, "").trim();
+      block.text = block.text.replace(THINK_RE, "").trim();
     }
-  }
-
-  if (options.persistTranscript && options.sessionId) {
-    appendToTranscript(options.sessionId, response);
   }
 
   const textContent = response.content.find((block) => block.type === "text");
   const text = textContent?.type === "text" ? textContent.text : "";
+
+  if (
+    options.persistTranscript &&
+    options.sessionId &&
+    response.stopReason !== "error" &&
+    !isSilentReply(text)
+  ) {
+    appendToTranscript(options.sessionId, response);
+  }
 
   const updatedContext: Context = {
     ...context,
     messages: [...context.messages, response],
   };
 
-  return {
-    message: response,
-    text,
-    context: updatedContext,
-  };
+  return { message: response, text, context: updatedContext };
+}
+
+async function retryAfterCredentialRefresh(
+  request: PreparedModelRequest,
+  response: AssistantMessage
+): Promise<AssistantMessage> {
+  const refresh = CREDENTIAL_REFRESHERS[request.provider];
+  if (!refresh || response.stopReason !== "error" || !isUnauthorizedError(response.errorMessage)) {
+    return response;
+  }
+
+  log.warn(`${request.provider} token rejected (401), refreshing credentials and retrying...`);
+  const refreshedKey = await refresh();
+  if (!refreshedKey) return response;
+
+  request.options.apiKey = refreshedKey;
+  return complete(request.model, request.context, request.options);
+}
+
+/**
+ * Fork-only: a per-request deadline that also cuts a stream stalling after its
+ * headers arrive. The SDK cancels its own timeoutMs once headers are received, so
+ * timeoutMs alone only bounds the connection phase; the pre-merge fork used an
+ * AbortSignal for exactly this. The caller's signal (the turn budget) still applies.
+ */
+function withRequestDeadline(signal: AbortSignal | undefined, ms: number): AbortSignal {
+  const deadline = AbortSignal.timeout(ms);
+  return signal ? AbortSignal.any([signal, deadline]) : deadline;
+}
+
+export async function chatWithContext(
+  config: AgentConfig,
+  options: ChatOptions
+): Promise<ChatResponse> {
+  // Cap, not fallback: the agent loop always passes its remaining turn budget
+  // (max_turn_duration_ms, 300s by default) as timeoutMs, so a plain fallback
+  // never applied. The deadline signal is what actually bounds a stalled stream.
+  const timeoutMs = Math.min(options.timeoutMs ?? LLM_REQUEST_TIMEOUT_MS, LLM_REQUEST_TIMEOUT_MS);
+  const request = prepareModelRequest(config, {
+    ...options,
+    timeoutMs,
+    signal: withRequestDeadline(options.signal, timeoutMs),
+  });
+  const initialResponse = await complete(request.model, request.context, request.options);
+  const response = await retryAfterCredentialRefresh(request, initialResponse);
+  return finalizeResponse(response, request.context, options);
 }
 
 export interface StreamResult {
@@ -402,40 +144,15 @@ export interface StreamResult {
 }
 
 export function streamWithContext(config: AgentConfig, options: ChatOptions): StreamResult {
-  const provider = (config.provider || "anthropic") as SupportedProvider;
-  const model = getProviderModel(provider, config.model);
-  const isQwen = /qwen/i.test(config.model || "");
-
-  const tools =
-    provider === "google" && options.tools ? sanitizeToolsForGemini(options.tools) : options.tools;
-
-  let systemPrompt = options.systemPrompt || options.context.systemPrompt || "";
-  if (isQwen) {
-    systemPrompt = "/no_think\n" + systemPrompt;
-  }
-
-  const context: Context = {
-    ...options.context,
-    systemPrompt,
-    tools,
-  };
-
-  const temperature = options.temperature ?? config.temperature;
-
-  const streamOptions: Record<string, unknown> = {
-    apiKey: getEffectiveApiKey(provider, config.api_key),
-    maxTokens: options.maxTokens ?? config.max_tokens,
-    ...(provider !== "codex" && { temperature }),
-    sessionId: options.sessionId,
-    cacheRetention: "long",
-    signal: AbortSignal.timeout(LLM_STREAM_TIMEOUT_MS),
-  };
-  const reasoningEffort = config.reasoning_effort ?? "low";
-  if (model.reasoning && reasoningEffort !== "off") {
-    streamOptions.reasoningEffort = reasoningEffort;
-  }
-
-  const eventStream = stream(model, context, streamOptions as ProviderStreamOptions);
+  // Fork-only: streaming gets the longer cap. Same as chatWithContext — the loop
+  // passes the remaining turn budget, so this has to be a cap, not a fallback.
+  const timeoutMs = Math.min(options.timeoutMs ?? LLM_STREAM_TIMEOUT_MS, LLM_STREAM_TIMEOUT_MS);
+  const request = prepareModelRequest(config, {
+    ...options,
+    timeoutMs,
+    signal: withRequestDeadline(options.signal, timeoutMs),
+  });
+  const eventStream = stream(request.model, request.context, request.options);
 
   // Transform event stream into a simple text delta async iterable,
   // filtering out <think> blocks that some models (Qwen, DeepSeek) emit
@@ -484,29 +201,9 @@ export function streamWithContext(config: AgentConfig, options: ChatOptions): St
 
   // Result promise: wait for the stream to complete and build ChatResponse
   const resultPromise = (async (): Promise<ChatResponse> => {
-    const response = await eventStream.result();
-
-    // Strip <think> blocks
-    const thinkRe = /<think>[\s\S]*?<\/think>/g;
-    for (const block of response.content) {
-      if (block.type === "text" && block.text.includes("<think>")) {
-        block.text = block.text.replace(thinkRe, "").trim();
-      }
-    }
-
-    if (options.persistTranscript && options.sessionId) {
-      appendToTranscript(options.sessionId, response);
-    }
-
-    const textContent = response.content.find((block) => block.type === "text");
-    const text = textContent?.type === "text" ? textContent.text : "";
-
-    const updatedContext: Context = {
-      ...context,
-      messages: [...context.messages, response],
-    };
-
-    return { message: response, text, context: updatedContext };
+    const initialResponse = await eventStream.result();
+    const response = await retryAfterCredentialRefresh(request, initialResponse);
+    return finalizeResponse(response, request.context, options);
   })();
 
   return { textStream: textDeltas(), result: resultPromise };
@@ -529,8 +226,4 @@ export function loadContextFromTranscript(sessionId: string, systemPrompt?: stri
     systemPrompt,
     messages: deduped,
   };
-}
-
-export function createClient(_config: AgentConfig): null {
-  return null;
 }

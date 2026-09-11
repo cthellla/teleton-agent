@@ -1,5 +1,6 @@
-import type { Context, Message, TextContent } from "@mariozechner/pi-ai";
-import { appendToTranscript, readTranscript } from "../session/transcript.js";
+import type { Context, Message, TextContent } from "@earendil-works/pi-ai";
+import { truncate } from "../utils/pi-message.js";
+import { appendToTranscript, flushTranscript } from "../session/transcript.js";
 import { randomUUID } from "crypto";
 import { writeSummaryToDailyLog } from "./daily-logs.js";
 import { summarizeWithFallback } from "./ai-summarization.js";
@@ -16,9 +17,18 @@ import {
   DEFAULT_CONTEXT_WINDOW,
   DEFAULT_MAX_SUMMARY_TOKENS,
   MEMORY_FLUSH_RECENT_MESSAGES,
+  CHARS_PER_TOKEN_ESTIMATE,
 } from "../constants/limits.js";
 
 const COMPACTION_PREFIX = "[Auto-compacted";
+
+function findPreviousCompactionSummary(context: Context): string | null {
+  for (const message of context.messages) {
+    if (message.role !== "user" || typeof message.content !== "string") continue;
+    if (message.content.startsWith(COMPACTION_PREFIX)) return message.content;
+  }
+  return null;
+}
 
 export interface CompactionConfig {
   enabled: boolean;
@@ -65,7 +75,7 @@ function estimateContextTokens(context: Context): number {
     }
   }
 
-  return Math.ceil(charCount / 4);
+  return Math.ceil(charCount / CHARS_PER_TOKEN_ESTIMATE);
 }
 
 export function shouldFlushMemory(
@@ -97,12 +107,12 @@ function flushMemoryToDailyLog(context: Context): void {
   for (const msg of recentMessages) {
     if (msg.role === "user") {
       const content = typeof msg.content === "string" ? msg.content : "[complex content]";
-      summary.push(`- User: ${content.substring(0, 100)}${content.length > 100 ? "..." : ""}`);
+      summary.push(`- User: ${truncate(content, 100)}`);
     } else if (msg.role === "assistant") {
       const textBlocks = msg.content.filter((b): b is TextContent => b.type === "text");
       if (textBlocks.length > 0) {
         const text = textBlocks[0].text || "";
-        summary.push(`- Assistant: ${text.substring(0, 100)}${text.length > 100 ? "..." : ""}`);
+        summary.push(`- Assistant: ${truncate(text, 100)}`);
       }
     }
   }
@@ -326,15 +336,13 @@ export async function compactAndSaveTranscript(
   for (const message of compactedContext.messages) {
     appendToTranscript(newSessionId, message);
   }
+  await flushTranscript(newSessionId);
 
   return newSessionId;
 }
 
 export class CompactionManager {
   private config: CompactionConfig;
-  /** Previous compaction summary — injected into the next summarization
-   *  prompt so that information accumulates instead of being lost. */
-  private previousSummary: string | null = null;
 
   constructor(config: CompactionConfig = DEFAULT_COMPACTION_CONFIG) {
     this.config = config;
@@ -373,20 +381,9 @@ export class CompactionManager {
       chatId,
       provider,
       utilityModel,
-      this.previousSummary
+      findPreviousCompactionSummary(context)
     );
     log.info(`Compaction complete: ${newSessionId}`);
-
-    // Extract the summary text from the compacted context for iterative reuse.
-    // The first message after compaction is the summary message.
-    const compacted = readTranscript(newSessionId);
-    if (compacted.length > 0) {
-      const firstMsg = compacted[0];
-      const text = typeof firstMsg.content === "string" ? firstMsg.content : null;
-      if (text?.startsWith(COMPACTION_PREFIX)) {
-        this.previousSummary = text;
-      }
-    }
 
     return newSessionId;
   }

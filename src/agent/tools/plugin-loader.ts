@@ -12,8 +12,8 @@
  * Each plugin is adapted into a PluginModule for unified lifecycle management.
  */
 
-import { readdirSync, readFileSync, existsSync, statSync } from "fs";
-import { join } from "path";
+import { readdirSync, readFileSync, existsSync, statSync, lstatSync, realpathSync } from "fs";
+import { dirname, isAbsolute, join, relative, sep } from "path";
 import { pathToFileURL } from "url";
 import { execFile } from "child_process";
 import { getPluginPriorities } from "./plugin-config-store.js";
@@ -22,7 +22,7 @@ import { promisify } from "util";
 const execFileAsync = promisify(execFile);
 import { WORKSPACE_PATHS, TELETON_ROOT } from "../../workspace/paths.js";
 import { openModuleDb, createDbWrapper, migrateFromMainDb } from "../../utils/module-db.js";
-import type { PluginModule, PluginContext, Tool, ToolExecutor, ToolScope } from "./types.js";
+import type { PluginModule, Tool, ToolExecutor, ToolScope } from "./types.js";
 import type { Config } from "../../config/schema.js";
 import type Database from "better-sqlite3";
 import {
@@ -34,11 +34,13 @@ import {
 } from "./plugin-validator.js";
 import {
   createPluginSDK,
+  createSafePluginDb,
   SDK_VERSION,
   semverSatisfies,
   type SDKDependencies,
 } from "../../sdk/index.js";
-import type { PluginSDK, CronManager } from "../../sdk/index.js";
+import type { PluginSDK, PluginToolContext, StartContext } from "@teleton-agent/sdk";
+import type { CronManager } from "../../sdk/index.js";
 import { HookRegistry } from "../../sdk/hooks/registry.js";
 import { createSecretsSDK } from "../../sdk/secrets.js";
 import type {
@@ -53,11 +55,43 @@ const log = createLogger("PluginLoader");
 
 const PLUGIN_DATA_DIR = join(TELETON_ROOT, "plugins", "data");
 
+/**
+ * Plugins are trusted application code, not sandboxed scripts. Reject paths
+ * that another OS user could replace before importing them into this process.
+ */
+export function assertTrustedPluginPath(modulePath: string, pluginsDir: string): void {
+  const root = realpathSync(pluginsDir);
+  const resolvedModule = realpathSync(modulePath);
+  const rel = relative(root, resolvedModule);
+  if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
+    throw new Error(`Plugin path escapes the trusted directory: ${modulePath}`);
+  }
+
+  const expectedUid = typeof process.getuid === "function" ? process.getuid() : undefined;
+  let current = modulePath;
+  while (true) {
+    const metadata = lstatSync(current);
+    if (metadata.isSymbolicLink()) {
+      throw new Error(`Plugin path must not contain symlinks: ${current}`);
+    }
+    if ((metadata.mode & 0o022) !== 0) {
+      throw new Error(`Plugin path is group/world writable: ${current}`);
+    }
+    if (expectedUid !== undefined && metadata.uid !== expectedUid) {
+      throw new Error(`Plugin path is not owned by the Teleton process user: ${current}`);
+    }
+    if (realpathSync(current) === root) break;
+    const parent = dirname(current);
+    if (parent === current) throw new Error(`Plugin path is outside trusted root: ${modulePath}`);
+    current = parent;
+  }
+}
+
 interface RawPluginExports {
   tools?: SimpleToolDef[] | ((sdk: PluginSDK) => SimpleToolDef[]);
   manifest?: unknown;
   migrate?: (db: Database.Database) => void;
-  start?: (ctx: EnhancedPluginContext) => Promise<void>;
+  start?: (ctx: StartContext) => Promise<void>;
   stop?: () => Promise<void>;
   onMessage?: (event: PluginMessageEvent) => Promise<string | { context: string } | void>;
   onCallbackQuery?: (event: PluginCallbackEvent) => Promise<void>;
@@ -67,13 +101,6 @@ interface RawPluginExports {
 export interface PluginModuleWithHooks extends PluginModule {
   onMessage?: (event: PluginMessageEvent) => Promise<string | { context: string } | void>;
   onCallbackQuery?: (event: PluginCallbackEvent) => Promise<void>;
-}
-
-interface EnhancedPluginContext extends Omit<PluginContext, "db" | "config"> {
-  db: Database.Database | null;
-  config: Record<string, unknown>;
-  pluginConfig: Record<string, unknown>;
-  log: (...args: unknown[]) => void;
 }
 
 // ─── Plugin Adapter ─────────────────────────────────────────────────
@@ -93,13 +120,13 @@ export function adaptPlugin(
     try {
       manifest = validateManifest(raw.manifest);
     } catch (error: unknown) {
-      log.warn(`[${entryName}] invalid manifest, ignoring: ${getErrorMessage(error)}`);
+      throw new Error(`Plugin "${entryName}" has an invalid manifest: ${getErrorMessage(error)}`);
     }
   }
 
-  // Fallback: read version from manifest.json on disk (display names / object authors
-  // don't pass Zod validation, but we still need the version for marketplace comparison)
-  if (!manifest) {
+  // Legacy plugins may only ship manifest.json on disk. Use its display metadata
+  // when the executable module does not export a manifest.
+  if (!raw.manifest && !manifest) {
     const manifestPath = join(WORKSPACE_PATHS.PLUGINS_DIR, entryName, "manifest.json");
     try {
       if (existsSync(manifestPath)) {
@@ -147,8 +174,6 @@ export function adaptPlugin(
   const pluginConfig = { ...manifest?.defaultConfig, ...rawPluginConfig };
 
   const pluginLog = createLogger(`Plugin:${pluginName}`);
-  const logFn = (...args: unknown[]) => pluginLog.info(args.map(String).join(" "));
-
   // Validate declared secrets and warn if missing
   if (manifest?.secrets) {
     const dummyLogger = {
@@ -157,7 +182,7 @@ export function adaptPlugin(
       error: (...a: unknown[]) => pluginLog.error(a.map(String).join(" ")),
       debug: () => {},
     };
-    const secretsCheck = createSecretsSDK(pluginName, pluginConfig, dummyLogger);
+    const secretsCheck = createSecretsSDK(pluginName, pluginConfig, dummyLogger, manifest.secrets);
     const missing: string[] = [];
     for (const [key, decl] of Object.entries(
       manifest.secrets as Record<string, SecretDeclaration>
@@ -177,15 +202,37 @@ export function adaptPlugin(
 
   const hasMigrate = typeof raw.migrate === "function";
   let pluginDb: Database.Database | null = null;
+  let exposedPluginDb: Database.Database | null = null;
   let cronManager: CronManager | null = null;
-  const getDb = () => pluginDb;
+  const getDb = () => exposedPluginDb;
   const withPluginDb = createDbWrapper(getDb, pluginName);
 
   const sanitizedConfig = sanitizeConfigForPlugins(config);
+  let pluginSdk: PluginSDK | null = null;
+  let lifecycleActive = false;
+  const getSdk = (): PluginSDK => {
+    pluginSdk ??= createPluginSDK(sdkDeps, {
+      pluginName,
+      db: exposedPluginDb,
+      sanitizedConfig,
+      pluginConfig,
+      botManifest: manifest?.bot,
+      secretDeclarations: manifest?.secrets,
+      hookRegistry,
+      declaredHooks: manifest?.hooks,
+      globalPriority,
+      // Fork-only: cron timers are owned by the loader, started after plugin start().
+      onCronManager: (cm) => {
+        cronManager = cm;
+      },
+    });
+    return pluginSdk;
+  };
 
   const module: PluginModuleWithHooks = {
     name: pluginName,
     version: pluginVersion,
+    sourceId: entryName.replace(/\.js$/, ""),
 
     // Store event hooks from plugin exports
     onMessage: typeof raw.onMessage === "function" ? raw.onMessage : undefined,
@@ -198,10 +245,11 @@ export function adaptPlugin(
         // Always create plugin DB (needed for sdk.storage even without migrate())
         const dbPath = join(PLUGIN_DATA_DIR, `${pluginName}.db`);
         pluginDb = openModuleDb(dbPath);
+        exposedPluginDb = createSafePluginDb(pluginDb);
 
         // Run plugin's custom migrations if provided
         if (hasMigrate) {
-          raw.migrate?.(pluginDb);
+          raw.migrate?.(exposedPluginDb);
 
           const pluginTables = (
             pluginDb
@@ -226,6 +274,8 @@ export function adaptPlugin(
           }
           pluginDb = null;
         }
+        exposedPluginDb = null;
+        throw error;
       }
     },
 
@@ -233,18 +283,7 @@ export function adaptPlugin(
       try {
         let toolDefs: SimpleToolDef[];
         if (typeof raw.tools === "function") {
-          const { sdk, cronManager: cm } = createPluginSDK(sdkDeps, {
-            pluginName,
-            db: pluginDb,
-            sanitizedConfig,
-            pluginConfig,
-            botManifest: manifest?.bot,
-            hookRegistry,
-            declaredHooks: manifest?.hooks,
-            globalPriority,
-          });
-          cronManager = cm;
-          toolDefs = raw.tools(sdk);
+          toolDefs = raw.tools(getSdk());
         } else if (Array.isArray(raw.tools)) {
           toolDefs = raw.tools;
         } else {
@@ -254,13 +293,16 @@ export function adaptPlugin(
         const validDefs = validateToolDefs(toolDefs, pluginName);
 
         return validDefs.map((def) => {
-          const rawExecutor = def.execute as ToolExecutor;
-          const sandboxedExecutor: ToolExecutor = (params, context) => {
-            const sanitizedContext = {
-              ...context,
+          const rawExecutor = def.execute;
+          const restrictedContextExecutor: ToolExecutor = (params, context) => {
+            const sanitizedContext: PluginToolContext = {
+              chatId: context.chatId,
+              senderId: context.senderId,
+              isGroup: context.isGroup,
+              db: context.db,
               config: context.config ? sanitizeConfigForPlugins(context.config) : undefined,
-            } as typeof context;
-            return rawExecutor(params, sanitizedContext);
+            };
+            return rawExecutor(params as Record<string, unknown>, sanitizedContext);
           };
 
           return {
@@ -273,49 +315,62 @@ export function adaptPlugin(
               },
               ...(def.category ? { category: def.category } : {}),
             } as Tool,
-            executor: pluginDb && hasMigrate ? withPluginDb(sandboxedExecutor) : sandboxedExecutor,
+            // Always replace the agent DB from ToolContext with the plugin's
+            // isolated handle. Failing closed also covers DB startup errors.
+            executor: withPluginDb(restrictedContextExecutor),
             scope: def.scope as ToolScope | undefined,
+            requiresApproval: def.requiresApproval,
           };
         });
       } catch (error: unknown) {
         pluginLog.error(`tools() failed: ${getErrorMessage(error)}`);
-        return [];
+        throw error;
       }
     },
 
-    async start(context) {
+    async start(_context) {
+      lifecycleActive = true;
+
       try {
         if (raw.start) {
-          const enhancedContext: EnhancedPluginContext = {
-            bridge: context.bridge,
-            db: pluginDb ?? null,
+          const enhancedContext: StartContext = {
+            sdk: getSdk(),
+            db: exposedPluginDb,
             config: sanitizedConfig,
             pluginConfig,
-            log: logFn,
+            log: getSdk().log,
           };
           await raw.start(enhancedContext);
         }
-        // Activate cron timers AFTER plugin start (plugin may register jobs in start())
+        // Activate cron timers AFTER plugin start (plugin may register jobs in start()).
+        // Runs even when the plugin has no start() — jobs registered in tools() still need timers.
         cronManager?._start();
       } catch (error: unknown) {
         pluginLog.error(`start() failed: ${getErrorMessage(error)}`);
+        throw error;
       }
     },
 
     async stop() {
+      const shouldRunStopHook = lifecycleActive;
+      lifecycleActive = false;
+      const dbToClose = pluginDb;
+      pluginDb = null;
+      exposedPluginDb = null;
+      pluginSdk = null;
       try {
         cronManager?._stopAll();
-        await raw.stop?.();
+        if (shouldRunStopHook) await raw.stop?.();
       } catch (error: unknown) {
         pluginLog.error(`stop() failed: ${getErrorMessage(error)}`);
+        throw error;
       } finally {
-        if (pluginDb) {
+        if (dbToClose) {
           try {
-            pluginDb.close();
+            dbToClose.close();
           } catch {
             /* ignore */
           }
-          pluginDb = null;
         }
       }
     },
@@ -422,7 +477,12 @@ export async function loadEnhancedPlugins(
     }
 
     if (modulePath) {
-      pluginPaths.push({ entry, path: modulePath });
+      try {
+        assertTrustedPluginPath(modulePath, pluginsDir);
+        pluginPaths.push({ entry, path: modulePath });
+      } catch (error) {
+        log.error(`Plugin "${entry}" rejected: ${getErrorMessage(error)}`);
+      }
     }
   }
 

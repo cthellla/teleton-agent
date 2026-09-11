@@ -1,23 +1,14 @@
 // src/workspace/manager.ts
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync, copyFileSync } from "fs";
-import { join, dirname } from "path";
-import { fileURLToPath } from "url";
+import { existsSync, mkdirSync, readFileSync, copyFileSync } from "fs";
+import { join } from "path";
 import { TELETON_ROOT, WORKSPACE_ROOT, WORKSPACE_PATHS } from "./paths.js";
 import { createLogger } from "../utils/logger.js";
+import { findPackageRoot } from "../utils/package-info.js";
 
 const log = createLogger("Workspace");
 
-// Resolve package root by walking up from current file until we find package.json
-function findPackageRoot(): string {
-  let dir = dirname(fileURLToPath(import.meta.url));
-  for (let i = 0; i < 10; i++) {
-    if (existsSync(join(dir, "package.json"))) return dir;
-    dir = dirname(dir);
-  }
-  return process.cwd();
-}
-const TEMPLATES_DIR = join(findPackageRoot(), "src", "templates");
+const TEMPLATES_DIR = join(findPackageRoot() ?? process.cwd(), "src", "templates");
 
 export interface WorkspaceConfig {
   workspaceDir?: string;
@@ -154,39 +145,4 @@ export function loadTemplate(name: string): string {
     throw new Error(`Template ${name} not found at ${templatePath}`);
   }
   return readFileSync(templatePath, "utf-8");
-}
-
-/**
- * Write file only if it doesn't exist
- */
-export function writeFileIfMissing(path: string, content: string): void {
-  if (!existsSync(path)) {
-    const dir = dirname(path);
-    if (!existsSync(dir)) {
-      mkdirSync(dir, { recursive: true });
-    }
-    writeFileSync(path, content, "utf-8");
-  }
-}
-
-/**
- * Get workspace stats
- */
-export function getWorkspaceStats(workspace: Workspace): {
-  exists: boolean;
-  hasConfig: boolean;
-  hasTemplates: boolean;
-  hasSession: boolean;
-  hasWallet: boolean;
-} {
-  return {
-    exists: existsSync(workspace.workspace),
-    hasConfig: existsSync(workspace.configPath),
-    hasTemplates:
-      existsSync(workspace.soulPath) &&
-      existsSync(workspace.memoryPath) &&
-      existsSync(workspace.identityPath),
-    hasSession: existsSync(workspace.sessionPath),
-    hasWallet: existsSync(workspace.walletPath),
-  };
 }

@@ -8,11 +8,13 @@ const log = createLogger("Memory");
 import {
   ensureSchema,
   ensureVectorTables,
+  normalizeInvalidTelegramMessageEmbeddings,
   getSchemaVersion,
   runMigrations,
   CURRENT_SCHEMA_VERSION,
 } from "./schema.js";
 import { SQLITE_CACHE_SIZE_KB, SQLITE_MMAP_SIZE } from "../constants/limits.js";
+import { telegramMessageKey } from "./feed/messages.js";
 
 export interface DatabaseConfig {
   path: string;
@@ -83,12 +85,80 @@ export class MemoryDatabase {
       this.db.prepare("SELECT vec_version() as vec_version").get();
       const dims = this.config.vectorDimensions ?? 512;
       this._dimensionsChanged = ensureVectorTables(this.db, dims);
+      const normalized = normalizeInvalidTelegramMessageEmbeddings(this.db, dims);
+      if (normalized > 0) {
+        log.warn({ messages: normalized }, "Reset invalid Telegram message embeddings");
+      }
+      if (this._dimensionsChanged) {
+        // Stored vectors have the old width and cannot be copied into the new
+        // vec table. Keep the raw messages and schedule fresh embeddings.
+        this.db.transaction(() => {
+          this.db
+            .prepare(
+              `UPDATE tg_messages
+               SET embedding = NULL,
+                   embedding_status = CASE
+                     WHEN length(trim(text)) = 0 THEN 'disabled'
+                     ELSE 'pending'
+                   END,
+                   indexed_at = unixepoch()
+               WHERE text IS NOT NULL`
+            )
+            .run();
+          this.db
+            .prepare("DELETE FROM meta WHERE key = 'tg_messages_vector_rebuild_required'")
+            .run();
+        })();
+      } else {
+        this.rebuildTelegramMessageVectorsIfRequired(dims);
+      }
       this.vectorReady = true;
     } catch (error) {
       log.warn(`sqlite-vec not available, vector search disabled: ${(error as Error).message}`);
       log.warn("Falling back to keyword-only search");
       this.config.enableVectorSearch = false;
     }
+  }
+
+  private rebuildTelegramMessageVectorsIfRequired(dimensions: number): void {
+    const marker = this.db
+      .prepare("SELECT value FROM meta WHERE key = 'tg_messages_vector_rebuild_required'")
+      .get() as { value: string } | undefined;
+    if (marker?.value !== "1") return;
+
+    const rows = this.db
+      .prepare(
+        `SELECT chat_id, id, timestamp, embedding FROM tg_messages
+         WHERE embedding_status = 'ready'
+           AND typeof(embedding) = 'blob'
+           AND length(embedding) = ?`
+      )
+      .all(dimensions * Float32Array.BYTES_PER_ELEMENT) as Array<{
+      chat_id: string;
+      id: string;
+      timestamp: number;
+      embedding: Buffer;
+    }>;
+    const insert = this.db.prepare(
+      `INSERT INTO tg_messages_vec (id, chat_id, message_id, timestamp, embedding)
+       VALUES (?, ?, ?, ?, ?)`
+    );
+
+    this.db.transaction(() => {
+      this.db.exec("DELETE FROM tg_messages_vec");
+      for (const row of rows) {
+        insert.run(
+          telegramMessageKey(row.chat_id, row.id),
+          row.chat_id,
+          row.id,
+          BigInt(row.timestamp),
+          row.embedding
+        );
+      }
+      this.db.prepare("DELETE FROM meta WHERE key = 'tg_messages_vector_rebuild_required'").run();
+    })();
+
+    log.info({ messages: rows.length }, "Rebuilt chat-scoped Telegram message vectors");
   }
 
   private migrate(from: string, to: string): void {
@@ -106,83 +176,45 @@ export class MemoryDatabase {
     return this.vectorReady;
   }
 
+  configureVectorSearch(enabled: boolean, dimensions?: number): void {
+    const previousDimensions = this.config.vectorDimensions ?? 512;
+    const targetDimensions = dimensions ?? previousDimensions;
+    const dimensionsChanged = targetDimensions !== previousDimensions;
+    this.config.enableVectorSearch = enabled;
+    this.config.vectorDimensions = targetDimensions;
+
+    if (!enabled) {
+      this.vectorReady = false;
+      this._dimensionsChanged = false;
+      return;
+    }
+    if (!this.vectorReady || dimensionsChanged) this.loadVectorExtension();
+  }
+
+  invalidateTelegramMessageEmbeddings(): void {
+    const hasVectorTable = this.db
+      .prepare("SELECT 1 FROM sqlite_master WHERE name = 'tg_messages_vec'")
+      .get();
+    this.db.transaction(() => {
+      this.db
+        .prepare(
+          `UPDATE tg_messages
+           SET embedding = NULL,
+               embedding_status = CASE
+                 WHEN length(trim(text)) = 0 THEN 'disabled'
+                 ELSE 'pending'
+               END,
+               indexed_at = unixepoch()
+           WHERE text IS NOT NULL`
+        )
+        .run();
+      if (hasVectorTable) this.db.exec("DELETE FROM tg_messages_vec");
+      this.db.prepare("DELETE FROM meta WHERE key = 'tg_messages_vector_rebuild_required'").run();
+    })();
+  }
+
   didDimensionsChange(): boolean {
     return this._dimensionsChanged;
-  }
-
-  getVectorDimensions(): number | undefined {
-    return this.config.vectorDimensions;
-  }
-
-  transaction<T>(fn: () => T): T {
-    return this.db.transaction(fn)();
-  }
-
-  async asyncTransaction<T>(fn: () => Promise<T>): Promise<T> {
-    const beginTrans = this.db.prepare("BEGIN");
-    const commitTrans = this.db.prepare("COMMIT");
-    const rollbackTrans = this.db.prepare("ROLLBACK");
-
-    beginTrans.run();
-    try {
-      const result = await fn();
-      commitTrans.run();
-      return result;
-    } catch (error) {
-      rollbackTrans.run();
-      throw error;
-    }
-  }
-
-  getStats(): {
-    knowledge: number;
-    sessions: number;
-    tasks: number;
-    tgChats: number;
-    tgUsers: number;
-    tgMessages: number;
-    embeddingCache: number;
-    vectorSearchEnabled: boolean;
-  } {
-    const counts = this.db
-      .prepare(
-        `SELECT
-          (SELECT COUNT(*) FROM knowledge)       as knowledge,
-          (SELECT COUNT(*) FROM sessions)        as sessions,
-          (SELECT COUNT(*) FROM tasks)           as tasks,
-          (SELECT COUNT(*) FROM tg_chats)        as tg_chats,
-          (SELECT COUNT(*) FROM tg_users)        as tg_users,
-          (SELECT COUNT(*) FROM tg_messages)     as tg_messages,
-          (SELECT COUNT(*) FROM embedding_cache) as embedding_cache`
-      )
-      .get() as {
-      knowledge: number;
-      sessions: number;
-      tasks: number;
-      tg_chats: number;
-      tg_users: number;
-      tg_messages: number;
-      embedding_cache: number;
-    };
-
-    return {
-      knowledge: counts.knowledge,
-      sessions: counts.sessions,
-      tasks: counts.tasks,
-      tgChats: counts.tg_chats,
-      tgUsers: counts.tg_users,
-      tgMessages: counts.tg_messages,
-      embeddingCache: counts.embedding_cache,
-      vectorSearchEnabled: this.vectorReady,
-    };
-  }
-
-  vacuum(): void {
-    this.db.exec("VACUUM");
-  }
-
-  optimize(): void {
-    this.db.exec("ANALYZE");
   }
 
   /**

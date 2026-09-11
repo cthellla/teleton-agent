@@ -16,6 +16,34 @@ beforeEach(() => {
   vi.restoreAllMocks();
 });
 
+function makeRunner(options: { timeoutMs?: number; catchErrors?: boolean } = {}) {
+  return createHookRunner(registry, { logger: mockLogger, ...options });
+}
+
+function beforeToolEvent(overrides: Partial<BeforeToolCallEvent> = {}): BeforeToolCallEvent {
+  return {
+    toolName: "test",
+    params: {},
+    chatId: "123",
+    isGroup: false,
+    block: false,
+    blockReason: "",
+    ...overrides,
+  };
+}
+
+function afterToolEvent(overrides: Partial<AfterToolCallEvent> = {}): AfterToolCallEvent {
+  return {
+    toolName: "test",
+    params: {},
+    result: { success: true },
+    durationMs: 10,
+    chatId: "123",
+    isGroup: false,
+    ...overrides,
+  };
+}
+
 describe("Hook Runner", () => {
   it("3.1 runObservingHook fires all handlers sequentially", async () => {
     const order: number[] = [];
@@ -36,15 +64,8 @@ describe("Hook Runner", () => {
       priority: 0,
     });
 
-    const runner = createHookRunner(registry, { logger: mockLogger });
-    const event: AfterToolCallEvent = {
-      toolName: "test",
-      params: {},
-      result: { success: true },
-      durationMs: 10,
-      chatId: "123",
-      isGroup: false,
-    };
+    const runner = makeRunner();
+    const event = afterToolEvent();
     await runner.runObservingHook("tool:after", event);
     // Both fire (parallel via Promise.allSettled, order = registration order for same priority)
     expect(order).toEqual([1, 2]);
@@ -60,15 +81,8 @@ describe("Hook Runner", () => {
       priority: 0,
     });
 
-    const runner = createHookRunner(registry, { logger: mockLogger });
-    const event: AfterToolCallEvent = {
-      toolName: "test",
-      params: {},
-      result: { success: true },
-      durationMs: 10,
-      chatId: "123",
-      isGroup: false,
-    };
+    const runner = makeRunner();
+    const event = afterToolEvent();
     // Should not throw
     await runner.runObservingHook("tool:after", event);
     expect(mockLogger.error).toHaveBeenCalled();
@@ -93,15 +107,8 @@ describe("Hook Runner", () => {
       priority: 0,
     });
 
-    const runner = createHookRunner(registry, { logger: mockLogger });
-    const event: BeforeToolCallEvent = {
-      toolName: "test",
-      params: {},
-      chatId: "123",
-      isGroup: false,
-      block: false,
-      blockReason: "",
-    };
+    const runner = makeRunner();
+    const event = beforeToolEvent();
     await runner.runModifyingHook("tool:before", event);
     expect(order).toEqual(["low-0", "high-10"]);
   });
@@ -124,61 +131,40 @@ describe("Hook Runner", () => {
       priority: 1,
     });
 
-    const runner = createHookRunner(registry, { logger: mockLogger });
-    const event: BeforeToolCallEvent = {
-      toolName: "test",
-      params: {},
-      chatId: "123",
-      isGroup: false,
-      block: false,
-      blockReason: "",
-    };
+    const runner = makeRunner();
+    const event = beforeToolEvent();
     await runner.runModifyingHook("tool:before", event);
     expect(event.params.modified).toBe(true);
     expect(event.params.seenModified).toBe(true);
   });
 
-  it("3.5 runModifyingHook times out after 5s per handler (fail-open)", async () => {
+  it("3.5 runModifyingHook fails closed when an enforcement hook times out", async () => {
     vi.useFakeTimers();
 
     registry.register({
       pluginId: "slow",
       hookName: "tool:before",
-      handler: () => new Promise(() => {}), // never resolves
+      handler: () => new Promise<void>(() => {}), // never resolves
       priority: 0,
     });
 
-    const runner = createHookRunner(registry, { logger: mockLogger, timeoutMs: 100 });
-    const event: BeforeToolCallEvent = {
-      toolName: "test",
-      params: {},
-      chatId: "123",
-      isGroup: false,
-      block: false,
-      blockReason: "",
-    };
+    const runner = makeRunner({ timeoutMs: 100 });
+    const event = beforeToolEvent();
 
     const promise = runner.runModifyingHook("tool:before", event);
     await vi.advanceTimersByTimeAsync(200);
     await promise;
 
     expect(mockLogger.error).toHaveBeenCalledWith(expect.stringContaining("Hook timeout"));
-    // Event not blocked — fail-open
-    expect(event.block).toBe(false);
+    expect(event.block).toBe(true);
+    expect(event.blockReason).toContain("Hook timeout");
 
     vi.useRealTimers();
   });
 
   it("3.6 runModifyingHook returns early when no hooks registered", async () => {
-    const runner = createHookRunner(registry, { logger: mockLogger });
-    const event: BeforeToolCallEvent = {
-      toolName: "test",
-      params: {},
-      chatId: "123",
-      isGroup: false,
-      block: false,
-      blockReason: "",
-    };
+    const runner = makeRunner();
+    const event = beforeToolEvent();
     // Should return immediately without error
     await runner.runModifyingHook("tool:before", event);
   });
@@ -215,15 +201,8 @@ describe("Hook Runner", () => {
       priority: 10,
     });
 
-    const runner = createHookRunner(registry, { logger: mockLogger });
-    const event: BeforeToolCallEvent = {
-      toolName: "test",
-      params: {},
-      chatId: "123",
-      isGroup: false,
-      block: false,
-      blockReason: "",
-    };
+    const runner = makeRunner();
+    const event = beforeToolEvent();
     await runner.runModifyingHook("tool:before", event);
     expect(order).toEqual([0, 10, 100]);
   });
@@ -255,7 +234,7 @@ describe("Hook Runner", () => {
       priority: 0,
     });
 
-    const runner = createHookRunner(registry, { logger: mockLogger });
+    const runner = makeRunner();
     await runner.runObservingHook("session:start", {
       sessionId: "s1",
       chatId: "123",
@@ -286,15 +265,8 @@ describe("Hook Runner", () => {
       priority: 1,
     });
 
-    const runner = createHookRunner(registry, { logger: mockLogger });
-    const event: BeforeToolCallEvent = {
-      toolName: "test",
-      params: {},
-      chatId: "123",
-      isGroup: false,
-      block: false,
-      blockReason: "",
-    };
+    const runner = makeRunner();
+    const event = beforeToolEvent();
     await runner.runModifyingHook("tool:before", event);
     expect(event.block).toBe(true);
     expect(event.blockReason).toBe("nope");
@@ -309,28 +281,14 @@ describe("Hook Runner", () => {
       hookName: "tool:before",
       handler: async (e) => {
         // Simulate a nested hook call (as if a tool triggered another tool)
-        await runner.runModifyingHook("tool:before", {
-          toolName: "nested",
-          params: {},
-          chatId: "123",
-          isGroup: false,
-          block: false,
-          blockReason: "",
-        });
+        await runner.runModifyingHook("tool:before", beforeToolEvent({ toolName: "nested" }));
         innerCalled.push(true);
       },
       priority: 0,
     });
 
-    const runner = createHookRunner(registry, { logger: mockLogger });
-    const event: BeforeToolCallEvent = {
-      toolName: "test",
-      params: {},
-      chatId: "123",
-      isGroup: false,
-      block: false,
-      blockReason: "",
-    };
+    const runner = makeRunner();
+    const event = beforeToolEvent();
     await runner.runModifyingHook("tool:before", event);
     expect(innerCalled).toEqual([true]);
     expect(mockLogger.debug).toHaveBeenCalledWith(expect.stringContaining("reentrancy"));
@@ -364,7 +322,7 @@ describe("Hook Runner", () => {
       priority: 0,
     });
 
-    const runner = createHookRunner(registry, { logger: mockLogger });
+    const runner = makeRunner();
     await runner.runObservingHook("session:end", {
       sessionId: "s1",
       chatId: "123",
@@ -380,7 +338,7 @@ describe("Hook Runner", () => {
     registry.register({
       pluginId: "slow",
       hookName: "session:start",
-      handler: () => new Promise(() => {}), // never resolves
+      handler: () => new Promise<void>(() => {}), // never resolves
       priority: 0,
     });
     registry.register({
@@ -392,7 +350,7 @@ describe("Hook Runner", () => {
       priority: 0,
     });
 
-    const runner = createHookRunner(registry, { logger: mockLogger, timeoutMs: 100 });
+    const runner = makeRunner({ timeoutMs: 100 });
     const promise = runner.runObservingHook("session:start", {
       sessionId: "s1",
       chatId: "123",
@@ -419,15 +377,8 @@ describe("Hook Runner", () => {
       priority: 0,
     });
 
-    const runner = createHookRunner(registry, { logger: mockLogger, catchErrors: false });
-    const event: BeforeToolCallEvent = {
-      toolName: "test",
-      params: {},
-      chatId: "123",
-      isGroup: false,
-      block: false,
-      blockReason: "",
-    };
+    const runner = makeRunner({ catchErrors: false });
+    const event = beforeToolEvent();
     await expect(runner.runModifyingHook("tool:before", event)).rejects.toThrow("propagated");
   });
 
@@ -441,17 +392,46 @@ describe("Hook Runner", () => {
       priority: 0,
     });
 
-    const runner = createHookRunner(registry, { logger: mockLogger, catchErrors: false });
-    const event: AfterToolCallEvent = {
-      toolName: "test",
-      params: {},
-      result: { success: true },
-      durationMs: 10,
-      chatId: "123",
-      isGroup: false,
-    };
+    const runner = makeRunner({ catchErrors: false });
+    const event = afterToolEvent();
     await expect(runner.runObservingHook("tool:after", event)).rejects.toThrow(
       "observing-propagated"
     );
+  });
+
+  it("3.16 does not confuse concurrent hook events with nested reentrancy", async () => {
+    let releaseFirst!: () => void;
+    let firstStarted!: () => void;
+    const started = new Promise<void>((resolve) => (firstStarted = resolve));
+    const gate = new Promise<void>((resolve) => (releaseFirst = resolve));
+    const seen: string[] = [];
+
+    registry.register({
+      pluginId: "observer",
+      hookName: "tool:after",
+      handler: async (event) => {
+        seen.push(event.toolName);
+        if (event.toolName === "first") {
+          firstStarted();
+          await gate;
+        }
+      },
+      priority: 0,
+    });
+
+    const runner = makeRunner();
+    const first = runner.runObservingHook(
+      "tool:after",
+      afterToolEvent({ toolName: "first", durationMs: 1, chatId: "chat-a" })
+    );
+    await started;
+    const second = runner.runObservingHook(
+      "tool:after",
+      afterToolEvent({ toolName: "second", durationMs: 1, chatId: "chat-b" })
+    );
+    releaseFirst();
+    await Promise.all([first, second]);
+
+    expect(seen).toEqual(["first", "second"]);
   });
 });

@@ -3,7 +3,7 @@ import { Api } from "telegram";
 import type { Tool, ToolExecutor, ToolResult } from "../../types.js";
 import { getErrorMessage } from "../../../../utils/errors.js";
 import { createLogger } from "../../../../utils/logger.js";
-import { getClient } from "../../../../sdk/telegram-utils.js";
+import { getClient, resolveChannel } from "../../../../sdk/telegram-utils.js";
 
 const log = createLogger("Tools");
 
@@ -59,18 +59,7 @@ export const telegramEditChannelInfoExecutor: ToolExecutor<EditChannelInfoParams
     }
 
     const gramJsClient = getClient(context.bridge);
-
-    // Get channel entity
-    const entity = await gramJsClient.getEntity(channelId);
-
-    if (entity.className !== "Channel") {
-      return {
-        success: false,
-        error: `Entity is not a channel/group (got ${entity.className})`,
-      };
-    }
-
-    const channel = entity as Api.Channel;
+    const channel = await resolveChannel(context.bridge, channelId);
     const updates: string[] = [];
 
     // Update title if provided
@@ -95,7 +84,16 @@ export const telegramEditChannelInfoExecutor: ToolExecutor<EditChannelInfoParams
       updates.push(`about → "${about.substring(0, 50)}${about.length > 50 ? "..." : ""}"`);
     }
 
-    log.info(`edit_channel_info: ${channel.title} - ${updates.join(", ")}`);
+    log.info(
+      {
+        channelId: channel.id.toString(),
+        updatedFields: [
+          title !== undefined ? "title" : null,
+          about !== undefined ? "about" : null,
+        ].filter(Boolean),
+      },
+      "Channel info edited"
+    );
 
     return {
       success: true,

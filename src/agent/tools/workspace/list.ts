@@ -3,13 +3,8 @@
 import { Type } from "@sinclair/typebox";
 import { readdirSync, lstatSync } from "fs";
 import { join } from "path";
-import type { Tool, ToolExecutor, ToolResult } from "../types.js";
-import {
-  validateDirectory,
-  WORKSPACE_ROOT,
-  WorkspaceSecurityError,
-} from "../../../workspace/index.js";
-import { getErrorMessage } from "../../../utils/errors.js";
+import type { Tool, ToolExecutor } from "../types.js";
+import { validateDirectory, WORKSPACE_ROOT } from "../../../workspace/index.js";
 
 interface WorkspaceListParams {
   path?: string;
@@ -19,7 +14,8 @@ interface WorkspaceListParams {
 
 export const workspaceListTool: Tool = {
   name: "workspace_list",
-  description: "List files and directories in the workspace.",
+  description:
+    "List files and directories inside the agent's workspace (~/.teleton/workspace/). Filter by type (files/directories) and list recursively. Use workspace_read to read file contents, workspace_info for usage totals.",
   category: "data-bearing",
   parameters: Type.Object({
     path: Type.Optional(
@@ -86,48 +82,32 @@ function listDir(dirPath: string, recursive: boolean, filter: string): FileInfo[
   return results;
 }
 
-export const workspaceListExecutor: ToolExecutor<WorkspaceListParams> = async (
-  params,
-  _context
-): Promise<ToolResult> => {
-  try {
-    const { path = "", recursive = false, filter = "all" } = params;
+export const workspaceListExecutor: ToolExecutor<WorkspaceListParams> = async (params) => {
+  const { path = "", recursive = false, filter = "all" } = params;
 
-    // Validate the path
-    const validated = validateDirectory(path || WORKSPACE_ROOT);
+  // Validate the path
+  const validated = validateDirectory(path || WORKSPACE_ROOT);
 
-    if (!validated.exists) {
-      return {
-        success: true,
-        data: {
-          path: validated.relativePath || "/",
-          files: [],
-          message: "Directory does not exist",
-        },
-      };
-    }
-
-    const files = listDir(validated.absolutePath, recursive, filter);
-
+  if (!validated.exists) {
     return {
       success: true,
       data: {
         path: validated.relativePath || "/",
-        files,
-        count: files.length,
-        workspaceRoot: WORKSPACE_ROOT,
+        files: [],
+        message: "Directory does not exist",
       },
     };
-  } catch (error) {
-    if (error instanceof WorkspaceSecurityError) {
-      return {
-        success: false,
-        error: error.message,
-      };
-    }
-    return {
-      success: false,
-      error: getErrorMessage(error),
-    };
   }
+
+  const files = listDir(validated.absolutePath, recursive, filter);
+
+  return {
+    success: true,
+    data: {
+      path: validated.relativePath || "/",
+      files,
+      count: files.length,
+      workspaceRoot: WORKSPACE_ROOT,
+    },
+  };
 };

@@ -18,24 +18,9 @@ export interface TaskRow {
   payload: string | null;
   reason: string | null;
   scheduled_message_id: number | null;
-}
-
-export interface SessionRow {
-  id: string;
-  chat_id: string;
-  started_at: number;
-  updated_at: number;
-  ended_at: number | null;
-  summary: string | null;
-  message_count: number;
-  tokens_used: number;
-  last_message_id: number | null;
-  last_channel: string | null;
-  last_to: string | null;
-  context_tokens: number | null;
-  model: string | null;
-  provider: string | null;
-  last_reset_date: string | null;
+  origin_sender_id: number | null;
+  origin_chat_id: string | null;
+  origin_is_group: number | null;
 }
 
 export interface TgUserRow {

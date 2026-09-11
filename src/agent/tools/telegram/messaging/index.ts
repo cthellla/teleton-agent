@@ -7,6 +7,8 @@ import {
   telegramScheduleMessageExecutor,
 } from "./schedule-message.js";
 import { telegramSearchMessagesTool, telegramSearchMessagesExecutor } from "./search-messages.js";
+import { telegramSearchGlobalTool, telegramSearchGlobalExecutor } from "./search-global.js";
+import { telegramSearchPostsTool, telegramSearchPostsExecutor } from "./search-posts.js";
 import {
   telegramPinMessageTool,
   telegramPinMessageExecutor,
@@ -27,98 +29,105 @@ import {
   telegramSendScheduledNowTool,
   telegramSendScheduledNowExecutor,
 } from "./send-scheduled-now.js";
+import { botInlineSendTool, botInlineSendExecutor } from "./inline-send.js";
 import type { ToolEntry } from "../../types.js";
-
-export { telegramSendMessageTool, telegramSendMessageExecutor };
-export { telegramEditMessageTool, telegramEditMessageExecutor };
-export { telegramDeleteMessageTool, telegramDeleteMessageExecutor };
-export { telegramForwardMessageTool, telegramForwardMessageExecutor };
-export { telegramScheduleMessageTool, telegramScheduleMessageExecutor };
-export { telegramSearchMessagesTool, telegramSearchMessagesExecutor };
-export {
-  telegramPinMessageTool,
-  telegramPinMessageExecutor,
-  telegramUnpinMessageTool,
-  telegramUnpinMessageExecutor,
-};
-export { telegramQuoteReplyTool, telegramQuoteReplyExecutor };
-export { telegramGetRepliesTool, telegramGetRepliesExecutor };
-export { telegramGetScheduledMessagesTool, telegramGetScheduledMessagesExecutor };
-export { telegramDeleteScheduledMessageTool, telegramDeleteScheduledMessageExecutor };
-export { telegramSendScheduledNowTool, telegramSendScheduledNowExecutor };
 
 export const tools: ToolEntry[] = [
   {
     tool: telegramSendMessageTool,
     executor: telegramSendMessageExecutor,
-    tags: ["core"],
+    mode: "both",
+    tags: ["social"],
   },
   {
     tool: telegramQuoteReplyTool,
     executor: telegramQuoteReplyExecutor,
-    requiredMode: "user",
-    tags: ["core"],
+    mode: "user",
+    tags: ["social"],
   },
   {
     tool: telegramGetRepliesTool,
     executor: telegramGetRepliesExecutor,
-    requiredMode: "user",
+    mode: "user",
     tags: ["social"],
   },
   {
     tool: telegramEditMessageTool,
     executor: telegramEditMessageExecutor,
-    tags: ["core"],
+    mode: "both",
+    tags: ["social"],
   },
   {
     tool: telegramScheduleMessageTool,
     executor: telegramScheduleMessageExecutor,
-    requiredMode: "user",
+    mode: "user",
     tags: ["automation"],
   },
   {
     tool: telegramGetScheduledMessagesTool,
     executor: telegramGetScheduledMessagesExecutor,
-    requiredMode: "user",
+    mode: "user",
     tags: ["automation"],
   },
   {
     tool: telegramDeleteScheduledMessageTool,
     executor: telegramDeleteScheduledMessageExecutor,
-    requiredMode: "user",
+    mode: "user",
     tags: ["automation"],
   },
   {
     tool: telegramSendScheduledNowTool,
     executor: telegramSendScheduledNowExecutor,
-    requiredMode: "user",
+    mode: "user",
     tags: ["automation"],
   },
   {
     tool: telegramSearchMessagesTool,
     executor: telegramSearchMessagesExecutor,
-    requiredMode: "user",
+    mode: "user",
+    tags: ["social"],
+  },
+  {
+    tool: telegramSearchGlobalTool,
+    executor: telegramSearchGlobalExecutor,
+    mode: "user",
+    tags: ["social"],
+  },
+  {
+    tool: telegramSearchPostsTool,
+    executor: telegramSearchPostsExecutor,
+    mode: "user",
     tags: ["social"],
   },
   {
     tool: telegramPinMessageTool,
     executor: telegramPinMessageExecutor,
+    mode: "both",
     tags: ["admin"],
   },
   {
     tool: telegramUnpinMessageTool,
     executor: telegramUnpinMessageExecutor,
-    requiredMode: "user",
+    mode: "user",
     tags: ["admin"],
   },
   {
     tool: telegramForwardMessageTool,
     executor: telegramForwardMessageExecutor,
+    mode: "both",
     tags: ["social"],
   },
   {
     tool: telegramDeleteMessageTool,
     executor: telegramDeleteMessageExecutor,
-    tags: ["core"],
+    mode: "both",
+    tags: ["admin"],
+  },
+  {
+    tool: botInlineSendTool,
+    executor: botInlineSendExecutor,
+    scope: "always",
+    mode: "user",
+    tags: ["bot"],
   },
 ];

@@ -19,37 +19,49 @@ import type {
   GiftOfferOptions,
 } from "@teleton-agent/sdk";
 import { PluginSDKError } from "@teleton-agent/sdk";
-import { getErrorMessage } from "../utils/errors.js";
 import { randomLong, toLong } from "../utils/gramjs-bigint.js";
+import { resolveTelegramMessageText } from "../telegram/rich-message.js";
+import { getApi, toSimpleMessageWithText } from "./telegram-utils.js";
 import {
-  requireBridge as requireBridgeUtil,
-  getClient as getClientUtil,
-  getApi,
-  toSimpleMessage,
-} from "./telegram-utils.js";
+  boundedLimit,
+  requireNonEmpty,
+  requireNonNegativeInteger,
+  requirePositiveInteger,
+} from "./validation.js";
+import { createTelegramRuntime, type TelegramUserOpContext } from "./telegram/runtime.js";
 
 export function createTelegramSocialSDK(
   bridge: ITelegramBridge,
   log: PluginLogger,
   mode?: "user" | "bot"
 ) {
-  const telegramMode = mode ?? bridge.getMode();
+  const { requireBridge, requireUserMode, getClient, userOp } = createTelegramRuntime(bridge, mode);
 
-  function requireBridge(): void {
-    requireBridgeUtil(bridge);
+  /** Issue an EditBanned with the given rights — shared by ban/unban/mute. */
+  async function editBanned(
+    ctx: TelegramUserOpContext,
+    chatId: string,
+    userId: number | string,
+    bannedRights: Api.ChatBannedRights
+  ): Promise<void> {
+    await ctx.client.invoke(
+      new ctx.Api.channels.EditBanned({
+        channel: chatId,
+        participant: userId.toString(),
+        bannedRights,
+      })
+    );
   }
 
-  function requireUserMode(methodName: string): void {
-    if (telegramMode === "bot") {
-      throw new PluginSDKError(
-        `sdk.telegram.${methodName}() requires user mode`,
-        "OPERATION_FAILED"
-      );
+  function validatePoll(question: string, answers: string[], label: "Poll" | "Quiz"): void {
+    requireNonEmpty(question, `${label} question`);
+    if (!answers || answers.length < 2) {
+      throw new PluginSDKError(`${label} must have at least 2 answers`, "INVALID_INPUT");
     }
-  }
-
-  function getClient() {
-    return getClientUtil(bridge);
+    if (answers.length > 10) {
+      throw new PluginSDKError(`${label} cannot have more than 10 answers`, "INVALID_INPUT");
+    }
+    answers.forEach((answer, index) => requireNonEmpty(answer, `${label} answer ${index + 1}`));
   }
 
   return {
@@ -140,11 +152,7 @@ export function createTelegramSocialSDK(
     },
 
     async getUserInfo(userId: number | string): Promise<UserInfo | null> {
-      requireUserMode("getUserInfo");
-      requireBridge();
-      try {
-        const client = getClient();
-
+      return userOp("getUserInfo", "get user info", async ({ client }) => {
         let entity;
         try {
           const id = typeof userId === "string" ? userId.replace("@", "") : userId.toString();
@@ -163,22 +171,11 @@ export function createTelegramSocialSDK(
           username: user.username || undefined,
           isBot: user.bot || false,
         };
-      } catch (error) {
-        if (error instanceof PluginSDKError) throw error;
-        throw new PluginSDKError(
-          `Failed to get user info: ${getErrorMessage(error)}`,
-          "OPERATION_FAILED"
-        );
-      }
+      });
     },
 
     async resolveUsername(username: string): Promise<ResolvedPeer | null> {
-      requireUserMode("resolveUsername");
-      requireBridge();
-      try {
-        const client = getClient();
-        const Api = await getApi();
-
+      return userOp("resolveUsername", "resolve username", async ({ client, Api }) => {
         const cleanUsername = username.replace("@", "").toLowerCase();
         if (!cleanUsername) return null;
 
@@ -225,18 +222,13 @@ export function createTelegramSocialSDK(
         }
 
         return null;
-      } catch (error) {
-        if (error instanceof PluginSDKError) throw error;
-        throw new PluginSDKError(
-          `Failed to resolve username: ${getErrorMessage(error)}`,
-          "OPERATION_FAILED"
-        );
-      }
+      });
     },
 
     async getParticipants(chatId: string, limit?: number): Promise<UserInfo[]> {
       requireUserMode("getParticipants");
       requireBridge();
+      const bounded = boundedLimit(limit, 100, 200);
       try {
         const client = getClient();
         const Api = await getApi();
@@ -248,7 +240,7 @@ export function createTelegramSocialSDK(
             channel: entity,
             filter: new Api.ChannelParticipantsRecent(),
             offset: 0,
-            limit: limit ?? 100,
+            limit: bounded,
             hash: toLong(0),
           })
         );
@@ -285,18 +277,8 @@ export function createTelegramSocialSDK(
       answers: string[],
       opts?: PollOptions
     ): Promise<number | null> {
-      requireUserMode("createPoll");
-      requireBridge();
-      if (!answers || answers.length < 2) {
-        throw new PluginSDKError("Poll must have at least 2 answers", "OPERATION_FAILED");
-      }
-      if (answers.length > 10) {
-        throw new PluginSDKError("Poll cannot have more than 10 answers", "OPERATION_FAILED");
-      }
-      try {
-        const client = getClient();
-        const Api = await getApi();
-
+      return userOp("createPoll", "create poll", async ({ client, Api }) => {
+        validatePoll(question, answers, "Poll");
         const anonymous = opts?.isAnonymous ?? true;
         const multipleChoice = opts?.multipleChoice ?? false;
 
@@ -312,6 +294,7 @@ export function createTelegramSocialSDK(
           ),
           publicVoters: !anonymous,
           multipleChoice,
+          hash: toLong(0),
         });
 
         const result = await client.invoke(
@@ -336,13 +319,7 @@ export function createTelegramSocialSDK(
         }
 
         return null;
-      } catch (error) {
-        if (error instanceof PluginSDKError) throw error;
-        throw new PluginSDKError(
-          `Failed to create poll: ${getErrorMessage(error)}`,
-          "OPERATION_FAILED"
-        );
-      }
+      });
     },
 
     async createQuiz(
@@ -352,24 +329,18 @@ export function createTelegramSocialSDK(
       correctIndex: number,
       explanation?: string
     ): Promise<number | null> {
-      requireUserMode("createQuiz");
-      requireBridge();
-      if (!answers || answers.length < 2) {
-        throw new PluginSDKError("Quiz must have at least 2 answers", "OPERATION_FAILED");
-      }
-      if (answers.length > 10) {
-        throw new PluginSDKError("Quiz cannot have more than 10 answers", "OPERATION_FAILED");
-      }
-      if (correctIndex < 0 || correctIndex >= answers.length) {
-        throw new PluginSDKError(
-          `correctIndex ${correctIndex} is out of bounds (0-${answers.length - 1})`,
-          "OPERATION_FAILED"
-        );
-      }
-      try {
-        const client = getClient();
-        const Api = await getApi();
-
+      return userOp("createQuiz", "create quiz", async ({ client, Api }) => {
+        validatePoll(question, answers, "Quiz");
+        if (
+          !Number.isSafeInteger(correctIndex) ||
+          correctIndex < 0 ||
+          correctIndex >= answers.length
+        ) {
+          throw new PluginSDKError(
+            `correctIndex ${correctIndex} is out of bounds (0-${answers.length - 1})`,
+            "INVALID_INPUT"
+          );
+        }
         const poll = new Api.Poll({
           id: randomLong(),
           question: new Api.TextWithEntities({ text: question, entities: [] }),
@@ -383,6 +354,7 @@ export function createTelegramSocialSDK(
           quiz: true,
           publicVoters: false,
           multipleChoice: false,
+          hash: toLong(0),
         });
 
         const result = await client.invoke(
@@ -390,7 +362,7 @@ export function createTelegramSocialSDK(
             peer: chatId,
             media: new Api.InputMediaPoll({
               poll,
-              correctAnswers: [Buffer.from([correctIndex])],
+              correctAnswers: [correctIndex],
               solution: explanation,
               solutionEntities: [],
             }),
@@ -411,110 +383,53 @@ export function createTelegramSocialSDK(
         }
 
         return null;
-      } catch (error) {
-        if (error instanceof PluginSDKError) throw error;
-        throw new PluginSDKError(
-          `Failed to create quiz: ${getErrorMessage(error)}`,
-          "OPERATION_FAILED"
-        );
-      }
+      });
     },
 
     // ─── Moderation ───────────────────────────────────────────
 
     async banUser(chatId: string, userId: number | string): Promise<void> {
-      requireUserMode("banUser");
-      requireBridge();
-      try {
-        const client = getClient();
-        const Api = await getApi();
-
-        await client.invoke(
-          new Api.channels.EditBanned({
-            channel: chatId,
-            participant: userId.toString(),
-            bannedRights: new Api.ChatBannedRights({
-              untilDate: 0,
-              viewMessages: true,
-              sendMessages: true,
-              sendMedia: true,
-              sendStickers: true,
-              sendGifs: true,
-              sendGames: true,
-              sendInline: true,
-              embedLinks: true,
-            }),
+      return userOp("banUser", "ban user", async (ctx) => {
+        await editBanned(
+          ctx,
+          chatId,
+          userId,
+          new ctx.Api.ChatBannedRights({
+            untilDate: 0,
+            viewMessages: true,
+            sendMessages: true,
+            sendMedia: true,
+            sendStickers: true,
+            sendGifs: true,
+            sendGames: true,
+            sendInline: true,
+            embedLinks: true,
           })
         );
-      } catch (error) {
-        if (error instanceof PluginSDKError) throw error;
-        throw new PluginSDKError(
-          `Failed to ban user: ${getErrorMessage(error)}`,
-          "OPERATION_FAILED"
-        );
-      }
+      });
     },
 
     async unbanUser(chatId: string, userId: number | string): Promise<void> {
-      requireUserMode("unbanUser");
-      requireBridge();
-      try {
-        const client = getClient();
-        const Api = await getApi();
-
-        await client.invoke(
-          new Api.channels.EditBanned({
-            channel: chatId,
-            participant: userId.toString(),
-            bannedRights: new Api.ChatBannedRights({
-              untilDate: 0,
-            }),
-          })
-        );
-      } catch (error) {
-        if (error instanceof PluginSDKError) throw error;
-        throw new PluginSDKError(
-          `Failed to unban user: ${getErrorMessage(error)}`,
-          "OPERATION_FAILED"
-        );
-      }
+      return userOp("unbanUser", "unban user", async (ctx) => {
+        await editBanned(ctx, chatId, userId, new ctx.Api.ChatBannedRights({ untilDate: 0 }));
+      });
     },
 
     async muteUser(chatId: string, userId: number | string, untilDate: number): Promise<void> {
-      requireUserMode("muteUser");
-      requireBridge();
-      try {
-        const client = getClient();
-        const Api = await getApi();
-
-        await client.invoke(
-          new Api.channels.EditBanned({
-            channel: chatId,
-            participant: userId.toString(),
-            bannedRights: new Api.ChatBannedRights({
-              untilDate,
-              sendMessages: true,
-            }),
-          })
+      return userOp("muteUser", "mute user", async (ctx) => {
+        await editBanned(
+          ctx,
+          chatId,
+          userId,
+          new ctx.Api.ChatBannedRights({ untilDate, sendMessages: true })
         );
-      } catch (error) {
-        if (error instanceof PluginSDKError) throw error;
-        throw new PluginSDKError(
-          `Failed to mute user: ${getErrorMessage(error)}`,
-          "OPERATION_FAILED"
-        );
-      }
+      });
     },
 
     // ─── Stars & Gifts ────────────────────────────────────────
 
     async getStarsBalance(): Promise<number> {
-      requireUserMode("getStarsBalance");
-      requireBridge();
-      try {
-        const client = getClient();
-        const Api = await getApi();
-
+      return userOp("getStarsBalance", "get stars balance", async ({ client, Api }) => {
         const result = await client.invoke(
           new Api.payments.GetStarsStatus({
             peer: new Api.InputPeerSelf(),
@@ -522,13 +437,7 @@ export function createTelegramSocialSDK(
         );
 
         return Number(result.balance?.amount?.toString() || "0");
-      } catch (error) {
-        if (error instanceof PluginSDKError) throw error;
-        throw new PluginSDKError(
-          `Failed to get stars balance: ${getErrorMessage(error)}`,
-          "OPERATION_FAILED"
-        );
-      }
+      });
     },
 
     async sendGift(
@@ -536,12 +445,8 @@ export function createTelegramSocialSDK(
       giftId: string,
       opts?: { message?: string; anonymous?: boolean }
     ): Promise<void> {
-      requireUserMode("sendGift");
-      requireBridge();
-      try {
-        const client = getClient();
-        const Api = await getApi();
-
+      return userOp("sendGift", "send gift", async ({ client, Api }) => {
+        requireNonEmpty(giftId, "Gift ID");
         const user = await client.getInputEntity(userId.toString());
 
         const invoiceData = {
@@ -565,22 +470,11 @@ export function createTelegramSocialSDK(
             invoice: new Api.InputInvoiceStarGift(invoiceData),
           })
         );
-      } catch (error) {
-        if (error instanceof PluginSDKError) throw error;
-        throw new PluginSDKError(
-          `Failed to send gift: ${getErrorMessage(error)}`,
-          "OPERATION_FAILED"
-        );
-      }
+      });
     },
 
     async getAvailableGifts(): Promise<StarGift[]> {
-      requireUserMode("getAvailableGifts");
-      requireBridge();
-      try {
-        const client = getClient();
-        const Api = await getApi();
-
+      return userOp("getAvailableGifts", "get available gifts", async ({ client, Api }) => {
         const result = await client.invoke(new Api.payments.GetStarGifts({ hash: 0 }));
 
         if (result.className === "payments.StarGiftsNotModified") {
@@ -599,27 +493,16 @@ export function createTelegramSocialSDK(
               ? Number(gift.availabilityTotal?.toString() || "0")
               : undefined,
           }));
-      } catch (error) {
-        if (error instanceof PluginSDKError) throw error;
-        throw new PluginSDKError(
-          `Failed to get available gifts: ${getErrorMessage(error)}`,
-          "OPERATION_FAILED"
-        );
-      }
+      });
     },
 
     async getMyGifts(limit?: number): Promise<ReceivedGift[]> {
-      requireUserMode("getMyGifts");
-      requireBridge();
-      try {
-        const client = getClient();
-        const Api = await getApi();
-
+      return userOp("getMyGifts", "get my gifts", async ({ client, Api }) => {
         const result = await client.invoke(
           new Api.payments.GetSavedStarGifts({
             peer: new Api.InputPeerSelf(),
             offset: "",
-            limit: limit ?? 50,
+            limit: boundedLimit(limit, 50, 100),
           })
         );
 
@@ -634,27 +517,17 @@ export function createTelegramSocialSDK(
             messageId: savedGift.msgId || undefined,
           };
         });
-      } catch (error) {
-        if (error instanceof PluginSDKError) throw error;
-        throw new PluginSDKError(
-          `Failed to get my gifts: ${getErrorMessage(error)}`,
-          "OPERATION_FAILED"
-        );
-      }
+      });
     },
 
     async getResaleGifts(giftId: string, limit?: number): Promise<StarGift[]> {
-      requireUserMode("getResaleGifts");
-      requireBridge();
-      try {
-        const client = getClient();
-        const Api = await getApi();
-
+      return userOp("getResaleGifts", "get resale gifts", async ({ client, Api }) => {
+        requireNonEmpty(giftId, "Gift collection ID");
         const result = await client.invoke(
           new Api.payments.GetResaleStarGifts({
             giftId: toLong(giftId),
             offset: "",
-            limit: limit ?? 50,
+            limit: boundedLimit(limit, 50, 100),
           })
         );
 
@@ -665,22 +538,12 @@ export function createTelegramSocialSDK(
             starsAmount: Number(listing.resellAmount?.[0]?.amount?.toString() || "0"),
           };
         });
-      } catch (error) {
-        if (error instanceof PluginSDKError) throw error;
-        throw new PluginSDKError(
-          `Failed to get resale gifts: ${getErrorMessage(error)}`,
-          "OPERATION_FAILED"
-        );
-      }
+      });
     },
 
     async buyResaleGift(giftId: string): Promise<void> {
-      requireUserMode("buyResaleGift");
-      requireBridge();
-      try {
-        const client = getClient();
-        const Api = await getApi();
-
+      return userOp("buyResaleGift", "buy resale gift", async ({ client, Api }) => {
+        requireNonEmpty(giftId, "Gift ID");
         const toId = new Api.InputPeerSelf();
         const invoice = new Api.InputInvoiceStarGiftResale({
           slug: giftId,
@@ -695,13 +558,7 @@ export function createTelegramSocialSDK(
             invoice,
           })
         );
-      } catch (error) {
-        if (error instanceof PluginSDKError) throw error;
-        throw new PluginSDKError(
-          `Failed to buy resale gift: ${getErrorMessage(error)}`,
-          "OPERATION_FAILED"
-        );
-      }
+      });
     },
 
     // ─── Chat ───────────────────────────────────────────────────
@@ -709,21 +566,30 @@ export function createTelegramSocialSDK(
     async getDialogs(limit?: number): Promise<Dialog[]> {
       requireUserMode("getDialogs");
       requireBridge();
+      const bounded = boundedLimit(limit, 50, 100);
       try {
         const client = getClient();
-        const dialogs = await client.getDialogs({ limit: Math.min(limit ?? 50, 100) });
+        const dialogs = await client.getDialogs({ limit: bounded });
 
-        return dialogs.map((dialog: any) => ({
-          id: dialog.id?.toString() || null,
-          title: dialog.title || "Unknown",
-          type: (dialog.isChannel ? "channel" : dialog.isGroup ? "group" : "dm") as Dialog["type"],
-          unreadCount: dialog.unreadCount || 0,
-          unreadMentionsCount: dialog.unreadMentionsCount || 0,
-          isPinned: dialog.pinned || false,
-          isArchived: dialog.archived || false,
-          lastMessageDate: dialog.date || null,
-          lastMessage: dialog.message?.message?.substring(0, 100) || null,
-        }));
+        return Promise.all(
+          dialogs.map(async (dialog: any) => ({
+            id: dialog.id?.toString() || null,
+            title: dialog.title || "Unknown",
+            type: (dialog.isChannel
+              ? "channel"
+              : dialog.isGroup
+                ? "group"
+                : "dm") as Dialog["type"],
+            unreadCount: dialog.unreadCount || 0,
+            unreadMentionsCount: dialog.unreadMentionsCount || 0,
+            isPinned: dialog.pinned || false,
+            isArchived: dialog.archived || false,
+            lastMessageDate: dialog.date || null,
+            lastMessage: dialog.message
+              ? (await resolveTelegramMessageText(client, dialog.message)).substring(0, 100) || null
+              : null,
+          }))
+        );
       } catch (error) {
         if (error instanceof PluginSDKError) throw error;
         log.error("telegram.getDialogs() failed:", error);
@@ -734,13 +600,19 @@ export function createTelegramSocialSDK(
     async getHistory(chatId: string, limit?: number): Promise<SimpleMessage[]> {
       requireUserMode("getHistory");
       requireBridge();
+      const bounded = boundedLimit(limit, 50, 100);
       try {
         const client = getClient();
         const messages = await client.getMessages(chatId, {
-          limit: Math.min(limit ?? 50, 100),
+          limit: bounded,
         });
 
-        return messages.map(toSimpleMessage);
+        return Promise.all(
+          messages.map(async (message) => {
+            const text = await resolveTelegramMessageText(client, message, chatId);
+            return toSimpleMessageWithText(message, text);
+          })
+        );
       } catch (error) {
         if (error instanceof PluginSDKError) throw error;
         log.error("telegram.getHistory() failed:", error);
@@ -762,6 +634,7 @@ export function createTelegramSocialSDK(
     async getStarsTransactions(limit?: number): Promise<StarsTransaction[]> {
       requireUserMode("getStarsTransactions");
       requireBridge();
+      const bounded = boundedLimit(limit, 50, 100);
       try {
         const client = getClient();
         const Api = await getApi();
@@ -770,7 +643,7 @@ export function createTelegramSocialSDK(
           new Api.payments.GetStarsTransactions({
             peer: new Api.InputPeerSelf(),
             offset: "",
-            limit: limit ?? 50,
+            limit: bounded,
           })
         );
 
@@ -789,12 +662,8 @@ export function createTelegramSocialSDK(
     },
 
     async transferCollectible(msgId: number, toUserId: number | string): Promise<TransferResult> {
-      requireUserMode("transferCollectible");
-      requireBridge();
-      try {
-        const client = getClient();
-        const Api = await getApi();
-
+      return userOp("transferCollectible", "transfer collectible", async ({ client, Api }) => {
+        requirePositiveInteger(msgId, "Gift message ID");
         const toUser = await client.getInputEntity(toUserId.toString());
         const stargiftInput = new Api.InputSavedStarGiftUser({ msgId });
 
@@ -827,22 +696,13 @@ export function createTelegramSocialSDK(
             starsSpent: transferCost,
           };
         }
-      } catch (error) {
-        if (error instanceof PluginSDKError) throw error;
-        throw new PluginSDKError(
-          `Failed to transfer collectible: ${getErrorMessage(error)}`,
-          "OPERATION_FAILED"
-        );
-      }
+      });
     },
 
     async setCollectiblePrice(msgId: number, price: number): Promise<void> {
-      requireUserMode("setCollectiblePrice");
-      requireBridge();
-      try {
-        const client = getClient();
-        const Api = await getApi();
-
+      return userOp("setCollectiblePrice", "set collectible price", async ({ client, Api }) => {
+        requirePositiveInteger(msgId, "Gift message ID");
+        requireNonNegativeInteger(price, "Gift price");
         await client.invoke(
           new Api.payments.UpdateStarGiftPrice({
             stargift: new Api.InputSavedStarGiftUser({ msgId }),
@@ -852,18 +712,13 @@ export function createTelegramSocialSDK(
             }),
           })
         );
-      } catch (error) {
-        if (error instanceof PluginSDKError) throw error;
-        throw new PluginSDKError(
-          `Failed to set collectible price: ${getErrorMessage(error)}`,
-          "OPERATION_FAILED"
-        );
-      }
+      });
     },
 
     async getCollectibleInfo(slug: string): Promise<CollectibleInfo | null> {
       requireUserMode("getCollectibleInfo");
       requireBridge();
+      requireNonEmpty(slug, "Collectible slug");
       try {
         const client = getClient();
         const Api = await getApi();
@@ -923,6 +778,7 @@ export function createTelegramSocialSDK(
     async getUniqueGift(slug: string): Promise<UniqueGift | null> {
       requireUserMode("getUniqueGift");
       requireBridge();
+      requireNonEmpty(slug, "Gift slug");
       try {
         const client = getClient();
         const Api = await getApi();
@@ -984,6 +840,7 @@ export function createTelegramSocialSDK(
     async getUniqueGiftValue(slug: string): Promise<GiftValue | null> {
       requireUserMode("getUniqueGiftValue");
       requireBridge();
+      requireNonEmpty(slug, "Gift slug");
       try {
         const client = getClient();
         const Api = await getApi();
@@ -1020,14 +877,11 @@ export function createTelegramSocialSDK(
       price: number,
       opts?: GiftOfferOptions
     ): Promise<void> {
-      requireUserMode("sendGiftOffer");
-      requireBridge();
-      try {
-        const client = getClient();
-        const Api = await getApi();
-
+      return userOp("sendGiftOffer", "send gift offer", async ({ client, Api }) => {
+        requireNonEmpty(giftSlug, "Gift slug");
+        requirePositiveInteger(price, "Offer price");
         const peer = await client.getInputEntity(userId.toString());
-        const duration = opts?.duration ?? 86400;
+        const duration = requirePositiveInteger(opts?.duration ?? 86400, "Offer duration");
 
         await client.invoke(
           new Api.payments.SendStarGiftOffer({
@@ -1038,23 +892,15 @@ export function createTelegramSocialSDK(
             randomId: randomLong(),
           })
         );
-      } catch (error) {
-        if (error instanceof PluginSDKError) throw error;
-        throw new PluginSDKError(
-          `Failed to send gift offer: ${getErrorMessage(error)}`,
-          "OPERATION_FAILED"
-        );
-      }
+      });
     },
 
     // ─── Stories ───────────────────────────────────────────────
 
     async sendStory(mediaPath: string, opts?: { caption?: string }): Promise<number | null> {
-      requireUserMode("sendStory");
-      requireBridge();
-      try {
-        const client = getClient();
-        const { Api, helpers } = await import("telegram");
+      return userOp("sendStory", "send story", async ({ client, Api }) => {
+        requireNonEmpty(mediaPath, "Story media path");
+        const { helpers } = await import("telegram");
         const { CustomFile } = await import("telegram/client/uploads.js");
         const { readFileSync, statSync } = await import("fs");
         const { basename } = await import("path");
@@ -1132,13 +978,7 @@ export function createTelegramSocialSDK(
             ? result.updates.find((u) => u.className === "UpdateStory")
             : undefined;
         return storyUpdate?.story?.id ?? null;
-      } catch (error) {
-        if (error instanceof PluginSDKError) throw error;
-        throw new PluginSDKError(
-          `Failed to send story: ${getErrorMessage(error)}`,
-          "OPERATION_FAILED"
-        );
-      }
+      });
     },
   };
 }

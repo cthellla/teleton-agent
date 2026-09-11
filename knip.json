@@ -1,7 +1,10 @@
 {
-  "$schema": "https://unpkg.com/knip@5/schema.json",
+  "$schema": "https://unpkg.com/knip@6/schema.json",
   "workspaces": {
     ".": {
+      "project": [
+        "src/**/*.ts"
+      ],
       "entry": [
         "src/cli/**/*.ts",
         "src/webui/**/*.ts",
@@ -11,19 +14,21 @@
         "src/sdk/hooks/index.ts",
         "src/constants/index.ts",
         "src/api/**/*.ts"
-      ],
-      "project": ["src/**/*.ts"]
+      ]
     },
     "packages/sdk": {
-      "project": ["src/**/*.ts"]
+      "project": [
+        "src/**/*.ts"
+      ]
+    },
+    "web": {
+      "project": [
+        "src/**/*.{ts,tsx}"
+      ]
     }
   },
   "ignoreDependencies": [
-    "pino-pretty",
-    "@teleton-agent/sdk",
-    "@grammyjs/types",
-    "better-sqlite3"
+    "@grammyjs/types"
   ],
-  "ignoreExportsUsedInFile": true,
-  "exclude": ["exports", "types"]
+  "ignoreExportsUsedInFile": true
 }
