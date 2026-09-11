@@ -779,6 +779,22 @@ describe("createTelegramSocialSDK", () => {
         expect(mockGramJsClient.invoke).not.toHaveBeenCalled();
       });
 
+      // The implementation branches on the bridge, not the mode argument, so a
+      // caller passing a mode that contradicts the bridge must not be routed
+      // into the MTProto path. Both tests above agree on both, so neither
+      // actually exercises that.
+      it("uses the Bot API even when the mode argument says user", async () => {
+        const botBridge = {
+          ...mockBridge,
+          getMode: vi.fn(() => "bot"),
+          getBot: vi.fn(() => ({ api: { getMyStarBalance: async () => ({ amount: 7 }) } })),
+        } as unknown as Parameters<typeof createTelegramSocialSDK>[0];
+        const mismatched = createTelegramSocialSDK(botBridge, mockLog, "user");
+
+        await expect(mismatched.getStarsBalance()).resolves.toBe(7);
+        expect(mockGramJsClient.invoke).not.toHaveBeenCalled();
+      });
+
       it("wraps Bot API failures as OPERATION_FAILED", async () => {
         const { sdk: botSdk } = botSdkWith(async () => {
           throw new Error("boom");
