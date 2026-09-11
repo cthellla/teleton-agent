@@ -9,6 +9,7 @@ import {
   writeRawConfig,
 } from "../../config/configurable-keys.js";
 import { getModelsForProvider } from "../../config/model-catalog.js";
+import { withReasoningFlags } from "../../config/model-reasoning.js";
 import {
   getProviderMetadata,
   validateApiKeyFormat,
@@ -315,7 +316,7 @@ export function createConfigRoutes(deps: WebUIServerDeps) {
   // Get model options for a provider
   app.get("/models/:provider", (c) => {
     const provider = c.req.param("provider");
-    const models = getModelsForProvider(provider);
+    const models = withReasoningFlags(provider, getModelsForProvider(provider));
     return c.json({ success: true, data: models } as APIResponse);
   });
 

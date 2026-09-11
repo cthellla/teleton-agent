@@ -247,7 +247,11 @@ export async function prepareTurn(
             chatId,
             includeAgentMemory: true,
             includeFeedHistory: true,
-            searchAllChats: true,
+            // Fork-only: search other chats only in private turns. In a group or a
+            // guest turn this pulls other chats' messages, including other users'
+            // DMs, into the prompt as "[From chat X]". Upstream made it
+            // unconditional; the fork gates it on the chat being private.
+            searchAllChats: !effectiveIsGroup,
             maxRecentMessages: CONTEXT_MAX_RECENT_MESSAGES,
             maxRelevantChunks: CONTEXT_MAX_RELEVANT_CHUNKS,
             queryEmbedding: queryEmbedding ?? [],

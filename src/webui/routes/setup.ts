@@ -36,6 +36,7 @@ import { assertGrokBuildReady } from "../../providers/grok-build-credentials.js"
 const log = createLogger("Setup");
 
 import { getModelsForProvider } from "../../config/model-catalog.js";
+import { withReasoningFlags } from "../../config/model-reasoning.js";
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
@@ -103,7 +104,7 @@ export function createSetupRoutes(options?: { keyHash?: string }): Hono {
   // ── GET /models/:provider ─────────────────────────────────────────
   app.get("/models/:provider", (c) => {
     const provider = c.req.param("provider");
-    const models = getModelsForProvider(provider);
+    const models = withReasoningFlags(provider, getModelsForProvider(provider));
     const result = [
       ...models,
       {

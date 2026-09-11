@@ -17,7 +17,7 @@ import {
   type PreparedModelRequest,
 } from "./model-request.js";
 import { isSilentReply } from "../constants/tokens.js";
-import { LLM_STREAM_TIMEOUT_MS } from "../constants/timeouts.js";
+import { LLM_REQUEST_TIMEOUT_MS, LLM_STREAM_TIMEOUT_MS } from "../constants/timeouts.js";
 
 // Model resolution + provider model registration live in the neutral providers/
 // layer so non-agent consumers (e.g. memory) can resolve models without importing
@@ -113,7 +113,14 @@ export async function chatWithContext(
   config: AgentConfig,
   options: ChatOptions
 ): Promise<ChatResponse> {
-  const request = prepareModelRequest(config, options);
+  // Cap, not fallback: the agent loop always passes its remaining turn budget
+  // (max_turn_duration_ms, 300s by default) as timeoutMs, so a plain fallback
+  // never applied and one stalled request could hold the chat queue for the whole
+  // turn. Capping also lets the loop retry a timed-out request while budget remains.
+  const request = prepareModelRequest(config, {
+    ...options,
+    timeoutMs: Math.min(options.timeoutMs ?? LLM_REQUEST_TIMEOUT_MS, LLM_REQUEST_TIMEOUT_MS),
+  });
   const initialResponse = await complete(request.model, request.context, request.options);
   const response = await retryAfterCredentialRefresh(request, initialResponse);
   return finalizeResponse(response, request.context, options);
@@ -125,11 +132,11 @@ export interface StreamResult {
 }
 
 export function streamWithContext(config: AgentConfig, options: ChatOptions): StreamResult {
-  // Fork-only: streaming gets the longer budget; a stalled stream would
-  // otherwise hold the chat queue open indefinitely.
+  // Fork-only: streaming gets the longer cap. Same as chatWithContext — the loop
+  // passes the remaining turn budget, so this has to be a cap, not a fallback.
   const request = prepareModelRequest(config, {
     ...options,
-    timeoutMs: options.timeoutMs ?? LLM_STREAM_TIMEOUT_MS,
+    timeoutMs: Math.min(options.timeoutMs ?? LLM_STREAM_TIMEOUT_MS, LLM_STREAM_TIMEOUT_MS),
   });
   const eventStream = stream(request.model, request.context, request.options);
 

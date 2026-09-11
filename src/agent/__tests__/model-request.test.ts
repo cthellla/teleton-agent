@@ -110,4 +110,59 @@ describe("model request preparation", () => {
     expect(request.options.reasoningEffort).toBe("medium");
     expect(request.options).not.toHaveProperty("temperature");
   });
+
+  // Fork-only: the fork forwarded reasoning effort to reasoning-capable models on
+  // every provider; the v0.11.2 merge narrowed it to codex, which silently turned
+  // agent.reasoning_effort into a no-op for production's openrouter.
+  it("forwards reasoning effort for the production openrouter model", () => {
+    const config = AgentConfigSchema.parse({
+      provider: "openrouter",
+      model: "qwen/qwen3.6-plus:free",
+      api_key: "test-key",
+      reasoning_effort: "low",
+    });
+
+    const request = prepareModelRequest(config, { context: { messages: [] } });
+
+    expect(request.options).toMatchObject({ reasoningEffort: "low" });
+  });
+
+  it("forwards reasoning effort to other reasoning models", () => {
+    const config = AgentConfigSchema.parse({
+      provider: "openrouter",
+      model: "deepseek/deepseek-r1",
+      api_key: "test-key",
+      reasoning_effort: "high",
+    });
+
+    const request = prepareModelRequest(config, { context: { messages: [] } });
+
+    expect(request.options).toMatchObject({ reasoningEffort: "high" });
+  });
+
+  it("does not send reasoning effort to a model without reasoning", () => {
+    const config = AgentConfigSchema.parse({
+      provider: "openrouter",
+      model: "openai/gpt-4o-mini",
+      api_key: "test-key",
+      reasoning_effort: "high",
+    });
+
+    const request = prepareModelRequest(config, { context: { messages: [] } });
+
+    expect(request.options).not.toHaveProperty("reasoningEffort");
+  });
+
+  it('sends nothing when reasoning effort is "none"', () => {
+    const config = AgentConfigSchema.parse({
+      provider: "openrouter",
+      model: "deepseek/deepseek-r1",
+      api_key: "test-key",
+      reasoning_effort: "none",
+    });
+
+    const request = prepareModelRequest(config, { context: { messages: [] } });
+
+    expect(request.options).not.toHaveProperty("reasoningEffort");
+  });
 });

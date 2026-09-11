@@ -29,12 +29,19 @@ function pluginDbPath(): string {
  * Must be registered before the bridge's catch-all text handler (onNewMessage),
  * which does not call next(). grammY runs middleware in registration order, so
  * registered after it these never fire and the command text reaches the LLM.
- * Call once per bot instance — bot.command() appends, it does not replace.
+ * Registered for private chats only (see below). Call once per bot instance —
+ * command() appends, it does not replace.
  */
 export function registerPaymentCommands(bot: ReturnType<GrammyBotBridge["getBot"]>): void {
   const PLUGIN_DB_PATH = pluginDbPath();
+  // Private chats only. grammY's command() matches a bare "/cancel" in groups too
+  // (only "/cancel@otherbot" is skipped), so a subscriber typing /cancel in a group
+  // for some other bot would cancel their Stars subscription with no confirmation.
+  // Non-private updates fall through to the regular handler, which already ignores
+  // commands not addressed to this bot.
+  const dm = bot.chatType("private");
 
-  bot.command("cancel", async (ctx) => {
+  dm.command("cancel", async (ctx) => {
     const userId = ctx.from?.id;
     if (!userId) return;
     let db: Database.Database | null = null;
@@ -79,7 +86,7 @@ export function registerPaymentCommands(bot: ReturnType<GrammyBotBridge["getBot"
     }
   });
 
-  bot.command("terms", async (ctx) => {
+  dm.command("terms", async (ctx) => {
     await ctx.reply(
       "Echo Bot — Terms of Service\n\n" +
         "• Echo is an AI research assistant. Responses are AI-generated and may contain errors.\n" +
@@ -91,7 +98,7 @@ export function registerPaymentCommands(bot: ReturnType<GrammyBotBridge["getBot"
     );
   });
 
-  bot.command("paysupport", async (ctx) => {
+  dm.command("paysupport", async (ctx) => {
     await ctx.reply(
       "For payment issues:\n\n" +
         "• Stars subscription: Use /cancel to cancel, or contact @cthellla\n" +

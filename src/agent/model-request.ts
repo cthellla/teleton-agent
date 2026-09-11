@@ -66,9 +66,18 @@ function getCacheRetention(provider: SupportedProvider): "none" | "long" {
 
 function getReasoningOptions(
   provider: SupportedProvider,
+  model: { reasoning?: boolean },
   reasoningEffort: AgentConfig["reasoning_effort"]
 ): Record<string, unknown> {
-  return provider === "codex" ? { reasoningEffort } : {};
+  if (provider === "codex") return { reasoningEffort };
+  // Fork-only: apply the effort to every reasoning-capable model, as the fork did
+  // before the v0.11.2 merge. Upstream only forwards it to codex, which silently
+  // made agent.reasoning_effort, /reasoning and the WebUI select no-ops for every
+  // other provider, including production's openrouter. "none" sends nothing.
+  if (model.reasoning && reasoningEffort && reasoningEffort !== "none") {
+    return { reasoningEffort };
+  }
+  return {};
 }
 
 function prepareTools(tools: Tool[] | undefined): Tool[] | undefined {
@@ -140,10 +149,10 @@ export function prepareModelRequest(
       sessionId: request.sessionId,
       cacheRetention: getCacheRetention(provider),
       signal: request.signal,
-      // Fork-only: never leave an LLM call unbounded. Upstream passes the caller's
-      // value through unchanged, which is undefined for every call site we have.
+      // Fallback for callers passing no timeout. The per-request cap lives in
+      // client.ts, because the agent loop always passes its remaining turn budget.
       timeoutMs: request.timeoutMs ?? LLM_REQUEST_TIMEOUT_MS,
-      ...getReasoningOptions(provider, config.reasoning_effort),
+      ...getReasoningOptions(provider, model, config.reasoning_effort),
       ...(provider === "anthropic" && model.id === "claude-fable-5-1" && { thinkingEnabled: true }),
       ...getProviderPayloadOptions(provider),
     } as ProviderStreamOptions,
