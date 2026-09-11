@@ -60,6 +60,50 @@ const ALLOWED_UPDATES = [
   "chosen_inline_result",
 ] as const;
 
+const FENCE_LINE = /^[ \t]*(?:```|~~~)[^\n]*$/gm;
+
+/**
+ * Close a code fence left open at the end of a part and reopen it in the next,
+ * so every part converts to valid HTML on its own. Without this, a fence longer
+ * than the budget is cut in the middle and the user sees raw backticks.
+ */
+function reopenFences(parts: string[]): string[] {
+  const balanced: string[] = [];
+  let carry = "";
+
+  for (const part of parts) {
+    let text = carry ? `${carry}\n${part}` : part;
+    const fences = text.match(FENCE_LINE) ?? [];
+    if (fences.length % 2 === 1) {
+      const opener = fences[fences.length - 1].trim();
+      carry = opener;
+      text = `${text}\n${opener.slice(0, 3)}`;
+    } else {
+      carry = "";
+    }
+    balanced.push(text);
+  }
+
+  return balanced;
+}
+
+/** Split markdown at the last line or word boundary before the budget. */
+function splitMarkdownAt(text: string, budget: number): string[] {
+  const parts: string[] = [];
+  let remaining = text;
+
+  while (remaining.length > budget) {
+    let cut = remaining.lastIndexOf("\n", budget);
+    if (cut < budget * 0.3) cut = remaining.lastIndexOf(" ", budget);
+    if (cut < budget * 0.3) cut = budget;
+    parts.push(remaining.slice(0, cut));
+    remaining = remaining.slice(cut).replace(/^[ \t]+/, "");
+  }
+  if (remaining.length > 0) parts.push(remaining);
+
+  return parts;
+}
+
 export class GrammyBotBridge implements ITelegramBridge {
   private bot: Bot;
   private botInfo: BotInfo | undefined;
@@ -275,25 +319,13 @@ export class GrammyBotBridge implements ITelegramBridge {
     replyToId?: number,
     replyMarkup?: InlineKeyboard
   ): Promise<SentMessage> {
-    // splitMessageForTelegram splits before conversion and never cuts a code
-    // fence, so every part converts to valid HTML on its own. The budget leaves
-    // room for the HTML the conversion adds.
-    const chunks = splitMessageForTelegram(markdown, TELEGRAM_MAX_MESSAGE_LENGTH - 600).flatMap(
-      (part) => {
-        const partHtml = markdownToTelegramHtml(part);
-        return partHtml.length > TELEGRAM_MAX_MESSAGE_LENGTH
-          ? this.hardSplit(partHtml)
-          : [partHtml];
-      }
-    );
-
+    const chunks = this.splitForHtml(markdown);
     let lastResult: SentMessage = { id: 0, date: Math.floor(Date.now() / 1000), chatId };
 
     for (let i = 0; i < chunks.length; i++) {
       const isFirst = i === 0;
       const isLast = i === chunks.length - 1;
-      const result = await this.bot.api.sendMessage(this.toChatId(chatId), chunks[i], {
-        parse_mode: "HTML",
+      const result = await this.sendPart(chatId, chunks[i], {
         reply_to_message_id: isFirst ? replyToId : undefined,
         reply_markup: isLast ? replyMarkup : undefined,
       });
@@ -303,29 +335,54 @@ export class GrammyBotBridge implements ITelegramBridge {
     return lastResult;
   }
 
-  /** Last resort for a single part that still expands past the limit as HTML. */
-  private hardSplit(html: string): string[] {
-    const chunks: string[] = [];
-    let remaining = html;
-
-    while (remaining.length > TELEGRAM_MAX_MESSAGE_LENGTH) {
-      // Find a split point: prefer double newline, then single newline, then space
-      let splitAt = remaining.lastIndexOf("\n\n", TELEGRAM_MAX_MESSAGE_LENGTH);
-      if (splitAt < TELEGRAM_MAX_MESSAGE_LENGTH * 0.3) {
-        splitAt = remaining.lastIndexOf("\n", TELEGRAM_MAX_MESSAGE_LENGTH);
-      }
-      if (splitAt < TELEGRAM_MAX_MESSAGE_LENGTH * 0.3) {
-        splitAt = remaining.lastIndexOf(" ", TELEGRAM_MAX_MESSAGE_LENGTH);
-      }
-      if (splitAt < TELEGRAM_MAX_MESSAGE_LENGTH * 0.3) {
-        splitAt = TELEGRAM_MAX_MESSAGE_LENGTH; // hard cut as last resort
-      }
-      chunks.push(remaining.slice(0, splitAt));
-      remaining = remaining.slice(splitAt).trimStart();
+  /**
+   * Send one converted part, and if Telegram rejects the markup, send the same
+   * part as plain text. Losing the formatting beats losing the reply, which is
+   * what happened before: a 400 on one part threw and the rest never went out.
+   */
+  private async sendPart(
+    chatId: string,
+    html: string,
+    other: { reply_to_message_id?: number; reply_markup?: InlineKeyboard }
+  ) {
+    try {
+      return await this.bot.api.sendMessage(this.toChatId(chatId), html, {
+        parse_mode: "HTML",
+        ...other,
+      });
+    } catch (error) {
+      if (!(error instanceof GrammyError) || error.error_code !== 400) throw error;
+      log.warn(`Telegram rejected a message part (${error.description}), retrying as plain text`);
+      const plain = html.replace(/<[^>]+>/g, "").slice(0, TELEGRAM_MAX_MESSAGE_LENGTH);
+      return await this.bot.api.sendMessage(this.toChatId(chatId), plain, other);
     }
-    if (remaining.length > 0) chunks.push(remaining);
+  }
 
-    return chunks;
+  /**
+   * Split markdown into parts whose *converted* HTML fits the limit.
+   *
+   * A fixed markdown budget cannot work: escaping turns one "<" into "&lt;" and
+   * one "&" into "&amp;", so a part full of angle brackets grows past the limit
+   * after conversion, and cutting the HTML instead leaves one part with an
+   * unclosed tag and the next with an orphan closer — Telegram 400s both. Each
+   * part is measured after conversion and re-split when it does not fit.
+   */
+  private splitForHtml(markdown: string): string[] {
+    return reopenFences(splitMessageForTelegram(markdown, TELEGRAM_MAX_MESSAGE_LENGTH)).flatMap(
+      (part) => this.fitPart(part, 0)
+    );
+  }
+
+  private fitPart(part: string, depth: number): string[] {
+    const html = markdownToTelegramHtml(part);
+    if (html.length <= TELEGRAM_MAX_MESSAGE_LENGTH || depth >= 8) return [html];
+
+    // Budget from what this text actually expands to, with room to spare.
+    const ratio = html.length / Math.max(1, part.length);
+    const budget = Math.max(256, Math.floor((TELEGRAM_MAX_MESSAGE_LENGTH * 0.85) / ratio));
+    const pieces = reopenFences(splitMarkdownAt(part, budget));
+    if (pieces.length < 2) return [html];
+    return pieces.flatMap((piece) => this.fitPart(piece, depth + 1));
   }
 
   /**

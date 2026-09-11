@@ -152,23 +152,62 @@ describe("GrammyBotBridge rich messages", () => {
     expect(sendMessage).toHaveBeenCalled();
   });
 
-  // Falling back means the whole long reply lands on the classic path, where
-  // splitting converted HTML would cut a code fence in half and Telegram 400s.
-  it("splits a long fallback reply into parts that are each valid HTML", async () => {
+  // Falling back puts the whole long reply on the classic path. Escaping expands
+  // the text — "<" becomes "&lt;", "&" becomes "&amp;" — so a part that fit as
+  // markdown can overflow as HTML, and cutting HTML leaves half a tag behind.
+  const balanced = (part: string) => {
+    const count = (re: RegExp) => (part.match(re) ?? []).length;
+    expect(count(/<pre>/g)).toBe(count(/<\/pre>/g));
+    expect(count(/<code[ >]/g)).toBe(count(/<\/code>/g));
+    expect(count(/<blockquote[ >]/g)).toBe(count(/<\/blockquote>/g));
+    expect(part.length).toBeLessThanOrEqual(4096);
+  };
+
+  it.each([
+    [
+      "an html fence full of angle brackets",
+      `## Отчёт\n\n\`\`\`html\n${'<div class="row"><span>cell</span></div>\n'.repeat(80)}\`\`\`\nконец`,
+    ],
+    [
+      "shell ampersands",
+      `## Сборка\n\n\`\`\`sh\n${"npm ci && npm test && echo ok\n".repeat(160)}\`\`\`\n`,
+    ],
+    [
+      "one fence longer than the budget",
+      `## Код\n\n\`\`\`js\n${"const value = compute(a, b);\n".repeat(260)}\`\`\`\n`,
+    ],
+    [
+      "prose and a quote around a fence",
+      `## Разбор\n\n> цитата из треда\n\n${"Русский абзац про статью. ".repeat(120)}\n\n\`\`\`c\n${"if (a < b && c > d) { run(); }\n".repeat(90)}\`\`\`\n`,
+    ],
+  ])("splits a long fallback reply with %s into valid parts", async (_case, text) => {
     const { bridge, sendRichMessage, sendMessage } = bridgeWith("dm");
     sendRichMessage.mockRejectedValue(rejection(400, "Bad Request: RICH_MESSAGE_INVALID"));
 
-    const long = `${TABLE_REPLY}\n\n\`\`\`js\n${"const x = 1;\n".repeat(900)}\`\`\`\nконец`;
-    await bridge.sendMessage({ chatId: DM, text: long });
+    await bridge.sendMessage({ chatId: DM, text });
 
     const parts = sendMessage.mock.calls.map((call) => call[1] as string);
     expect(parts.length).toBeGreaterThan(1);
-    for (const part of parts) {
-      expect(part.length).toBeLessThanOrEqual(4096);
-      const opens = (part.match(/<pre>/g) ?? []).length + (part.match(/<code[ >]/g) ?? []).length;
-      const closes = (part.match(/<\/pre>/g) ?? []).length + (part.match(/<\/code>/g) ?? []).length;
-      expect(opens).toBe(closes);
-    }
+    parts.forEach(balanced);
+    // Guard against a vacuous pass: the code must survive as real formatting.
+    expect(parts.some((part) => part.includes("<pre>"))).toBe(true);
+    expect(parts.join("")).not.toContain("\`\`\`");
+  });
+
+  // A rejected part used to throw and take the rest of the reply with it.
+  it("retries a rejected part as plain text instead of losing the reply", async () => {
+    const { bridge, sendRichMessage, sendMessage } = bridgeWith("dm");
+    sendRichMessage.mockRejectedValue(rejection(400, "Bad Request: RICH_MESSAGE_INVALID"));
+    sendMessage
+      .mockRejectedValueOnce(rejection(400, "Bad Request: can't parse entities"))
+      .mockResolvedValue(sentMessage(9) as never);
+
+    const long = `## Заголовок\n\n${"Русский абзац про статью. ".repeat(400)}`;
+    await bridge.sendMessage({ chatId: DM, text: long });
+
+    const retry = sendMessage.mock.calls[1];
+    expect(retry[1]).not.toMatch(/<[a-z]/i);
+    expect((retry[2] as { parse_mode?: string } | undefined)?.parse_mode).toBeUndefined();
   });
 });
 
