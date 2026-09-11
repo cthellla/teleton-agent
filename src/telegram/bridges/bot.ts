@@ -9,10 +9,13 @@ import {
 import type { InlineQueryResultArticle } from "@grammyjs/types";
 import { markdownToTelegramHtml } from "../formatting.js";
 import {
-  RICH_MESSAGE_MAX_LENGTH,
+  RICH_MESSAGE_MAX_BYTES,
   hasRichFormatting,
+  richMessageBytes,
+  richMessageFits,
   stripInteractiveRichMarkup,
 } from "../rich-detect.js";
+import { splitMessageForTelegram } from "../message-splitter.js";
 import { sanitizeMarkdownForTelegram } from "../sanitize-markdown.js";
 import { TELEGRAM_MAX_MESSAGE_LENGTH } from "../../constants/limits.js";
 import { classifyMedia } from "../bridge-interface.js";
@@ -245,9 +248,11 @@ export class GrammyBotBridge implements ITelegramBridge {
 
     const html = markdownToTelegramHtml(options.text);
 
-    // Auto-split: if HTML exceeds Telegram limit, send in chunks
+    // Auto-split: if HTML exceeds Telegram limit, send in chunks. The markdown
+    // is split, not the HTML — cutting converted HTML leaves one part with an
+    // unclosed tag and the other with an orphan closer, and Telegram 400s both.
     if (html.length > TELEGRAM_MAX_MESSAGE_LENGTH) {
-      return this.sendLongMessage(options.chatId, html, options.replyToId, replyMarkup);
+      return this.sendLongMessage(options.chatId, options.text, options.replyToId, replyMarkup);
     }
 
     const result = await this.bot.api.sendMessage(this.toChatId(options.chatId), html, {
@@ -263,13 +268,43 @@ export class GrammyBotBridge implements ITelegramBridge {
     };
   }
 
-  /** Split and send HTML that exceeds the Telegram message limit */
+  /** Split markdown that would exceed the Telegram message limit, then send each part. */
   private async sendLongMessage(
     chatId: string,
-    html: string,
+    markdown: string,
     replyToId?: number,
     replyMarkup?: InlineKeyboard
   ): Promise<SentMessage> {
+    // splitMessageForTelegram splits before conversion and never cuts a code
+    // fence, so every part converts to valid HTML on its own. The budget leaves
+    // room for the HTML the conversion adds.
+    const chunks = splitMessageForTelegram(markdown, TELEGRAM_MAX_MESSAGE_LENGTH - 600).flatMap(
+      (part) => {
+        const partHtml = markdownToTelegramHtml(part);
+        return partHtml.length > TELEGRAM_MAX_MESSAGE_LENGTH
+          ? this.hardSplit(partHtml)
+          : [partHtml];
+      }
+    );
+
+    let lastResult: SentMessage = { id: 0, date: Math.floor(Date.now() / 1000), chatId };
+
+    for (let i = 0; i < chunks.length; i++) {
+      const isFirst = i === 0;
+      const isLast = i === chunks.length - 1;
+      const result = await this.bot.api.sendMessage(this.toChatId(chatId), chunks[i], {
+        parse_mode: "HTML",
+        reply_to_message_id: isFirst ? replyToId : undefined,
+        reply_markup: isLast ? replyMarkup : undefined,
+      });
+      lastResult = { id: result.message_id, date: result.date, chatId };
+    }
+
+    return lastResult;
+  }
+
+  /** Last resort for a single part that still expands past the limit as HTML. */
+  private hardSplit(html: string): string[] {
     const chunks: string[] = [];
     let remaining = html;
 
@@ -290,20 +325,7 @@ export class GrammyBotBridge implements ITelegramBridge {
     }
     if (remaining.length > 0) chunks.push(remaining);
 
-    let lastResult: SentMessage = { id: 0, date: Math.floor(Date.now() / 1000), chatId };
-
-    for (let i = 0; i < chunks.length; i++) {
-      const isFirst = i === 0;
-      const isLast = i === chunks.length - 1;
-      const result = await this.bot.api.sendMessage(this.toChatId(chatId), chunks[i], {
-        parse_mode: "HTML",
-        reply_to_message_id: isFirst ? replyToId : undefined,
-        reply_markup: isLast ? replyMarkup : undefined,
-      });
-      lastResult = { id: result.message_id, date: result.date, chatId };
-    }
-
-    return lastResult;
+    return chunks;
   }
 
   /**
@@ -313,7 +335,7 @@ export class GrammyBotBridge implements ITelegramBridge {
    */
   private shouldSendRich(chatId: string, text: string, hasKeyboard: boolean): boolean {
     if (hasKeyboard || !this.richChat(chatId)) return false;
-    if (text.length > RICH_MESSAGE_MAX_LENGTH) return false;
+    if (!richMessageFits(text)) return false;
     return hasRichFormatting(text);
   }
 
@@ -332,9 +354,11 @@ export class GrammyBotBridge implements ITelegramBridge {
    * limit would chop rich replies through the middle of a table.
    */
   outboundTextLimit(chatId: string, text: string): number {
-    return this.shouldSendRich(chatId, text, false)
-      ? RICH_MESSAGE_MAX_LENGTH
-      : TELEGRAM_MAX_MESSAGE_LENGTH;
+    if (!this.shouldSendRich(chatId, text, false)) return TELEGRAM_MAX_MESSAGE_LENGTH;
+    // The caller counts characters, Telegram counts bytes: hand back the budget
+    // in the caller's units, which for Cyrillic is about half.
+    const bytesPerChar = Math.max(1, richMessageBytes(text) / Math.max(1, text.length));
+    return Math.floor(RICH_MESSAGE_MAX_BYTES / bytesPerChar);
   }
 
   /**
@@ -519,7 +543,7 @@ export class GrammyBotBridge implements ITelegramBridge {
     const richChat = this.richChat(chatId);
     // Leave headroom for HTML expansion from markdownToTelegramHtml
     const HTML_THRESHOLD = TELEGRAM_MAX_MESSAGE_LENGTH - 300;
-    const RICH_THRESHOLD = RICH_MESSAGE_MAX_LENGTH - 300;
+    const RICH_THRESHOLD = RICH_MESSAGE_MAX_BYTES - 300;
 
     for await (const chunk of textStream) {
       fullText += chunk;
@@ -531,7 +555,7 @@ export class GrammyBotBridge implements ITelegramBridge {
       // sendMessageDraft rejects anything past 4096, a rich draft past 32768.
       const rich = richChat && hasRichFormatting(fullText);
       const html = rich ? "" : markdownToTelegramHtml(fullText);
-      const rendered = rich ? fullText.length : html.length;
+      const rendered = rich ? richMessageBytes(fullText) : html.length;
       if (rendered >= (rich ? RICH_THRESHOLD : HTML_THRESHOLD)) {
         // Clear draft bubble and send as real message
         try {

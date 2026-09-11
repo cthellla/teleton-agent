@@ -8,8 +8,21 @@
  * rich message?", so the patterns live here rather than in one bridge.
  */
 
-/** Telegram renders at most this many UTF-8 characters in a single rich message. */
-export const RICH_MESSAGE_MAX_LENGTH = 32768;
+/** Telegram's cap for one rich message, counted in UTF-8 bytes. */
+export const RICH_MESSAGE_MAX_BYTES = 32768;
+
+/**
+ * The limit is bytes, not JS characters, and Russian text costs two bytes per
+ * character — a 20000-character answer is 40000 bytes. Measuring characters
+ * would send it anyway and take the rejection.
+ */
+export function richMessageBytes(text: string): number {
+  return Buffer.byteLength(text, "utf8");
+}
+
+export function richMessageFits(text: string): boolean {
+  return richMessageBytes(text) <= RICH_MESSAGE_MAX_BYTES;
+}
 
 const RICH_FORMATTING_PATTERNS = [
   /(?:^|\n)\s{0,3}#{1,6}\s+\S/, // heading
@@ -43,7 +56,7 @@ export function hasRichFormatting(text: string): boolean {
  * model does not own. Callback buttons stay the caller's job (`inlineKeyboard`).
  */
 const INTERACTIVE_RICH_MARKUP =
-  /<\/?tg-(?:button-row|button|collage|slideshow|document|map|emoji|thinking)(?:\s[^>]*)?>|tg:\/\/(?:photo|video|audio|document)\?id=[^\s")]*/gi;
+  /<\/?tg-(?:button-row|button|collage|slideshow|document|map|emoji|thinking)[^>]*>|tg:\/\/(?:photo|video|audio|document)\?id=[^\s")]*/gi;
 
 export function stripInteractiveRichMarkup(text: string): string {
   // One pass is not enough: removing the inner tag of a nested pair splices the

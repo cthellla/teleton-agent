@@ -139,6 +139,37 @@ describe("GrammyBotBridge rich messages", () => {
     expect(sendRichMessage).not.toHaveBeenCalled();
     expect(sendMessage).toHaveBeenCalled();
   });
+
+  // Telegram counts the limit in bytes: 20000 Cyrillic characters are 40000.
+  it("counts the rich limit in bytes, not characters", async () => {
+    const { bridge, sendRichMessage, sendMessage } = bridgeWith("dm");
+
+    const cyrillic = `${TABLE_REPLY}\n${"я".repeat(20_000)}`;
+    expect(cyrillic.length).toBeLessThan(32_768);
+    await bridge.sendMessage({ chatId: DM, text: cyrillic });
+
+    expect(sendRichMessage).not.toHaveBeenCalled();
+    expect(sendMessage).toHaveBeenCalled();
+  });
+
+  // Falling back means the whole long reply lands on the classic path, where
+  // splitting converted HTML would cut a code fence in half and Telegram 400s.
+  it("splits a long fallback reply into parts that are each valid HTML", async () => {
+    const { bridge, sendRichMessage, sendMessage } = bridgeWith("dm");
+    sendRichMessage.mockRejectedValue(rejection(400, "Bad Request: RICH_MESSAGE_INVALID"));
+
+    const long = `${TABLE_REPLY}\n\n\`\`\`js\n${"const x = 1;\n".repeat(900)}\`\`\`\nконец`;
+    await bridge.sendMessage({ chatId: DM, text: long });
+
+    const parts = sendMessage.mock.calls.map((call) => call[1] as string);
+    expect(parts.length).toBeGreaterThan(1);
+    for (const part of parts) {
+      expect(part.length).toBeLessThanOrEqual(4096);
+      const opens = (part.match(/<pre>/g) ?? []).length + (part.match(/<code[ >]/g) ?? []).length;
+      const closes = (part.match(/<\/pre>/g) ?? []).length + (part.match(/<\/code>/g) ?? []).length;
+      expect(opens).toBe(closes);
+    }
+  });
 });
 
 describe("GrammyBotBridge rich drafts and limits", () => {
@@ -187,7 +218,9 @@ describe("GrammyBotBridge rich drafts and limits", () => {
   it("reports the limit of the format it will actually use", () => {
     const bridge = new GrammyBotBridge({ bot_token: "123:test", rich_messages: "dm" });
 
-    expect(bridge.outboundTextLimit(DM, TABLE_REPLY)).toBe(32768);
+    expect(bridge.outboundTextLimit(DM, TABLE_REPLY)).toBeGreaterThan(16_000);
+    // Cyrillic costs two bytes per character, so the budget in characters halves.
+    expect(bridge.outboundTextLimit(DM, `## Заголовок\n${"я".repeat(100)}`)).toBeLessThan(20_000);
     expect(bridge.outboundTextLimit(DM, "обычный ответ без разметки")).toBe(4096);
     expect(bridge.outboundTextLimit(GROUP, TABLE_REPLY)).toBe(4096);
   });

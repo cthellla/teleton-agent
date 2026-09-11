@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
-  RICH_MESSAGE_MAX_LENGTH,
+  RICH_MESSAGE_MAX_BYTES,
   hasRichFormatting,
+  richMessageFits,
   stripInteractiveRichMarkup,
 } from "../rich-detect.js";
 
@@ -66,14 +67,33 @@ describe("stripInteractiveRichMarkup", () => {
     }
   );
 
+  // The tag name does not have to be followed by whitespace: lenient parsers
+  // accept these as a start tag just the same.
+  it.each([
+    '<tg-button/ type="callback_data" data="pack">Buy</tg-button>',
+    '<tg-button"x>Buy',
+    "<tg-button=y>Buy",
+  ])("removes a start tag written as %s", (payload) => {
+    expect(stripInteractiveRichMarkup(payload)).not.toMatch(/<tg-button/i);
+  });
+
   it("keeps ordinary markdown and links untouched", () => {
     const text = "## Заголовок\n\n| a | b |\n|---|---|\n| 1 | [ссылка](https://t.me/) |";
     expect(stripInteractiveRichMarkup(text)).toBe(text);
   });
 });
 
-describe("RICH_MESSAGE_MAX_LENGTH", () => {
+describe("richMessageFits", () => {
   it("matches the documented rich message limit", () => {
-    expect(RICH_MESSAGE_MAX_LENGTH).toBe(32768);
+    expect(RICH_MESSAGE_MAX_BYTES).toBe(32768);
+  });
+
+  // Cyrillic is two bytes per character, so a reply well under the limit in
+  // characters can be over it in bytes — which is what Telegram counts.
+  it("measures bytes, not characters", () => {
+    expect(richMessageFits("a".repeat(32_768))).toBe(true);
+    expect(richMessageFits("a".repeat(32_769))).toBe(false);
+    expect(richMessageFits("я".repeat(20_000))).toBe(false);
+    expect("я".repeat(20_000).length).toBeLessThan(RICH_MESSAGE_MAX_BYTES);
   });
 });
