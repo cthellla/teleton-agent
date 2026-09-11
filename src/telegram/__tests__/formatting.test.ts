@@ -215,3 +215,36 @@ describe("markdownToTelegramHtml", () => {
     });
   });
 });
+
+describe("placeholder restore", () => {
+  // The restores passed the payload to String.replace as the replacement string,
+  // so $&, $', $` and $1 inside code acted as substitution patterns: the snippet
+  // came back corrupted, and repeated it expanded until the reply was lost.
+  it("keeps $& and $1 in a code block verbatim", () => {
+    const html = markdownToTelegramHtml("```sh\ncost $& and $1\n```");
+
+    expect(html).toContain("cost $&amp; and $1");
+    expect(html).not.toContain("\u0000");
+  });
+
+  it.each([
+    ["inline code", "цена `$& и $1` в строке"],
+    ["dollar-quote", '```sh\necho "$\'"\n```'],
+    ["dollar-backtick", '```sh\necho "$`"\n```'],
+    ["blockquote", "> цитата с `$&` внутри"],
+  ])("does not corrupt %s", (_case, markdown) => {
+    const html = markdownToTelegramHtml(markdown);
+
+    expect(html).not.toContain("\u0000");
+    expect(html.length).toBeLessThan(markdown.length * 4);
+  });
+
+  it("does not explode on a fence full of $'", () => {
+    const markdown = "```sh\n" + 'echo "$\'"\n'.repeat(400) + "```";
+
+    const html = markdownToTelegramHtml(markdown);
+
+    expect(html.length).toBeLessThan(markdown.length * 3);
+    expect(html).not.toContain("\u0000");
+  });
+});

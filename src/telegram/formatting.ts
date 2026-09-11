@@ -113,22 +113,24 @@ export function markdownToTelegramHtml(markdown: string): string {
   );
 
   blockquotes.forEach((quote, index) => {
-    html = html.replace(`\x00BLOCKQUOTE${index}\x00`, quote);
+    html = html.replace(`\x00BLOCKQUOTE${index}\x00`, () => quote);
   });
 
   codeBlocks.forEach((block, index) => {
-    html = html.replace(`\x00CODEBLOCK${index}\x00`, block);
+    html = html.replace(`\x00CODEBLOCK${index}\x00`, () => block);
   });
 
   inlineCodes.forEach((code, index) => {
-    html = html.replace(`\x00INLINECODE${index}\x00`, code);
+    html = html.replace(`\x00INLINECODE${index}\x00`, () => code);
   });
 
   // Last: a tg-time can sit inside a blockquote or list, whose text is only put
   // back into `html` by the restores above. Running earlier left a raw NUL
   // placeholder in the message for exactly the digest-shaped input we care about.
   // Function form — a string replacement would treat $& / $1 in the payload as
-  // substitution patterns (the restores above still have that bug, teletonhnplugin#16).
+  // substitution patterns. The restores above take the same form for the same
+  // reason: a snippet containing $' or $` corrupted the code and, repeated,
+  // expanded without bound until the reply was lost (teletonhnplugin#16 bug 4).
   dateTimes.forEach((tag, index) => {
     html = html.replace(`\x00DATETIME${index}\x00`, () => tag);
   });
