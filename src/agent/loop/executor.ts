@@ -1,6 +1,7 @@
 import type { Context } from "@earendil-works/pi-ai";
 import type { Config } from "../../config/schema.js";
 import { getProviderMetadata } from "../../config/providers.js";
+import { EMPTY_RESPONSE_MAX_RETRIES, NETWORK_ERROR_MAX_RETRIES } from "../../constants/limits.js";
 import { TELEGRAM_SEND_TOOLS } from "../../constants/tools.js";
 import { maskOldToolResults } from "../../memory/observation-masking.js";
 import type { createHookRunner } from "../../sdk/hooks/runner.js";
@@ -8,7 +9,7 @@ import { isBotBridge } from "../../telegram/bridge-guards.js";
 import { createLogger } from "../../utils/logger.js";
 import { resolveModelTarget } from "../model-target.js";
 import { resolveProviderFallback } from "../provider-fallback.js";
-import { addUsage } from "../runtime-utils.js";
+import { addUsage, isNetworkError } from "../runtime-utils.js";
 import type { CompletedToolCall } from "../telegram-send-state.js";
 import { enforceProviderToolLimit } from "../tool-selector.js";
 import type { AgentTurnTraceRecorder } from "../turn-trace.js";
@@ -49,6 +50,10 @@ export async function executeAgentLoop(
   );
   let iteration = 0;
   const retry = { overflowResets: 0, rateLimitRetries: 0, serverErrorRetries: 0 };
+  // Fork-only retry budgets the upstream loop does not have (lost in the v0.11.2
+  // merge): thrown network/timeout errors and empty model responses.
+  let networkErrorRetries = 0;
+  let emptyResponseRetries = 0;
   let finalResponse: LoopResult["finalResponse"] = null;
   let lastResponse: LoopResult["finalResponse"] = null;
   let stopReason = "completed";
@@ -82,17 +87,40 @@ export async function executeAgentLoop(
     });
     const maskedContext: Context = { ...context, messages: maskedMessages };
 
-    const iterationResult = await runModelIteration(
-      activeAgentConfig,
-      opts.streamToChat,
-      maskedContext,
-      systemPrompt,
-      session.sessionId,
-      activeTools,
-      streamAccumulatedText,
-      providerSignal,
-      Math.max(1, maxDurationMs - (Date.now() - processStartTime))
-    );
+    let iterationResult: Awaited<ReturnType<typeof runModelIteration>>;
+    try {
+      iterationResult = await runModelIteration(
+        activeAgentConfig,
+        opts.streamToChat,
+        maskedContext,
+        systemPrompt,
+        session.sessionId,
+        activeTools,
+        streamAccumulatedText,
+        providerSignal,
+        Math.max(1, maxDurationMs - (Date.now() - processStartTime))
+      );
+    } catch (error) {
+      // Thrown transport failures (fetch failed, ECONNRESET, a request timeout)
+      // never reach recoverLlmError, which only sees stopReason:"error" responses.
+      // isNetworkError also matches AbortError/TimeoutError, and the turn-budget
+      // signal stays aborted once it fires — so never retry after that.
+      if (
+        isNetworkError(error) &&
+        !providerSignal.aborted &&
+        networkErrorRetries < NETWORK_ERROR_MAX_RETRIES
+      ) {
+        networkErrorRetries++;
+        const delay = 2000 * 2 ** (networkErrorRetries - 1);
+        log.warn(
+          `Network error (thrown), retrying in ${delay}ms (attempt ${networkErrorRetries}/${NETWORK_ERROR_MAX_RETRIES}): ${error instanceof Error ? error.message : String(error)}`
+        );
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        iteration--;
+        continue;
+      }
+      throw error;
+    }
     const response = iterationResult.response;
     lastResponse = response;
     const streamed = iterationResult.streamed;
@@ -171,6 +199,24 @@ export async function executeAgentLoop(
     const toolCalls = response.message.content.filter((block) => block.type === "toolCall");
 
     if (toolCalls.length === 0) {
+      // No text and zero output tokens is almost always a provider glitch, not an
+      // answer. Retry instead of handing the user silence.
+      const iterOutput = response.message.usage?.output ?? 0;
+      if (
+        !response.text &&
+        iterOutput === 0 &&
+        !providerSignal.aborted &&
+        emptyResponseRetries < EMPTY_RESPONSE_MAX_RETRIES
+      ) {
+        emptyResponseRetries++;
+        const delay = 2000 * emptyResponseRetries;
+        log.warn(
+          `Empty response with 0 output tokens, retrying in ${delay}ms (attempt ${emptyResponseRetries}/${EMPTY_RESPONSE_MAX_RETRIES})...`
+        );
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        iteration--;
+        continue;
+      }
       log.info(`${iteration}/${maxIterations} → done`);
       finalResponse = response;
       wasStreamed = streamed;

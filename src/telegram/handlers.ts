@@ -930,7 +930,12 @@ export class MessageHandler {
         userMessage: `${userText}\n\n${guestTag}${injectedContext}`,
         userName,
         timestamp: message.timestamp.getTime(),
-        isGroup: false,
+        // A guest turn answers in a chat the bot is not a member of, so treat it as
+        // a group: isGroup keeps memory and strategy out of the prompt, and isGuest
+        // makes turn preparation strip the telegram_send tools. With isGroup:false
+        // both were exposed to strangers' chats.
+        isGroup: true,
+        isGuest: true,
         toolContext,
         senderUsername: message.senderUsername,
         senderLangCode: message.senderLangCode,

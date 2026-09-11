@@ -288,7 +288,7 @@ export const api = {
   },
 
   async getModelsForProvider(provider: string) {
-    return fetchAPI<APIResponse<Array<{ value: string; name: string; description: string }>>>(
+    return fetchAPI<APIResponse<Array<{ value: string; name: string; description: string; reasoning?: boolean }>>>(
       `/config/models/${encodeURIComponent(provider)}`
     );
   },

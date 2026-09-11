@@ -3,7 +3,7 @@ import { getDatabase } from "../memory/index.js";
 import type { PluginModule } from "../agent/tools/types.js";
 import type { AgentRuntime } from "../agent/runtime.js";
 import { isBotBridge, isUserBridge } from "../telegram/bridge-guards.js";
-import { wireStarsPayments } from "../payments/stars-gate.js";
+import { registerPaymentCommands, wireStarsPayments } from "../payments/stars-gate.js";
 import type { TelegramMessage } from "../telegram/bridge.js";
 import type { ITelegramBridge } from "../telegram/bridge-interface.js";
 import { MessageDebouncer } from "../telegram/debounce.js";
@@ -91,6 +91,11 @@ export class MessagePipeline {
 
     const firstStart = this.messageHandlerBridge !== this.deps.bridge;
     if (firstStart) {
+      // Fork-only: payment service commands must be registered before the
+      // catch-all text handler below, which does not call next(). Doing it here,
+      // once per bridge, also stops wireBotMode adding another copy of each
+      // command on every restart.
+      if (isBotBridge(this.deps.bridge)) registerPaymentCommands(this.deps.bridge.getBot());
       this.deps.bridge.onNewMessage(async (message) => {
         if (!this.acceptingMessages) return;
         try {

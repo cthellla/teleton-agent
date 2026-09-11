@@ -96,7 +96,7 @@ export function useConfigState() {
     if (!currentProvider) return;
     api.getModelsForProvider(currentProvider).then((res) => {
       const models = mergeModelOptions(
-        res.data.map((m) => ({ value: m.value, name: m.name })),
+        res.data.map((m) => ({ value: m.value, name: m.name, reasoning: m.reasoning })),
         currentModel
       );
       setModelOptions(models);

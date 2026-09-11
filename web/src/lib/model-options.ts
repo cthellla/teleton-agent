@@ -1,6 +1,8 @@
 export interface ModelOption {
   value: string;
   name: string;
+  /** Catalog flag: the model accepts a reasoning effort setting (drives the Reasoning select). */
+  reasoning?: boolean;
 }
 
 /**

@@ -27,13 +27,17 @@ interface GrammyBotBridgeConfig {
 
 type GrammyMessage = NonNullable<Context["message"]>;
 
-// grammy 1.41 autodetects allowed_updates from handlers but doesn't know `guest_message`
-// (Bot API 10.0). Override to ensure Telegram delivers it.
+// Explicit rather than autodetected, so the delivered update set cannot silently
+// shift with handler registration order. An update type missing here is never
+// delivered at all — inline_query and chosen_inline_result were missing, which
+// left upstream's InlineRouter (plugin inline mode) dead in bot mode.
 const ALLOWED_UPDATES = [
   "message",
   "callback_query",
   "pre_checkout_query",
   "guest_message",
+  "inline_query",
+  "chosen_inline_result",
 ] as const;
 
 export class GrammyBotBridge implements ITelegramBridge {
@@ -811,7 +815,10 @@ export class GrammyBotBridge implements ITelegramBridge {
     const commands = [
       { command: "status", description: "View agent status" },
       { command: "model", description: "Switch LLM model" },
-      { command: "reasoning", description: "Set reasoning effort (off/low/medium/high)" },
+      {
+        command: "reasoning",
+        description: "Set reasoning effort (none/minimal/low/medium/high/xhigh/max)",
+      },
       { command: "loop", description: "Set max agentic iterations" },
       { command: "policy", description: "Change access policy" },
       { command: "modules", description: "Manage module permissions" },
