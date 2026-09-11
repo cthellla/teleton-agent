@@ -18,23 +18,6 @@ export function markdownToTelegramHtml(markdown: string): string {
   const blockquotes: string[] = [];
   const dateTimes: string[] = [];
 
-  // Carry <tg-time> through unescaped so Telegram renders the timestamp in each
-  // reader's own timezone. Everything else stays escaped: model output reaches
-  // this function, so an unrestricted passthrough would be an HTML injection
-  // hole. Attributes are validated against the Bot API spec — unix must be
-  // digits and format must match r|w?[dD]?[tT]? — and anything failing that is
-  // left alone to be escaped as ordinary text.
-  html = html.replace(
-    /<tg-time\s+unix="(\d+)"(?:\s+format="([^"]*)")?\s*>([\s\S]*?)<\/tg-time>/g,
-    (match, unix: string, format: string | undefined, label: string) => {
-      if (format !== undefined && !/^(r|w?[dD]?[tT]?)$/.test(format)) return match;
-      const index = dateTimes.length;
-      const attrs = format ? ` unix="${unix}" format="${format}"` : ` unix="${unix}"`;
-      dateTimes.push(`<tg-time${attrs}>${escapeHtml(label)}</tg-time>`);
-      return `\x00DATETIME${index}\x00`;
-    }
-  );
-
   html = html.replace(/```(\w*)\n?([\s\S]*?)```/g, (_match, lang, code) => {
     const index = codeBlocks.length;
     const escapedCode = escapeHtml(code.trim());
@@ -51,6 +34,23 @@ export function markdownToTelegramHtml(markdown: string): string {
     inlineCodes.push(`<code>${escapeHtml(code)}</code>`);
     return `\x00INLINECODE${index}\x00`;
   });
+
+  // Carry <tg-time> through unescaped so Telegram renders the timestamp in each
+  // reader's own timezone. Everything else stays escaped: model output reaches
+  // this function, so an unrestricted passthrough would be an HTML injection
+  // hole. Attributes are validated against the Bot API spec — unix must be
+  // digits and format must match r|w?[dD]?[tT]? — and anything failing that is
+  // left alone to be escaped as ordinary text.
+  html = html.replace(
+    /<tg-time\s+unix="(\d+)"(?:\s+format="([^"]*)")?\s*>([\s\S]*?)<\/tg-time>/g,
+    (match, unix: string, format: string | undefined, label: string) => {
+      if (format !== undefined && !/^(r|w?[dD]?[tT]?)$/.test(format)) return match;
+      const index = dateTimes.length;
+      const attrs = format === undefined ? ` unix="${unix}"` : ` unix="${unix}" format="${format}"`;
+      dateTimes.push(`<tg-time${attrs}>${escapeHtml(label)}</tg-time>`);
+      return `\x00DATETIME${index}\x00`;
+    }
+  );
 
   const listPattern = /^(- .+(?:\n- .+){2,})/gm;
   html = html.replace(listPattern, (match) => {
@@ -108,13 +108,6 @@ export function markdownToTelegramHtml(markdown: string): string {
     (_, text, url) => `<a href="${sanitizeUrl(url)}">${text}</a>`
   );
 
-  dateTimes.forEach((tag, index) => {
-    // Function form: a string replacement would treat $& / $1 in the payload as
-    // substitution patterns. The other restores below still have that bug —
-    // tracked as bug 4 in teletonhnplugin#16.
-    html = html.replace(`\x00DATETIME${index}\x00`, () => tag);
-  });
-
   blockquotes.forEach((quote, index) => {
     html = html.replace(`\x00BLOCKQUOTE${index}\x00`, quote);
   });
@@ -125,6 +118,15 @@ export function markdownToTelegramHtml(markdown: string): string {
 
   inlineCodes.forEach((code, index) => {
     html = html.replace(`\x00INLINECODE${index}\x00`, code);
+  });
+
+  // Last: a tg-time can sit inside a blockquote or list, whose text is only put
+  // back into `html` by the restores above. Running earlier left a raw NUL
+  // placeholder in the message for exactly the digest-shaped input we care about.
+  // Function form — a string replacement would treat $& / $1 in the payload as
+  // substitution patterns (the restores above still have that bug, teletonhnplugin#16).
+  dateTimes.forEach((tag, index) => {
+    html = html.replace(`\x00DATETIME${index}\x00`, () => tag);
   });
 
   return html;
