@@ -91,4 +91,127 @@ describe("markdownToTelegramHtml", () => {
     expect(result).toContain("&amp;");
     expect(result).toContain("&gt;");
   });
+
+  // ─── <tg-time> passthrough (date_time entity, Bot API 9.5) ───────────────
+  describe("tg-time passthrough", () => {
+    it("carries a valid tag through unescaped", () => {
+      const out = markdownToTelegramHtml(
+        'Posted <tg-time unix="1647531900" format="r">4h ago</tg-time>'
+      );
+      expect(out).toBe('Posted <tg-time unix="1647531900" format="r">4h ago</tg-time>');
+    });
+
+    it("accepts a tag without a format", () => {
+      const out = markdownToTelegramHtml('<tg-time unix="1647531900">22:45</tg-time>');
+      expect(out).toBe('<tg-time unix="1647531900">22:45</tg-time>');
+    });
+
+    it("accepts every control character the spec allows, unchanged", () => {
+      // Assert the exact tag: toContain("<tg-time") would pass even if unix or
+      // format came out wrong or were dropped entirely.
+      for (const format of ["r", "w", "d", "D", "t", "T", "wDT", "wdt", ""]) {
+        const tag = `<tg-time unix="1" format="${format}">x</tg-time>`;
+        expect(markdownToTelegramHtml(tag)).toBe(tag);
+      }
+    });
+
+    it("escapes a tag whose format violates r|w?[dD]?[tT]?", () => {
+      // "r" cannot be combined, and "zz" is not a control character at all.
+      for (const format of ["zz", "rt", "rw", "tw"]) {
+        const out = markdownToTelegramHtml(`<tg-time unix="1" format="${format}">x</tg-time>`);
+        expect(out).toContain("&lt;tg-time");
+        expect(out).not.toContain("<tg-time");
+      }
+    });
+
+    it("escapes a tag whose unix is not digits", () => {
+      const out = markdownToTelegramHtml('<tg-time unix="abc" format="r">x</tg-time>');
+      expect(out).toContain("&lt;tg-time");
+      expect(out).not.toContain("<tg-time");
+    });
+
+    // Model output reaches this converter, so the passthrough must not become a
+    // general HTML hole.
+    it("escapes markup nested inside the label", () => {
+      const out = markdownToTelegramHtml(
+        '<tg-time unix="1" format="r"><b onclick=x>evil</b></tg-time>'
+      );
+      expect(out).toContain('<tg-time unix="1" format="r">');
+      expect(out).toContain("&lt;b onclick=x&gt;evil&lt;/b&gt;");
+      expect(out).not.toContain("<b onclick");
+    });
+
+    it("still escapes every other tag", () => {
+      expect(markdownToTelegramHtml("<script>alert(1)</script>")).toBe(
+        "&lt;script&gt;alert(1)&lt;/script&gt;"
+      );
+    });
+
+    // Every test above puts the tag in plain text. The first implementation
+    // restored placeholders before the blockquote/code restores, so a tag inside
+    // a quote, a list or a code region emitted a raw NUL placeholder instead —
+    // and a 3+ item bullet list is exactly the digest shape we want timestamps in.
+    it("survives inside a blockquote", () => {
+      const out = markdownToTelegramHtml('> Posted <tg-time unix="16" format="r">4h</tg-time> ok');
+      expect(out).toBe(
+        '<blockquote>Posted <tg-time unix="16" format="r">4h</tg-time> ok</blockquote>'
+      );
+    });
+
+    it("survives inside a bullet list", () => {
+      const out = markdownToTelegramHtml(
+        '- a <tg-time unix="16" format="r">4h</tg-time>\n- b\n- c'
+      );
+      expect(out).toContain('<tg-time unix="16" format="r">4h</tg-time>');
+      expect(out).not.toContain("DATETIME");
+    });
+
+    it("stays literal inside a fenced code block", () => {
+      const out = markdownToTelegramHtml('```\n<tg-time unix="1" format="r">x</tg-time>\n```');
+      expect(out).toBe('<pre>&lt;tg-time unix="1" format="r"&gt;x&lt;/tg-time&gt;</pre>');
+    });
+
+    it("stays literal inside inline code", () => {
+      const out = markdownToTelegramHtml('use `<tg-time unix="1" format="r">x</tg-time>` here');
+      expect(out).toContain("&lt;tg-time");
+      expect(out).not.toContain("<tg-time unix");
+    });
+
+    it("never emits a placeholder", () => {
+      const inputs = [
+        '<tg-time unix="1" format="r">x</tg-time>',
+        '> q <tg-time unix="1" format="r">x</tg-time>',
+        '- a <tg-time unix="1">x</tg-time>\n- b\n- c',
+        '`<tg-time unix="1">x</tg-time>`',
+      ];
+      for (const input of inputs) {
+        expect(markdownToTelegramHtml(input)).not.toMatch(/\x00|DATETIME/);
+      }
+    });
+
+    it("keeps an explicitly empty format rather than dropping it", () => {
+      const tag = '<tg-time unix="1" format="">x</tg-time>';
+      expect(markdownToTelegramHtml(tag)).toBe(tag);
+    });
+
+    // Code inside a label: code is extracted before tg-time, so the label already
+    // holds a placeholder. The tests above never put code in a label, so the
+    // "never emits a placeholder" sweep did not cover this — found in review.
+    it("leaves a tag whose label contains inline code as text, without leaking", () => {
+      const out = markdownToTelegramHtml('<tg-time unix="1" format="r">see `x`</tg-time>');
+      expect(out).toBe('&lt;tg-time unix="1" format="r"&gt;see <code>x</code>&lt;/tg-time&gt;');
+      expect(out).not.toMatch(/\x00|INLINECODE|DATETIME/);
+    });
+
+    it("leaves a tag whose label contains a code fence as text, without leaking", () => {
+      const out = markdownToTelegramHtml('<tg-time unix="1" format="r">```\ncode\n```</tg-time>');
+      expect(out).toBe('&lt;tg-time unix="1" format="r"&gt;<pre>code</pre>&lt;/tg-time&gt;');
+      expect(out).not.toMatch(/\x00|CODEBLOCK|DATETIME/);
+    });
+
+    it("does not treat $-sequences in the label as replacement patterns", () => {
+      const out = markdownToTelegramHtml('<tg-time unix="1" format="r">$& cost</tg-time>');
+      expect(out).toBe('<tg-time unix="1" format="r">$&amp; cost</tg-time>');
+    });
+  });
 });
