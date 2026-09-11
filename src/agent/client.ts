@@ -109,17 +109,29 @@ async function retryAfterCredentialRefresh(
   return complete(request.model, request.context, request.options);
 }
 
+/**
+ * Fork-only: a per-request deadline that also cuts a stream stalling after its
+ * headers arrive. The SDK cancels its own timeoutMs once headers are received, so
+ * timeoutMs alone only bounds the connection phase; the pre-merge fork used an
+ * AbortSignal for exactly this. The caller's signal (the turn budget) still applies.
+ */
+function withRequestDeadline(signal: AbortSignal | undefined, ms: number): AbortSignal {
+  const deadline = AbortSignal.timeout(ms);
+  return signal ? AbortSignal.any([signal, deadline]) : deadline;
+}
+
 export async function chatWithContext(
   config: AgentConfig,
   options: ChatOptions
 ): Promise<ChatResponse> {
   // Cap, not fallback: the agent loop always passes its remaining turn budget
   // (max_turn_duration_ms, 300s by default) as timeoutMs, so a plain fallback
-  // never applied and one stalled request could hold the chat queue for the whole
-  // turn. Capping also lets the loop retry a timed-out request while budget remains.
+  // never applied. The deadline signal is what actually bounds a stalled stream.
+  const timeoutMs = Math.min(options.timeoutMs ?? LLM_REQUEST_TIMEOUT_MS, LLM_REQUEST_TIMEOUT_MS);
   const request = prepareModelRequest(config, {
     ...options,
-    timeoutMs: Math.min(options.timeoutMs ?? LLM_REQUEST_TIMEOUT_MS, LLM_REQUEST_TIMEOUT_MS),
+    timeoutMs,
+    signal: withRequestDeadline(options.signal, timeoutMs),
   });
   const initialResponse = await complete(request.model, request.context, request.options);
   const response = await retryAfterCredentialRefresh(request, initialResponse);
@@ -134,9 +146,11 @@ export interface StreamResult {
 export function streamWithContext(config: AgentConfig, options: ChatOptions): StreamResult {
   // Fork-only: streaming gets the longer cap. Same as chatWithContext — the loop
   // passes the remaining turn budget, so this has to be a cap, not a fallback.
+  const timeoutMs = Math.min(options.timeoutMs ?? LLM_STREAM_TIMEOUT_MS, LLM_STREAM_TIMEOUT_MS);
   const request = prepareModelRequest(config, {
     ...options,
-    timeoutMs: Math.min(options.timeoutMs ?? LLM_STREAM_TIMEOUT_MS, LLM_STREAM_TIMEOUT_MS),
+    timeoutMs,
+    signal: withRequestDeadline(options.signal, timeoutMs),
   });
   const eventStream = stream(request.model, request.context, request.options);
 

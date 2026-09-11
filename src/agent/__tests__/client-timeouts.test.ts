@@ -60,4 +60,18 @@ describe("LLM request timeout", () => {
     await chatWithContext(config, { context: { messages: [] } });
     expect(mocks.complete.mock.calls[0][2]).toMatchObject({ timeoutMs: LLM_REQUEST_TIMEOUT_MS });
   });
+
+  // timeoutMs alone is cancelled once response headers arrive, so it cannot stop a
+  // stream that stalls mid-body. The request must also carry a deadline signal that
+  // still follows the caller's own signal.
+  it("passes a deadline signal that also follows the caller's signal", async () => {
+    const caller = new AbortController();
+    await chatWithContext(config, { context: { messages: [] }, signal: caller.signal });
+    const passed = mocks.complete.mock.calls[0][2].signal as AbortSignal;
+    expect(passed).toBeInstanceOf(AbortSignal);
+    expect(passed).not.toBe(caller.signal);
+    expect(passed.aborted).toBe(false);
+    caller.abort();
+    expect(passed.aborted).toBe(true);
+  });
 });

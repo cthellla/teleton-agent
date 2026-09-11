@@ -54,4 +54,10 @@ describe("fork invariants", () => {
     expect(loop).toMatch(/NETWORK_ERROR_MAX_RETRIES/);
     expect(loop).toMatch(/EMPTY_RESPONSE_MAX_RETRIES/);
   });
+
+  it("bounds a whole LLM request with a deadline signal, not only timeoutMs", () => {
+    const client = src("../client.ts");
+    expect(client).toMatch(/AbortSignal\.any\(/);
+    expect(client.match(/signal:\s*withRequestDeadline\(options\.signal/g)).toHaveLength(2);
+  });
 });
