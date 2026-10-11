@@ -10,11 +10,12 @@
  * $TELETON_HOME/plugins/data/hackernews.db.
  */
 
-import Database from "better-sqlite3";
+import type Database from "better-sqlite3";
 
 import type { GrammyBotBridge } from "../telegram/bridges/bot.js";
 import type { TelegramMessage } from "../telegram/bridge-interface.js";
 import { createLogger } from "../utils/logger.js";
+import { createAdsRelay } from "./ads-relay.js";
 
 const log = createLogger("Telegram");
 
@@ -497,7 +498,17 @@ export function wireStarsPayments(
     }
   }
 
-  bridge.setPreMessageFilter(async (userId, chatId, text, _ctx, isGroup, mentionsMe) => {
+  const adsRelay = createAdsRelay({ dbPath: PLUGIN_DB_PATH, adminId: adminIds[0] });
+
+  bridge.setPreMessageFilter(async (userId, chatId, text, ctx, isGroup, mentionsMe) => {
+    // Ads relay first: an advertiser past the free limit must still reach the
+    // owner, and the owner's replies to relayed messages must not reach the agent.
+    try {
+      if (await adsRelay(userId, chatId, text, ctx, isGroup)) return true;
+    } catch (err) {
+      log.error({ err }, "[AdsRelay] Error, falling through to the paywall");
+    }
+
     // Service deep links — don't rate-limit
     if (text?.startsWith("/start pay")) return true; // miniapp deep link, silently drop
 
